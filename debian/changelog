@@ -1,3 +1,16 @@
+debusine (0.11.3) unstable; urgency=medium
+
+  * client: Allow passing a local copy of the `.changes` file to `debusine
+    provide-signature`.
+
+ -- Colin Watson <cjwatson@debian.org>  Tue, 08 Jul 2025 15:09:29 +0100
+
+debusine (0.11.2) unstable; urgency=medium
+
+  * client: Allow selecting a server using `--server FQDN/SCOPE`.
+
+ -- Colin Watson <cjwatson@debian.org>  Thu, 03 Jul 2025 09:47:02 +0100
+
 debusine (0.11.1) unstable; urgency=medium
 
   * New release.  Highlights:

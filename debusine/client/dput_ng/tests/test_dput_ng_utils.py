@@ -30,7 +30,7 @@ class TestMakeDebusineClient(TestCase):
                 [server:debusine.example.net]
                 api-url = https://debusine.example.net/api
                 token = some-token
-                scope = default-scope
+                scope = debian
                 """
             )
         )
@@ -69,12 +69,12 @@ class TestMakeDebusineClient(TestCase):
                 [server:example]
                 api-url = https://debusine.example.net/api
                 token = some-token
-                scope = debusine
+                scope = debian
 
                 [server:another-example]
                 api-url = https://debusine.another-example.net/api
                 token = some-token
-                scope = debusine
+                scope = debian
                 """
             )
         )
@@ -122,8 +122,9 @@ class TestMakeDebusineClient(TestCase):
             ),
             self.assertRaisesRegex(
                 ValueError,
-                r"No debusine client configuration for debusine\.example\.net; "
-                r"run 'debusine setup'",
+                r"No Debusine client configuration for "
+                r"'debusine\.example\.net/debian'; "
+                r"run 'debusine setup' to configure it",
             ),
         ):
             make_debusine_client(profile)

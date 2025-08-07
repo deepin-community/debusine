@@ -15,6 +15,7 @@ from collections.abc import MutableMapping
 from configparser import ConfigParser
 from pathlib import Path
 from typing import NoReturn, TextIO
+from urllib.parse import urlparse
 
 
 class ConfigHandler(ConfigParser):
@@ -40,7 +41,9 @@ class ConfigHandler(ConfigParser):
         """
         Initialize variables and reads the configuration file.
 
-        :param server_name: None for the default server from the configuration
+        :param server_name: look up configuration matching this server name
+          or FQDN/scope (or None for the default server from the
+          configuration)
         :param config_file_path: location of the configuration file
         """
         super().__init__()
@@ -95,14 +98,32 @@ class ConfigHandler(ConfigParser):
         self, server_name: str
     ) -> MutableMapping[str, str]:
         """Return configuration for server_name or aborts."""
-        section_name = f'server:{server_name}'
+        section_name: str | None
+        if "/" in server_name:
+            # Look up the section by FQDN and scope.
+            server_fqdn, scope_name = server_name.split("/")
+            for section_name in self.sections():
+                if (
+                    section_name.startswith("server:")
+                    and (
+                        (api_url := self[section_name].get("api-url"))
+                        is not None
+                    )
+                    and urlparse(api_url).hostname == server_fqdn
+                    and self[section_name].get("scope") == scope_name
+                ):
+                    break
+            else:
+                section_name = None
+        else:
+            # Look up the section by name.
+            section_name = f'server:{server_name}'
 
-        if section_name not in self:
-            self._fail(
-                f'[{section_name}] section not found '
-                f'in {self._config_file_path} .'
+        if section_name is None or section_name not in self:
+            raise ValueError(
+                f"No Debusine client configuration for {server_name!r}; "
+                f"run 'debusine setup' to configure it"
             )
-
         server_configuration = self[section_name]
 
         self._ensure_server_configuration(server_configuration, section_name)

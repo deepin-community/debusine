@@ -57,6 +57,39 @@ def requests_put_or_connection_error(
             )
 
 
+def write_and_hash(
+    stream: Iterable[bytes], destination: Path, hashes: Iterable[str]
+) -> DownloadedFileStats:
+    """Write chunks from stream to dest and hash the contents using hashes."""
+    hashers = {hash_name: hashlib.new(hash_name) for hash_name in hashes}
+    with destination.open("xb") as f:
+        for chunk in stream:
+            f.write(chunk)
+            for hasher in hashers.values():
+                hasher.update(chunk)
+        size = f.tell()
+    stats: dict[str, str | int] = {"size": size}
+    for hash_name, hasher in hashers.items():
+        stats[hash_name] = hasher.hexdigest()
+    return stats
+
+
+def copy_file(
+    source: Path,
+    destination: Path,
+    hashes: Iterable[str] = SOURCE_PACKAGE_HASHES,
+) -> DownloadedFileStats:
+    """
+    Copy source into destination.
+
+    Return all the hashes specified and size, as a dict.
+    """
+    with source.open("rb") as f:
+        return write_and_hash(
+            iter(partial(f.read, 1024 * 1024), b""), destination, hashes
+        )
+
+
 def download_file(
     url: str,
     destination: Path,
@@ -68,21 +101,13 @@ def download_file(
     Return all the hashes specified and size, as a dict.
     """
     log.info("Downloading %s...", url)
-    hashers = {hash_name: hashlib.new(hash_name) for hash_name in hashes}
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
         if "Content-Length" in r.headers:
             log.info("Size: %.2f MiB", int(r.headers["Content-Length"]) / 2**20)
-        with destination.open("xb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-                for hasher in hashers.values():
-                    hasher.update(chunk)
-            size = f.tell()
-    stats: dict[str, str | int] = {"size": size}
-    for hash_name, hasher in hashers.items():
-        stats[hash_name] = hasher.hexdigest()
-    return stats
+        return write_and_hash(
+            r.iter_content(chunk_size=1024 * 1024), destination, hashes
+        )
 
 
 def get_url_contents_sha256sum(

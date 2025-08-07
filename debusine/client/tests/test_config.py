@@ -160,18 +160,48 @@ class ConfigHandlerTests(TestCase):
             },
         )
 
+    def test_server_configuration_find_by_fqdn(self) -> None:
+        """ConfigHandler.server_configuration() finds a section by FQDN."""
+        config = self.valid_configuration()
+
+        config_handler = self.build_config_handler(
+            config, server_name="debusine.kali.org/kali"
+        )
+        config_server = config["server:kali"]
+        self.assertEqual(
+            config_handler.server_configuration(),
+            {
+                "api-url": config_server["api-url"],
+                "scope": config_server["scope"],
+                "token": config_server["token"],
+            },
+        )
+
+    def test_server_configuration_find_by_fqdn_wrong_scope(self) -> None:
+        """ConfigHandler.server_configuration() requires FQDN/scope to match."""
+        config = self.valid_configuration()
+        config_handler = self.build_config_handler(
+            config, server_name="debusine.kali.org/not-kali"
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"No Debusine client configuration for "
+            r"'debusine\.kali\.org/not-kali'; "
+            r"run 'debusine setup' to configure it",
+        ):
+            config_handler.server_configuration()
+
     def test_server_non_existing_error(self) -> None:
         """ConfigHandler._server_configuration('does-not-exist') aborts."""
         config = self.build_config_handler(self.valid_configuration())
 
-        with self.assertRaisesSystemExit(3):
+        with self.assertRaisesRegex(
+            ValueError,
+            "No Debusine client configuration for 'does-not-exist'; "
+            "run 'debusine setup' to configure it",
+        ):
             config._server_configuration('does-not-exist')
-
-        self.assertEqual(
-            self.stderr.getvalue(),
-            f'[server:does-not-exist] section not found '
-            f'in {config._config_file_path} .\n',
-        )
 
     def test_server_incomplete_configuration_error(self) -> None:
         """ConfigHandler._server_configuration('incomplete-server') aborts."""
