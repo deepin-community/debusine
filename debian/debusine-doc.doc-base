@@ -1,0 +1,10 @@
+Document: debusine
+Title: Debusine documentation
+Author: The debusine developers
+Abstract: The documentation covers what Debusine is, how it has been
+ designed, how it can be used and installed, and much more.
+Section: Debian
+
+Format: HTML
+Index: /usr/share/doc/debusine-doc/html/index.html
+Files: /usr/share/doc/debusine-doc/html/*.html

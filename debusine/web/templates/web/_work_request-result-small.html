@@ -1,0 +1,9 @@
+{% if result == "success" %}
+    <span title="Success" class="badge text-bg-success">S</span>
+{% elif result == "failure" %}
+    <span title="Failure" class="badge text-bg-warning">F</span>
+{% elif result == "error" %}
+    <span title="Error" class="badge text-bg-danger">E</span>
+{% else %}
+    {{ result }}
+{% endif %}

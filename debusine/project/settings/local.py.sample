@@ -1,0 +1,33 @@
+"""Site-specific settings
+
+Rename this file to local.py and edit it to customize the settings of your
+Debusine installation. By default it imports settings from the ``selected.py``
+file which is a symlink to the type of installation to you have
+(typically, ``production.py`` or ``development.py``) and lets you add
+overrides on top of those type-of-installation-specific settings.
+"""
+# Load the selected configuration (selected.py is a symlink to preferred config)
+
+from . import defaults
+from .selected import *
+
+## Add your custom settings here
+
+# If you don't use the packaged version of Debusine, put a random secret
+# key here. DO NOT USE THE EXAMPLE KEY GIVEN BELOW.
+# SECRET_KEY = 'default:etu2#5lv=!0(g9l31mw=cpwhioy!egg60lb5o3_67d83#(wu-u'
+
+# DEBUSINE_FQDN = "debusine.debian.org"
+# DEBUSINE_CONTACT_EMAIL = 'owner@' + DEBUSINE_FQDN
+
+# You can enable supplementary Django applications here, refer to the
+# documentation for details about what they do
+INSTALLED_APPS = defaults.INSTALLED_APPS.copy()
+INSTALLED_APPS.extend([
+    # Can be useful to create visualizations of the models
+    # 'django_extensions',
+])
+
+# You can change CHANNEL_LAYERS configuration
+CHANNEL_LAYERS = defaults.CHANNEL_LAYERS.copy()
+CHANNEL_LAYERS["default"]["CONFIG"] = {"hosts": ["redis://localhost:6379"]}

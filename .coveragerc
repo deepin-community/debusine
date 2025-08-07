@@ -1,0 +1,47 @@
+[run]
+branch = True
+source = debusine
+omit =
+    debusine/project/asgi.py
+    debusine/project/settings/*
+    debusine/project/wsgi.py
+    debusine/signing/settings/*
+    */debusine/*/migrations/*_debusine_test_temporary_migration.py
+data_file = .coverage/data
+parallel = True
+
+[report]
+# Regexes for lines to exclude from consideration
+exclude_lines =
+    # Have to re-enable the standard pragma
+    pragma: no cover
+
+    # Don't complain about missing debug-only code:
+    def __repr__
+    if self\.debug
+
+    # Don't complain if tests don't hit defensive assertion code:
+    raise AssertionError
+    raise NotImplementedError
+    case _ as unreachable:
+
+    # Don't complain if non-runnable code isn't run:
+    if 0:
+    if __name__ == .__main__.:
+
+    # Don't complain about alternative imports
+    except ImportError:
+
+    # Don't complain about code only executed while type-checking:
+    if TYPE_CHECKING:
+
+    # Don't complain about overload stubs:
+    @overload
+
+    # Don't complain about typing protocols:
+    class .*\bProtocol\):
+
+ignore_errors = True
+
+[html]
+directory = .coverage/html

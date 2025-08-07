@@ -1,0 +1,19 @@
+{% extends base_template %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <form method="post">
+        {% csrf_token %}
+        <ul>
+            <li>Comment: {{ token.comment }}</li>
+            <li>
+                Enabled:
+                {% include "web/_check_icon.html" with value=token.enabled only %}
+            </li>
+            <li>Created at: {{ token.created_at }}</li>
+        </ul>
+        <p>Are you sure you want to delete this token?</p>
+        <button class="btn btn-danger btn-primary btn-sm" type="submit">Delete</button>
+        <a class="btn btn-primary btn-sm"
+           href="{% url "user:token-list" username=person.username %}">Cancel</a>
+    </form>
+{% endblock %}

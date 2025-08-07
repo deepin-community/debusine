@@ -1,0 +1,86 @@
+{% extends base_template %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <table class="table table-sm" id="task-queue">
+        <thead>
+            <tr>
+                <th rowspan=2>Type</th>
+                <th colspan=4>Workers</th>
+                <th colspan=2>Work Requests</th>
+            </tr>
+            <tr>
+                <!-- Workers -->
+                <th>Registered</th>
+                <th>Connected</th>
+                <th>Busy</th>
+                <th>Idle</th>
+                <!-- Work Requests -->
+                <th>Running</th>
+                <th>Pending</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for worker_type, status in worker_status.items|dictsort:0 %}
+                <tr id="worker_type-{{ worker_type.value }}">
+                    <td>{{ worker_type.name|title }}</td>
+                    <td>{{ status.workers.registered }}</td>
+                    <td>{{ status.workers.connected }}</td>
+                    <td>{{ status.workers.busy }}</td>
+                    <td>{{ status.workers.idle }}</td>
+                    <td>{{ status.worker_tasks.running }}</td>
+                    <td>{{ status.worker_tasks.pending }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% if arch_status %}
+        <h2>External tasks by architecture</h2>
+        <table class="table table-sm" id="task-arch-queue">
+            <thead>
+                <tr>
+                    <th rowspan=2>Architecture</th>
+                    <th colspan=4>Workers</th>
+                    <th colspan=2>Work Requests</th>
+                </tr>
+                <tr>
+                    <!-- Workers -->
+                    <th>Registered</th>
+                    <th>Connected</th>
+                    <th>Busy</th>
+                    <th>Idle</th>
+                    <!-- Work Requests -->
+                    <th>Running</th>
+                    <th>Pending</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for arch, status in arch_status.items|dictsort:0 %}
+                    <tr id="arch-{{ arch }}">
+                        <td>
+                            {% if arch == "_none_" %}
+                                Not Specified
+                            {% else %}
+                                {{ arch }}
+                            {% endif %}
+                        </td>
+                        <td>{{ status.external_workers_arch.registered }}</td>
+                        <td>{{ status.external_workers_arch.connected }}</td>
+                        <td>{{ status.external_workers_arch.busy }}</td>
+                        <td>{{ status.external_workers_arch.idle }}</td>
+                        <td>{{ status.worker_tasks_arch.running }}</td>
+                        <td>{{ status.worker_tasks_arch.pending }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <div>
+            Note: Workers may be able to execute tasks for multiple
+            architectures, so they may appear in multiple rows. e.g. 32-bit and
+            64-bit versions of the same architecture.
+            Tasks without a specified architecture can execute on all external
+            workers.
+        </div>
+    {% else %}
+        <p>There are no pending work requests.</p>
+    {% endif %}
+{% endblock %}

@@ -1,0 +1,5 @@
+{
+    "description": "create a debusine workflow",
+    "path": "debusine.client.dput_ng.hooks.create_workflow",
+    "post": true
+}

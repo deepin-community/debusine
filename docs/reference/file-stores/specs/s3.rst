@@ -1,0 +1,32 @@
+.. _file-backend-s3:
+
+S3 file backend
+===============
+
+To use this backend, the store must have its ``provider_account`` set to
+point to :ref:`an asset storing details of an AWS account
+<asset-cloud-provider-account>`.
+
+* Configuration:
+
+  * ``bucket_name``: (string): The name of the S3 bucket to use.
+  * ``storage_class`` (string, optional): The `storage class
+    <https://docs.aws.amazon.com/AmazonS3/latest/userguide/storage-class-intro.html>`__
+    to use for newly-uploaded objects.
+
+* Supports returning local paths: no
+* Supports returning URLs: yes (returns short-lived presigned URLs)
+
+This backend also works with `Hetzner Object Storage
+<https://docs.hetzner.com/storage/object-storage/>`__: in the :ref:`account
+configuration <asset-cloud-provider-account>`, leave ``region_name`` unset
+and set ``s3_endpoint_url`` to ``https://<location
+code>.your-objectstorage.com/`` (e.g.
+``https://hel1.your-objectstorage.com/`` for buckets stored in Helsinki).
+At the time of writing, there may be upload problems if running on Debian
+trixie due to `lack of support for data integrity protection for uploads
+<https://status.hetzner.com/incident/b6382a74-0fd9-4789-b997-65249187fbc7>`__;
+if you encounter this, you can try setting
+``AWS_REQUEST_CHECKSUM_CALCULATION=when_required`` in the environment, or
+downgrading the ``python3-boto3`` and ``python3-botocore`` packages to
+versions earlier than ``1.36.0``.

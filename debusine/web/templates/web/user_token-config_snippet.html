@@ -1,0 +1,9 @@
+<pre id="example-config" style="padding-left: 2em;">
+[General]
+default-server = {{DEBUSINE_FQDN}}
+
+[server:{{DEBUSINE_FQDN}}]
+api-url = https://{{DEBUSINE_FQDN}}/api
+scope = {% if config_scope %}{{config_scope}}{% else %}{% if only_one_scope %}{{scopes.0}}{% else %}<i>{% for scope in scopes %}{{scope}}{% if not forloop.last%} or {% endif %}{% endfor %}</i>{% endif %}{% endif %}
+token = {% if config_token %}{{config_token}}{% else %}<i>generated-token-goes-here</i>{% endif %}
+</pre>

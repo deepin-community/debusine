@@ -1,0 +1,6 @@
+{% extends "web/_file_base.html" %}
+{% block file_contents %}
+    Binary file {{ file_in_artifact.path }} cannot be displayed.
+    you can <a href="{{ file_in_artifact.get_absolute_url_raw }}">view it raw</a>
+    or <a href="{{ file_in_artifact.get_absolute_url_download }}">download</a> it instead.
+{% endblock %}

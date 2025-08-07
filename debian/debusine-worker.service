@@ -1,0 +1,19 @@
+[Unit]
+Description=Debusine Worker
+Documentation=file:///usr/share/doc/debusine-doc/html/howtos/set-up-debusine-worker.html https://freexian-team.pages.debian.net/debusine/howtos/set-up-debusine-worker.html
+After=network.target
+ConditionPathExists=/etc/debusine/worker/config.ini
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+User=debusine-worker
+Group=debusine-worker
+SupplementaryGroups=kvm
+WorkingDirectory=~
+PrivateTmp=true
+ExecStart=/usr/bin/debusine-worker
+Restart=on-failure
+RestartSec=5
+Environment=LANG=C.UTF-8

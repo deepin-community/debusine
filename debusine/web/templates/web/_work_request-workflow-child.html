@@ -1,0 +1,7 @@
+<a href="{{ work_request.get_absolute_url }}">{{ work_request.workflow_display_name }}</a>
+(
+{# TODO: This is quite wordy in this context; consider icons instead. #}
+{% include "web/_work_request-status.html" with status=work_request.status only %}
+{% include "web/_work_request-result.html" with result=work_request.result only %}
+{% if work_request.status != "completed" and work_request.workflow_data.allow_failure %}; allowed to fail{% endif %}
+)

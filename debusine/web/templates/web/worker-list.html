@@ -1,0 +1,11 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>This is a list of all the registered workers and their running work requests.</p>
+    {% if paginator %}
+        {% widget paginator %}
+    {% else %}
+        <p>No workers registered in this debusine instance.</p>
+    {% endif %}
+{% endblock %}

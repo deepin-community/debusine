@@ -1,0 +1,110 @@
+{% extends "web/_base.html" %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <h2>Details</h2>
+    <table class="table table-hover" id="workspace-details">
+        <tbody>
+            <tr id="workspace-details-public">
+                <th>Public</th>
+                <td>{{ workspace.public|yesno:"yes,no" }}</td>
+            </tr>
+            {% if workspace.expiration_delay %}
+                <tr id="workspace-details-expiration">
+                    <th>Expires</th>
+                    <td>{{ workspace.expire_at|date:"Y-m-d" }}</td>
+                </tr>
+            {% endif %}
+            <tr id="workspace-details-default-expiration">
+                <th>Default expiration delay (days)</th>
+                <td>{{ workspace.default_expiration_delay.days|default:"Never" }}</td>
+            </tr>
+            {% if workspace|has_perm:"can_create_artifacts" %}
+                <tr id="workspace-details-configure">
+                    <td colspan="2">
+                        <a class="btn btn-primary"
+                           href="{{ workspace.get_absolute_url_configure }}">Configure</a>
+                    </td>
+                </tr>
+            {% endif %}
+        </tbody>
+    </table>
+    <h2>Workflow templates</h2>
+    <div id="workflow-templates">
+        {% if workflow_templates %}
+            <style>
+    #workflow-templates-list th:nth-last-child(-n+3),
+    #workflow-templates-list td:nth-last-child(-n+3) {
+        width: 1%;
+        white-space: nowrap; /* Prevent wrapping */
+    }
+            </style>
+            <table class="table table-hover" id="workflow-templates-list">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Task name</th>
+                        <th>
+                            <span title="Running workflows" class="badge text-bg-secondary">R</span>
+                        </th>
+                        <th>
+                            <span title="Input needed workflows" class="badge text-bg-secondary">I</span>
+                        </th>
+                        <th>
+                            <span title="Completed workflows" class="badge text-bg-primary">C</span>
+                        </th>
+                    </thead>
+                    <tbody>
+                        {% for t in workflow_templates %}
+                            <tr>
+                                <td>
+                                    <a href="{{ t.get_absolute_url }}">{{ t.name }}</a>
+                                </td>
+                                <td>{{ t.task_name }}</td>
+                                <td>
+                                    <a href="{% url "workspaces:workflows:list" wname=workspace.name %}?statuses=running__any&amp;workflow_templates={{ t.name }}">{{ t.running_workflows }}</a>
+                                </td>
+                                <td>
+                                    <a href="{% url "workspaces:workflows:list" wname=workspace.name %}?statuses=running__needs_input&amp;workflow_templates={{ t.name }}">{{ t.needs_input_workflows }}</a>
+                                </td>
+                                <td>
+                                    <a href="{% url "workspaces:workflows:list" wname=workspace.name %}?statuses=completed&amp;workflow_templates={{ t.name }}">{{ t.completed_workflows }}</a>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                No workflow templates configured for this workspace.
+            {% endif %}
+        </div>
+        {% if collection_stats %}
+            <h2>Collections</h2>
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Count</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in collection_stats %}
+                        <tr>
+                            <td>
+                                <a href="{% url 'workspaces:collections:category_list' wname=workspace.name ccat=s.category %}">{{ s.category }}</a>
+                            </td>
+                            <td>{{ s.count }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td>
+                            <a href="{% url 'workspaces:collections:list' wname=workspace.name %}">All collections</a>
+                        </td>
+                        <td>{{ collection_count }}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        {% endif %}
+    {% endblock %}

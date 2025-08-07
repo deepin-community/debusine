@@ -1,0 +1,116 @@
+{% extends base_template %}
+{% block navbar_left %}
+    {{ block.super }}
+    {% include "web/_collection-menu.html" with collection=collection only %}
+{% endblock %}
+{% block title %}Collection {{ collection.name }}@{{ collection.category }}{% endblock %}
+{% block content %}
+    <h1>{{ collection.name }}@{{ collection.category }} collection</h1>
+    <h2>Details</h2>
+    <table class="table table-hover" id="collection-details-table">
+        <tbody>
+            <tr>
+                <th>Full history retention period (days)</th>
+                <td>{{ collection.full_history_retention_period.days|default:"Always" }}</td>
+            </tr>
+            <tr>
+                <th>Metadata only retention period (days)</th>
+                <td>{{ collection.full_history_retention_period.days|default:"Always" }}</td>
+            </tr>
+            <tr>
+                <th>Retains artifacts</th>
+                <td>{{ collection.get_retains_artifacts_display }}</td>
+            </tr>
+            {% if collection.workflow %}
+                <tr>
+                    <th>Workflow</th>
+                    <td>
+                        <a href="{{ collection.workflow.get_absolute_url }}">{{ collection.workflow }}</a>
+                    </td>
+                </tr>
+            {% endif %}
+        </tbody>
+    </table>
+    {% if data %}
+        <div id="metadata" class="card mb-2">
+            <div class="card-header">Metadata</div>
+            <div class="card-body text-white bg-dark">{{ data }}</div>
+        </div>
+    {% endif %}
+    <h2>Contents</h2>
+    {% if not collections and not artifacts and not bare %}
+        <p>The collection is empty</p>
+    {% else %}
+        <a class="btn btn-primary"
+           href="{% url 'workspaces:collections:search' wname=collection.workspace.name cname=collection.name ccat=collection.category %}">Browse collection</a>
+    {% endif %}
+    {% if collections %}
+        <h3>Collections</h3>
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Category</th>
+                    <th>Collection name</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for i in collections %}
+                    <tr>
+                        <th>
+                            <a href="{{ i.get_absolute_url }}">{{ i.name }}</a>
+                        </th>
+                        <th>{{ i.collection.category }}</th>
+                        <td>
+                            <a href="{{ i.collection.get_absolute_url }}">{{ i.collection.name }}</a>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+    {% if artifacts %}
+        <h3>Artifacts</h3>
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>Category</th>
+                    <th>Count current</th>
+                    <th>Count historical</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for a in artifacts %}
+                    <tr>
+                        <th>
+                            <a href="{% url 'workspaces:collections:search' wname=collection.workspace.name cname=collection.name ccat=collection.category %}?category={{ a.category }}">{{ a.category }}</a>
+                        </th>
+                        <td>{{ a.count }}</td>
+                        <td>{{ a.count_removed }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+    {% if bare %}
+        <h3>Bare data</h3>
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Category</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for i in bare %}
+                    <tr>
+                        <th>
+                            <a href="{{ i.get_absolute_url }}">{{ i.name }}</a>
+                        </th>
+                        <th>{{ i.category }}</th>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+{% endblock %}

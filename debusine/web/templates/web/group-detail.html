@@ -1,0 +1,63 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p id="info-role">
+        {% if role %}
+            You have role <b>{{ role }}</b>.
+        {% else %}
+            You are not a member of this group.
+        {% endif %}
+    </p>
+    {% if group.ephemeral %}
+        <p id="info-ephemeral">The group will be automatically deleted when no longer used."</p>
+    {% endif %}
+    <h2>Users</h2>
+    {% widget members %}
+    {% if can_manage %}
+        <h2>Add user</h2>
+        <form method="post" id="add-user-form">
+            {% csrf_token %}
+            {% for field in form %}
+                <div class="row g-3 align-items-center">
+                    <div class="col-auto">{{ field.label_tag }}</div>
+                    <div class="col-auto">{{ field }}</div>
+                    <div class="col-auto">{{ field.errors }}</div>
+                    <div class="col-auto">
+                        <button class="btn btn-primary" type="submit">Add</button>
+                    </div>
+                </div>
+            {% endfor %}
+        </form>
+    {% endif %}
+    {% if audit_log %}
+        <h2>Audit log</h2>
+        <table class="table table-sm" id="audit_log">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>User</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for a in audit_log %}
+                    <tr>
+                        <td>{{ a.created_at|date:"Y-m-d H:i" }}</td>
+                        <td>{% include "web/_user_link_full.html" with user=a.actor only %}</td>
+                        <td>{{ a.changes_model.description }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+            {% if audit_log_more %}
+                <tfoot>
+                    <tr>
+                        <td colspan="3">
+                            <a href="{% url 'groups:audit-log' group=object.name %}">(view more)</a>
+                        </td>
+                    </tr>
+                </tfoot>
+            {% endif %}
+        </table>
+    {% endif %}
+{% endblock %}

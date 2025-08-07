@@ -1,0 +1,70 @@
+{% extends base_template %}
+{% block tail_js %}
+    {{ block.super }}
+    <script type="module">
+    import { toast_notify } from "debusine";
+    
+    document.getElementById("copy-token").addEventListener("click", evt => {
+        navigator.clipboard.writeText("{{token.key}}").then(() => {
+            let message = document.createElement("div");
+            let icon = document.createElement("i");
+            icon.classList.add("bi", "bi-clipboard-plus");
+            message.append(icon, " Token copied to clipboard");
+            toast_notify({message: message, close_button: false, delay: 1000});
+        });
+    });
+    </script>
+{% endblock %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <div class="alert alert-primary" role="alert">New token created.</div>
+    <table class="table table-sm">
+        <tbody>
+            <tr>
+                <th class="col-2">Created at</th>
+                <td>{{ token.created_at|date:"Y-m-d H:i:s" }}</td>
+            </tr>
+            <tr>
+                <th>Enabled</th>
+                <td>{% include "web/_check_icon.html" with value=token.enabled only %}</td>
+            </tr>
+            <tr>
+                <th>Comment</th>
+                <td>
+                    {% if token.comment %}
+                        {{ token.comment }}
+                    {% else %}
+                        <i>empty</i>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>Token key</th>
+                <td>
+                    <button class="btn btn-primary btn-sm"
+                            type="button"
+                            data-bs-toggle="collapse"
+                            data-bs-target=".token-secret">
+                        <i class="bi bi-search" title="Show/hide token"></i>
+                    </button>
+                    <button class="btn btn-primary btn-sm" type="button" id="copy-token">
+                        <i class="bi bi-clipboard-plus" title="Copy to clipboard"></i>
+                    </button>
+                    <code id="token-key" class="collapse token-secret ms-2">{{ token.key }}</code>
+                    <div class="collapse token-secret">
+                        <p></p>
+                        <p>
+                            Here is an example <tt>~/.config/debusine/client/config.ini</tt> file:
+                        </p>
+                        {% include "web/user_token-config_snippet.html" with config_token=token.key %}
+                    </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="alert alert-warning" role="alert">
+        <b>Save the token key:</b> The server does not keep a copy. If you lose it you need to generate a new one.
+    </div>
+    <a class="btn btn-primary btn-sm"
+       href="{% url "user:token-list" username=person.username %}">Token list</a>
+{% endblock %}

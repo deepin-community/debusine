@@ -1,0 +1,20 @@
+[Unit]
+Description=Daily cleanup of Debusine expired or unused objects
+Documentation=file:///usr/share/doc/debusine-doc/html/reference/debusine-admin-cli.html#command-delete-expired https://freexian-team.pages.debian.net/debusine/reference/debusine-admin-cli.html#command-delete-expired
+After=debusine-server-migrate.service
+Requires=debusine-server-migrate.service
+
+[Service]
+Type=oneshot
+
+Nice=19
+
+User=debusine-server
+Group=debusine-server
+
+ExecStartPre=/usr/bin/debusine-admin check
+ExecStart=/usr/bin/debusine-admin delete_expired
+
+WorkingDirectory=~
+PrivateTmp=True
+Environment=LANG=C.UTF-8

@@ -1,0 +1,8 @@
+etc/debusine/server/
+usr/lib/python3*/dist-packages/debusine/db/
+usr/lib/python3*/dist-packages/debusine/project/
+usr/lib/python3*/dist-packages/debusine/server/
+usr/lib/python3*/dist-packages/debusine/web/
+
+# For dependency calculation; we'll remove this later to avoid conflicts.
+usr/lib/python3*/dist-packages/debusine-*.dist-info/

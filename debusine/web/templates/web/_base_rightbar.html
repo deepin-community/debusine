@@ -1,0 +1,31 @@
+{% extends "web/_base.html" %}
+{% load debusine %}
+{% block main-layout %}
+    <div class="row">
+        <div class="col-8">
+            {% block content %}{% endblock %}
+        </div>
+        <div class="col-4">
+            <div class="btn-group"
+                 role="toolbar"
+                 aria-label="Shortcuts"
+                 id="right-sidebar-shortcuts">
+                {% block ui-shortcuts %}
+                    {% for shortcut in main_ui_shortcuts %}
+                        {% widget shortcut %}
+                    {% endfor %}
+                {% endblock %}
+            </div>
+            {% block sidebar %}
+                {% if sidebar_items %}
+                    <div id="workrequest-sidebar" class="mt-2 list-group">
+                        {% for item in sidebar_items %}
+                            {% widget item %}
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endblock %}
+            {% block content-right %}{% endblock %}
+        </div>
+    </div>
+{% endblock %}

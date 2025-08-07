@@ -1,0 +1,15 @@
+<details open>
+    <summary>{% include "web/_work_request-workflow-child.html" %}</summary>
+    <ul>
+        {# TODO: This should be batched. #}
+        {% for child in work_request.children.all %}
+            <li>
+                {% if child.children.all %}
+                    {% include "web/_work_request-descendants.html" with work_request=child only %}
+                {% else %}
+                    {% include "web/_work_request-workflow-child.html" with work_request=child only %}
+                {% endif %}
+            </li>
+        {% endfor %}
+    </ul>
+</details>

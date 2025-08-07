@@ -1,0 +1,18 @@
+#!/bin/sh
+
+set -e
+
+service postgresql start
+
+runuser -u postgres -- createuser --createdb debusine-signing
+
+cd "$AUTOPKGTEST_TMP"
+
+cat << EOF >> /etc/debusine/signing/test.py
+
+# Use paths from the package (e.g. logs into /var/log/debusine/signing)
+from .pkg_paths import *  # noqa
+EOF
+
+export DJANGO_SETTINGS_MODULE=debusine.signing.settings
+runuser -u debusine-signing -- django-admin test -v 2 debusine.signing

@@ -1,0 +1,9 @@
+{% extends "web/_file_base.html" %}
+{% block file_contents %}
+    <div class="d-flex flex-nowrap">
+        <div class="flex-shrink">
+            <pre class='me-2 file_contents_lineno'>{{ file_linenumbers }}</pre>
+        </div>
+        <div class="flex-fill flex-grow overflow-auto">{{ file_content }}</div>
+    </div>
+{% endblock %}

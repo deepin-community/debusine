@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+#
+# Copyright © The Debusine Developers
+# See the AUTHORS file at the top-level directory of this distribution
+#
+# This file is part of Debusine. It is subject to the license terms
+# in the LICENSE file found in the top-level directory of this
+# distribution. No part of Debusine, including this file, may be copied,
+# modified, propagated, or distributed except according to the terms
+# contained in the LICENSE file.
+
+"""
+Example script to populate a debusine instance with example data.
+
+This is useful to get a full example local database to use for UI development
+"""
+
+
+import contextlib
+import logging
+import os
+import shlex
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import django
+import yaml
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'debusine.project.settings')
+django.setup()
+from django.db import transaction  # noqa: E402, I100, I202
+
+from debusine.db.models import Group, User, Worker, WorkerPool  # noqa: E402
+from debusine.db.models.auth import Identity  # noqa: E402
+from debusine.db.playground import Playground, scenarios  # noqa: E402
+
+
+def debusine(*args: str, **kwargs: Any) -> subprocess.CompletedProcess:
+    """Run debusine client."""
+    kwargs.setdefault("check", True)
+
+    cmdline = ["python3", "-m", "debusine.client"]
+    cmdline.extend(args)
+
+    logging.info("%s", shlex.join(cmdline))
+    return subprocess.run(cmdline, **kwargs)
+
+
+def debusine_admin(
+    *args: str, input_data: dict[str, Any] | None = None, **kwargs: Any
+) -> subprocess.CompletedProcess:
+    """Run debusine-admin."""
+    kwargs.setdefault("check", True)
+
+    # If debusine-admin is not installed, fall back to ./manage.py.
+    # This should allow running the playground from a git checkout, while still
+    # working as an example script with debusine installed
+    if (debusine_admin := shutil.which("debusine-admin")) is None:
+        import debusine
+
+        debusine_admin = str(
+            Path(debusine.__file__).parent.parent / "manage.py"
+        )
+
+    cmdline = [debusine_admin]
+    cmdline.extend(args)
+
+    with contextlib.ExitStack() as stack:
+        if input_data is not None:
+            tmpfile = stack.enter_context(tempfile.TemporaryFile(mode="w+t"))
+            yaml.safe_dump(input_data, stream=tmpfile)
+            tmpfile.seek(0)
+            kwargs["stdin"] = tmpfile
+
+        logging.info("%s", shlex.join(cmdline))
+        return subprocess.run(cmdline, **kwargs)
+
+
+def remove_playground():
+    """Remove data from an old playground, if present."""
+    debusine_admin(
+        "delete_workspace", "debusine/Playground", "--yes", "--force"
+    )
+    Group.objects.filter(name="Playground").delete()
+    User.objects.filter(username="playground-other").delete()
+    Identity.objects.filter(subject="playground@debian.example.org").delete()
+    Worker.objects.filter(name__startswith="playground").delete()
+    for wp in WorkerPool.objects.filter(name="playground").select_related(
+        "provider_account"
+    ):
+        wp.delete()
+        wp.provider_account.delete()
+
+
+def main():
+    """Run the populate program."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    with transaction.atomic():
+        remove_playground()
+
+        playground = Playground(
+            default_user_password="playground",
+            default_workspace_name="Playground",
+        )
+        scenario = scenarios.UIPlayground()
+        playground.build_scenario(scenario)
+
+
+if __name__ == '__main__':
+    main()

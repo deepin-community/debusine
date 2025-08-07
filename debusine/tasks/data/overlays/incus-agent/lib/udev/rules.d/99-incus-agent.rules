@@ -1,0 +1,9 @@
+# Source: https://github.com/lxc/distrobuilder/blob/main/generators/incus-agent.go
+# @ 06a0fa20a06548b590fb9247e535eb93f3dc2c58
+# Copyright: 2020-2024, The distrobuilder authors
+# License: Apache 2.0
+
+SYMLINK=="virtio-ports/org.linuxcontainers.incus", TAG+="systemd", ENV{SYSTEMD_WANTS}+="incus-agent.service"
+
+# Legacy.
+SYMLINK=="virtio-ports/org.linuxcontainers.lxd", TAG+="systemd", ENV{SYSTEMD_WANTS}+="incus-agent.service"

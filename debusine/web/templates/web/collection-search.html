@@ -1,0 +1,27 @@
+{% extends base_template %}
+{% load debusine %}
+{% block navbar_left %}
+    {{ block.super }}
+    {% include "web/_collection-menu.html" with collection=collection only %}
+{% endblock %}
+{% block title %}Search collection {{ collection.name }}@{{ collection.category }}{% endblock %}
+{% block content %}
+    <h1>Search {{ collection.name }}@{{ collection.category }} collection</h1>
+    <div class="container">
+        <div class="row">
+            <div class="col-6">
+                <form method="get" action=".">
+                    {{ form.as_p }}
+                    <p>
+                        <button type="submit" class="btn btn-primary">Search</button>
+                    </p>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% if paginator %}
+        {% widget paginator %}
+    {% else %}
+        <p>No results.</p>
+    {% endif %}
+{% endblock %}

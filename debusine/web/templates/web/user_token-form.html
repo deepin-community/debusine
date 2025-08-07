@@ -1,0 +1,9 @@
+{% extends base_template %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <input class="btn btn-primary btn-sm" type="submit" value="{{ action }}">
+    </form>
+{% endblock %}

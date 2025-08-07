@@ -1,0 +1,984 @@
+#!/usr/bin/python3
+#
+# Copyright © The Debusine Developers
+# See the AUTHORS file at the top-level directory of this distribution
+#
+# This file is part of Debusine. It is subject to the license terms
+# in the LICENSE file found in the top-level directory of this
+# distribution. No part of Debusine, including this file, may be copied,
+# modified, propagated, or distributed except according to the terms
+# contained in the LICENSE file.
+
+"""
+Manage temporary VMs to discuss UI prototypes.
+
+Setup:
+
+1. apt install python3-gitlab python3-hcloud python3-rich
+2. edit ~/.config/freexian.ini:
+   [tokens]
+   hetzner_debusine_playground = <hetzner API token>
+   hetzner_debusine_dev_dns = <hetzner DNS token>
+   debusine_playground_password = <password-for-accessing-the-playground>
+3. add your ssh key to the ssh keys in the Debusine Playground project on
+   Hetzner
+4. if you need to use only ipv4 to connect to the server, also add:
+   [debusine]
+   force_ipv4 = true
+
+Usage:
+
+* `playground-vm list`: lists open MRs and corresponding servers (if any)
+* `playground-vm create`: nnn create a server for the given MR
+* `playground-vm provision nnn`: provision the server
+* `playground-vm delete nnn`: remove the server
+* `playground-vm login nnn`: root login on the given server
+
+To redeploy the MR branch after iterating on changes:
+
+* `playground-vm provision nnn`
+"""
+
+import abc
+import argparse
+import contextlib
+import json
+import logging
+import os
+import subprocess
+import sys
+import tempfile
+from collections import defaultdict
+from configparser import ConfigParser
+from functools import cached_property
+from pathlib import Path
+from typing import Any, NamedTuple, Self
+
+import gitlab
+import gitlab.v4.objects
+import hcloud
+import requests
+import rich
+import yaml
+from rich import box
+from rich.table import Table
+
+log = logging.getLogger("playground-vm")
+
+OS_IMAGE = "debian-12"
+
+
+class Fail(Exception):
+    """There was an error in playground VM management."""
+
+
+DEPLOY_PLAYBOOK = r"""
+- name: Provision a playground system
+  hosts: all
+  vars:
+    debusine_packages:
+     - python3-debusine
+     - python3-debusine-signing
+     - python3-debusine-server
+     - debusine-server
+  handlers:
+   - name: Restart nginx
+     ansible.builtin.service:
+       name: nginx
+       state: restarted
+  tasks:
+   - name: Set hostname
+     ansible.builtin.hostname:
+       name: "{{hostname}}"
+   - name: Enable backports
+     copy:
+        owner: root
+        group: root
+        mode: 0644
+        dest: /etc/apt/sources.list.d/debian-bookworm-backports.list
+        content: |
+           deb [arch=amd64] https://deb.debian.org/debian/ bookworm-backports main contrib
+   - name: Update after enabling backports
+     apt:
+       update_cache: yes
+   - name: Install git
+     ansible.builtin.apt:
+       name: [git, eatmydata, dpkg-dev, nginx, certbot, python3-certbot-nginx, fail2ban]
+       state: present
+       update_cache: true
+       cache_valid_time: 3600
+   - name: "Fetch debusine branch {{source_repository_path}}:{{source_branch}}"
+     ansible.builtin.git:
+       dest: "/srv/sources/debusine"
+       repo: "https://salsa.debian.org/{{source_repository_path}}.git"
+       version: "{{source_branch}}"
+       force: true
+     register: fetch_sources
+   - name: Install debusine build-deps
+     ansible.builtin.apt:
+       name: "/srv/sources/debusine"
+       state: build-dep
+       default_release: bookworm-backports
+   - name: Rebuild debusine source
+     ansible.builtin.shell:
+       cmd: "DEB_BUILD_OPTIONS='nocheck' eatmydata dpkg-buildpackage -us -uc"
+       chdir: "/srv/sources/debusine"
+     when: fetch_sources.changed
+   - name: Find debusine version
+     ansible.builtin.shell:
+       cmd: "dpkg-parsechangelog -SVersion"
+       chdir: "/srv/sources/debusine"
+     register: deb
+   - name: "Remove old versions of built debs"
+     ansible.builtin.apt:
+       name: "{{item}}"
+       state: absent
+     loop: "{{debusine_packages|reverse}}"
+   - name: "Install built debs"
+     ansible.builtin.apt:
+       deb: "/srv/sources/{{item}}_{{deb.stdout}}_all.deb"
+       default_release: bookworm-backports
+     loop: "{{debusine_packages}}"
+   - name: "Create debusine-server postgres user"
+     become: yes
+     become_user: postgres
+     community.postgresql.postgresql_user:
+       name: debusine-server
+   - name: "Create debusine postgres db"
+     become: yes
+     become_user: postgres
+     community.postgresql.postgresql_db:
+       name: debusine
+       owner: debusine-server
+   - name: Initialize database
+     become: yes
+     become_user: debusine-server
+     ansible.builtin.command:
+       argv: ["debusine-admin", "migrate"]
+   - name: Populate database
+     become: yes
+     become_user: debusine-server
+     ansible.builtin.command:
+       argv: ["/srv/sources/debusine/bin/playground-populate"]
+   - name: "Get https certificate for {{hostname}}"
+     ansible.builtin.command:
+       argv: [certbot, run, "--nginx", "--domain", "{{hostname}}",
+              "--noninteractive", "--agree-tos",
+              "--register-unsafely-without-email",
+              "--cert-name", "playground"]
+       creates: /etc/letsencrypt/live/playground/fullchain.pem
+   - name: Remove default nginx configuration
+     ansible.builtin.file:
+       state: absent
+       path: /etc/nginx/sites-enabled/default
+   - name: Configure nginx (copy template file)
+     ansible.builtin.copy:
+       remote_src: true
+       src: /usr/share/doc/debusine-server/examples/nginx-vhost.conf
+       dest: /etc/nginx/sites-enabled/debusine
+     notify: Restart nginx
+   - name: Configure nginx (edit template file)
+     ansible.builtin.lineinfile:
+       path: /etc/nginx/sites-enabled/debusine
+       line: "{{item.name}} {{item.value}};"
+       regexp: "^\\s*{{item.name}} "
+     loop:
+      - { name: server_name, value: "{{hostname}}" }
+      - { name: ssl_certificate, value: "/etc/letsencrypt/live/playground/fullchain.pem" }
+      - { name: ssl_certificate_key, value: "/etc/letsencrypt/live/playground/privkey.pem" }
+     notify: Restart nginx
+   - name: Add a master password to access the playground (htpasswd)
+     community.general.htpasswd:
+       path: /etc/nginx/playground.htpasswd
+       name: playground
+       password: "{{playground_password}}"
+       owner: root
+       group: www-data
+       mode: 0640
+     notify: Restart nginx
+   - name: Add a master password to access the playground (config)
+     ansible.builtin.blockinfile:
+       path: /etc/nginx/sites-enabled/debusine
+       insertafter: "location / {"
+       block: |
+         auth_basic           "Debusine Playground";
+         auth_basic_user_file /etc/nginx/playground.htpasswd;
+       marker: "# {mark} ANSIBLE MANAGED AUTH BLOCK"
+     notify: Restart nginx
+"""  # noqa: E501
+
+
+def load_config() -> ConfigParser:
+    """Load configuration from freexian.ini."""
+    config_home = Path(
+        os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+    )
+    config_file = config_home / "freexian.ini"
+
+    config = ConfigParser()
+    config.read([config_file])
+
+    config.add_section("META")
+    config.set("META", "source", str(config_file))
+    return config
+
+
+class ServerName(NamedTuple):
+    """Parsed server name."""
+
+    mr: int
+    type: str = "playground"
+    variant: str = "default"
+
+    def __str__(self) -> str:
+        """Format the server name."""
+        if self.variant == "default":
+            return f"{self.type}-{self.mr}"
+        else:
+            return f"{self.type}-{self.mr}-{self.variant}"
+
+    @classmethod
+    def parse(cls, text: str) -> Self:
+        """Parse a server name."""
+        match text.count("-"):
+            case 0:
+                raise ValueError(f"Server name {text!r} contains no dashes")
+            case 1:
+                server_type, mr = text.split("-", 1)
+                return cls(type=server_type, mr=int(mr))
+            case _:
+                server_type, mr, variant = text.split("-", 2)
+                return cls(type=server_type, mr=int(mr), variant=variant)
+
+
+class Playground(contextlib.ExitStack):
+    """
+    Common infrastructure to manage one playground VM.
+
+    A playground VM is identified by the number of a Debusine merge request and
+    optionally a variant identifier.
+    """
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        """Construct a Playground object."""
+        super().__init__()
+        self.args = args
+        self.config = load_config()
+
+        self.gitlab = gitlab.Gitlab("https://salsa.debian.org")
+        self.debusine = self.gitlab.projects.get("freexian-team/debusine")
+
+        token = self.config.get(
+            "tokens", "hetzner_debusine_playground", fallback=None
+        )
+        if token is None:
+            raise Fail(
+                "[tokens]/hetzner_debusine_playground not set in "
+                + self.config.get("META", "source")
+            )
+
+        self.hetzner = hcloud.Client(token=token)
+        self.dns = DNS(args)
+
+        self.playground_password = self.config.get(
+            "tokens", "debusine_playground_password"
+        )
+
+    def __enter__(self) -> Self:
+        """Enter context."""
+        super().__enter__()
+        self.enter_context(self.dns)
+        return self
+
+    @cached_property
+    def server_name(self) -> ServerName:
+        """Get the server name given a MR and a variant."""
+        return ServerName(mr=int(self.args.mr), variant=self.args.variant)
+
+    @cached_property
+    def mr(self) -> gitlab.v4.objects.MergeRequest:
+        """Get the gitlab merge request object."""
+        return self.debusine.mergerequests.get(self.args.mr)
+
+    @cached_property
+    def mr_source_repository_path(self) -> str:
+        """Get the merge request's source repository path."""
+        return self.gitlab.projects.get(
+            self.mr.source_project_id
+        ).path_with_namespace
+
+    @cached_property
+    def server(self) -> hcloud.servers.client.BoundServer:
+        """Return the user-selected hcloud server object."""
+        server = self.hetzner.servers.get_by_name(str(self.server_name))
+        if server is None:
+            raise Fail(f"Server {self.server_name} does not exist")
+        return server
+
+    def get_address_ipv6(
+        self, server: hcloud.servers.client.BoundServer
+    ) -> str:
+        """Get the IPv6 address to connect to the server."""
+        return server.public_net.ipv6.ip.split("/")[0] + "1"
+
+    def get_address_ipv4(
+        self, server: hcloud.servers.client.BoundServer
+    ) -> str:
+        """Get the IPv4 address to connect to the server."""
+        return server.public_net.ipv4.ip
+
+    def get_address_ssh(self, server: hcloud.servers.client.BoundServer) -> str:
+        """Get the address to use to connect via ssh."""
+        if self.config.getboolean("debusine", "force_ipv4", fallback=False):
+            return self.get_address_ipv4(server)
+        else:
+            return self.get_address_ipv6(server)
+
+    @cached_property
+    def address_ipv6(self) -> str:
+        """Return the IPv6 address to connect to the server."""
+        return self.get_address_ipv6(self.server)
+
+    @cached_property
+    def address_ipv4(self) -> str:
+        """Return the IPv4 address to connect to the server."""
+        return self.get_address_ipv4(self.server)
+
+    @cached_property
+    def address_ssh(self) -> str:
+        """Return the address to connect to the server via ssh."""
+        return self.get_address_ssh(self.server)
+
+    def create_server_dns_record(
+        self, server: hcloud.servers.client.BoundServer | None = None
+    ) -> None:
+        """Create a server DNS record."""
+        if server is None:
+            server = self.server
+        address = self.get_address_ipv6(server)
+        log.info("Creating DNS record %s AAAA %s", server.name, address)
+        self.dns.create_record(name=server.name, type="AAAA", value=address)
+        address = self.get_address_ipv4(server)
+        log.info("Creating DNS record %s A %s", server.name, address)
+        self.dns.create_record(name=server.name, type="A", value=address)
+
+    def delete_server_dns_record(self, record: dict[str, Any]) -> None:
+        """Create a server DNS record."""
+        log.info(
+            "Deleting DNS record %s %s %s",
+            record["name"],
+            record["type"],
+            record["value"],
+        )
+        self.dns.delete_record(record["id"])
+
+    def print_server_status(
+        self, server: hcloud.servers.client.BoundServer | None = None
+    ) -> None:
+        """Output the status of a server."""
+        if server is None:
+            server = self.server
+
+        hostname = server.name + "." + self.dns.domain
+
+        grid = Table.grid(padding=(0, 1, 0, 0))
+        grid.add_column(style="bold", justify="right")
+        grid.add_column()
+        grid.add_row("Name: ", f"[link=https://{hostname}]{hostname}[/link]")
+        grid.add_row("Status: ", server.status)
+        grid.add_row("IPv6: ", server.public_net.ipv6.ip)
+        grid.add_row("IPv4: ", server.public_net.ipv4.ip)
+
+        rich.print(grid)
+
+    def delete_server(
+        self, server: hcloud.servers.client.BoundServer | None = None
+    ) -> None:
+        """Delete a server."""
+        if server is None:
+            server = self.server
+
+        addresses = [
+            self.get_address_ipv6(server),
+            self.get_address_ipv4(server),
+            server.name + "." + self.dns.domain,
+        ]
+
+        server.delete()
+
+        # Delete DNS record
+        try:
+            record = self.dns.get_record(server.name)
+        except KeyError:
+            pass
+        else:
+            self.delete_server_dns_record(record)
+
+        # Remove a cached known_host key
+        for address in addresses:
+            subprocess.run(
+                [
+                    "ssh-keygen",
+                    "-f",
+                    os.path.expanduser("~/.ssh/known_hosts"),
+                    "-R",
+                    address,
+                ],
+            )
+
+
+class DNS(contextlib.ExitStack):
+    """Common infrastructure to manage debusine.dev DNS."""
+
+    def __init__(
+        self, args: argparse.Namespace, domain: str = "debusine.dev"
+    ) -> None:
+        """Construct a DNS object."""
+        super().__init__()
+        self.args = args
+        self.domain = domain
+        self.config = load_config()
+        token = self.config.get(
+            "tokens", "hetzner_debusine_dev_dns", fallback=None
+        )
+        if token is None:
+            raise Fail(
+                "[tokens]/hetzner_debusine_dev_dns not set in "
+                + self.config.get("META", "source")
+            )
+        self.base_url = "https://dns.hetzner.com/api/v1/"
+        self.session = requests.session()
+        self.session.headers.update(
+            {
+                "Content-Type": "application/json",
+                "Auth-API-Token": token,
+            }
+        )
+
+    def __enter__(self) -> Self:
+        """Enter context."""
+        super().__enter__()
+        self.enter_context(self.session)
+        return self
+
+    def _process_response(self, response: requests.Response) -> dict[str, Any]:
+        """Check for errors in an API response, and return the payload."""
+        result: dict[str, Any] = response.json()
+        if not response.ok:
+            # I have not found Hetzner API documentation for error reporting,
+            # so I am using this code as a substitute reference:
+            # https://github.com/arcanemachine/hetzner-dns-tools/blob/master/src/hetzner_dns_tools/hetzner_dns_helpers.py
+            error_message = f"{response.status_code} {response.reason}"
+            if result.get('error'):
+                error_message += ": " + result['error']['message']
+            elif result.get('message'):
+                error_message += ": " + result['message']
+            raise RuntimeError(f"{response.request.url}: {error_message}")
+        return result
+
+    def get(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        """Perform a GET API request."""
+        response = self.session.get(url=self.base_url + endpoint, params=kwargs)
+        return self._process_response(response)
+
+    def post(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        """Perform a POST API request."""
+        response = self.session.post(
+            url=self.base_url + endpoint, data=json.dumps(kwargs)
+        )
+        return self._process_response(response)
+
+    def delete(self, endpoint: str) -> dict[str, Any]:
+        """Perform a DELETE API request."""
+        response = self.session.delete(url=self.base_url + endpoint)
+        return self._process_response(response)
+
+    def records(self, **kwargs) -> list[dict[str, Any]]:
+        """List DNS records."""
+        return self.get("records", **kwargs)["records"]
+
+    def zones(self, **kwargs) -> list[dict[str, Any]]:
+        """List DNS zones."""
+        return self.get("zones", **kwargs)["zones"]
+
+    @cached_property
+    def zone_id(self) -> str:
+        """Get the zone ID for the default domain."""
+        for zone in self.zones(name=self.domain):
+            return zone["id"]
+        raise KeyError(f"Zone not found for domain {self.domain!r}")
+
+    def create_record(self, **kwargs: Any) -> dict[str, Any]:
+        """Create a DNS record."""
+        kwargs.setdefault("ttl", 300)
+        kwargs.setdefault("zone_id", self.zone_id)
+        response = self.post("records", **kwargs)
+        return response["record"]
+
+    def delete_record(self, record_id: str) -> None:
+        """Delete a DNS record."""
+        self.delete("records/" + record_id)
+
+    def get_record(self, name: str) -> dict[str, Any]:
+        """Get a DNS record."""
+        for record in self.records():
+            if record["name"] == name:
+                return record
+        raise KeyError(f"DNS record not found for {name!r}")
+
+
+class AnsibleEnvironment(contextlib.ExitStack):
+    """Temporary ansible environment for remote provisioning."""
+
+    workdir: Path
+    path_inventory: Path
+    path_playbook: Path
+
+    def __init__(self, playground: Playground) -> None:
+        """Construct an AnsibleEnvironment object."""
+        super().__init__()
+        self.playground = playground
+        self.playbook = yaml.safe_load(DEPLOY_PLAYBOOK)
+        self.playbook[0]["vars"].update(
+            {
+                "hostname": self.playground.server.name
+                + "."
+                + self.playground.dns.domain,
+                "source_repository_path": (
+                    self.playground.mr_source_repository_path
+                ),
+                "source_branch": self.playground.mr.source_branch,
+                "playground_password": self.playground.playground_password,
+            }
+        )
+
+    def __enter__(self) -> Self:
+        """Enter context."""
+        super().__enter__()
+        self.workdir = Path(self.enter_context(tempfile.TemporaryDirectory()))
+        self.path_inventory = self.workdir / "hosts"
+        self.path_playbook = self.workdir / "deploy.yml"
+        return self
+
+    def run_playbook(self) -> None:
+        """Run the Ansible playbook for this environment."""
+        address = self.playground.address_ssh
+        with self.path_inventory.open("w") as fd:
+            print(
+                f"{self.playground.server_name}"
+                " ansible_user=root"
+                f" ansible_host={address}",
+                file=fd,
+            )
+
+        with self.path_playbook.open("w") as fd:
+            yaml.safe_dump(self.playbook, stream=fd)
+
+        env = dict(os.environ)
+        env["ANSIBLE_NOCOWS"] = "1"
+        subprocess.run(
+            [
+                "ansible-playbook",
+                "-i",
+                str(self.path_inventory),
+                str(self.path_playbook),
+            ],
+            check=True,
+            cwd=self.workdir,
+            env=env,
+        )
+
+
+class Command(contextlib.ExitStack, abc.ABC):
+    """Base class for actions run from command line."""
+
+    NAME: str | None = None
+
+    def __init__(self, args: argparse.Namespace):
+        """Initialize this subcommand."""
+        super().__init__()
+        if self.NAME is None:
+            self.NAME = self.__class__.__name__.lower()
+        self.args = args
+        self.setup_logging()
+        self.playground = Playground(args)
+
+    def __enter__(self) -> Self:
+        """Enter context."""
+        super().__enter__()
+        self.enter_context(self.playground)
+        return self
+
+    @classmethod
+    def add_subparser(cls, subparsers):
+        """Create a subparser for this command."""
+        if cls.NAME is None:
+            cls.NAME = cls.__name__.lower()
+        parser = subparsers.add_parser(cls.NAME, help=cls.__doc__.strip())
+        parser.set_defaults(command=cls)
+        parser.add_argument(
+            "--quiet", "-q", action="store_true", help="quiet output"
+        )
+        parser.add_argument("--debug", action="store_true", help="debug output")
+        return parser
+
+    def setup_logging(self) -> None:
+        """Set up logging."""
+        log_format = "%(levelname)s %(message)s"
+        level = logging.INFO
+        if self.args.debug:
+            level = logging.DEBUG
+        elif self.args.quiet:
+            level = logging.WARN
+        logging.basicConfig(level=level, stream=sys.stderr, format=log_format)
+
+    @abc.abstractmethod
+    def run(self) -> None:
+        """Run this subcommand."""
+        ...
+
+
+class ServerCommand(Command):
+    """Base class for commands that act on a server instance."""
+
+    @classmethod
+    def add_subparser(cls, subparsers):
+        """Add generic options for server commands."""
+        parser = super().add_subparser(subparsers)
+        parser.add_argument("mr", help="merge request number")
+        parser.add_argument(
+            "variant", nargs="?", default="default", help="playground variant"
+        )
+        return parser
+
+
+class List(Command):
+    """List existing playground servers."""
+
+    def run(self) -> None:
+        """Run `list` command."""
+        # Load information on opened merge requests
+        mrs = {}
+        for mr in self.playground.debusine.mergerequests.list(state="opened"):
+            mrs[mr.iid] = mr
+
+        # Load information on existing servers
+        servers = defaultdict(dict)
+        for server in self.playground.hetzner.servers.get_all():
+            try:
+                server_name = ServerName.parse(server.name)
+            except ValueError as e:
+                log.warning(  # noqa: G200
+                    "Invalid server name %r: %s", server.name, e
+                )
+            if server_name.type != "playground":
+                log.warning(
+                    "Server %r has unsupported type prefix %r",
+                    server.name,
+                    server_name.type,
+                )
+                continue
+            servers[server_name.mr][server_name.variant] = server
+
+        mr_table = Table(box=box.SIMPLE)
+        mr_table.add_column("MR")
+        mr_table.add_column("Author")
+        mr_table.add_column("Branch")
+        mr_table.add_column("Title")
+        mr_table.add_column("Servers")
+
+        for mr in mrs.values():
+            if (variants := servers.get(mr.iid, None)) is None:
+                server_names = "none"
+            else:
+                server_names = ", ".join(
+                    f"[link=https://{server.name}.{self.playground.dns.domain}]"
+                    f"{name}[/link]"
+                    for name, server in sorted(variants.items())
+                )
+            mr_table.add_row(
+                f"[link={mr.web_url}]!{mr.iid}[/link]",
+                f"[link={mr.author['web_url']}]{mr.author['name']}[/link]",
+                f"{mr.source_branch}",
+                mr.title,
+                server_names,
+            )
+
+        server_table = Table(box=box.SIMPLE)
+        server_table.add_column("MR")
+        server_table.add_column("Variant")
+        server_table.add_column("Name")
+        server_table.add_column("Status")
+        for mr, servers in servers.items():
+            for variant, server in servers.items():
+                server_table.add_row(
+                    f"!{mr}", variant, server.name, server.status
+                )
+
+        print("* Open merge requests")
+        rich.print(mr_table)
+
+        print("* Servers")
+        rich.print(server_table)
+
+
+class Create(ServerCommand):
+    """Create a new playground server."""
+
+    @classmethod
+    def add_subparser(cls, subparsers):
+        """Add options for `create` command."""
+        parser = super().add_subparser(subparsers)
+        parser.add_argument("--type", default="cx22", help="server type")
+        parser.add_argument(
+            "--force", "-f", action="store_true", help="force creation"
+        )
+        return parser
+
+    def run(self) -> None:
+        """Run `create` command."""
+        if not self.args.force and self.playground.mr.state != "opened":
+            raise Fail(f"!{self.args.mr} is not an open merge request")
+
+        hclient = self.playground.hetzner
+        server_name = self.playground.server_name
+
+        server = hclient.servers.get_by_name(str(server_name))
+        if server is not None:
+            raise Fail(f"Server {server_name} already exists")
+
+        # List SSH keys
+        ssh_keys = []
+        for key in hclient.ssh_keys.get_all():
+            ssh_keys.append(key)
+        if not ssh_keys:
+            raise Fail(
+                "No ssh keys configured for this user in the Debusine "
+                "Playground hetzner project"
+            )
+
+        server_type = hclient.server_types.get_by_name(self.args.type)
+        if server_type is None:
+            raise Fail(f"Server type {self.args.type} not found")
+
+        image = hclient.images.get_by_name(OS_IMAGE)
+        if image is None:
+            raise Fail(f"Image {OS_IMAGE} not found")
+
+        response = hclient.servers.create(
+            name=str(server_name),
+            server_type=server_type,
+            image=image,
+            ssh_keys=ssh_keys,
+            # TODO: skip IPv4?
+            # TODO: ssh host keys?
+            # see https://cloudinit.readthedocs.io/en/latest/reference/modules.html#host-keys "Host keys"  # noqa: E501
+            # and user_data: str is a cloud-init user data
+        )
+        server = response.server
+        self.playground.create_server_dns_record(server)
+        self.playground.print_server_status(server)
+
+
+class Delete(ServerCommand):
+    """Delete a playground server."""
+
+    def run(self) -> None:
+        """Run `delete` command."""
+        self.playground.delete_server()
+
+
+class Login(ServerCommand):
+    """Log into a server."""
+
+    def run(self):
+        """Run `login` command."""
+        address = self.playground.address_ssh
+        # TODO: run ssh-keygen to edit host keys to auth?
+        os.execlp("ssh", "ssh", f"root@{address}")
+
+
+class Provision(ServerCommand):
+    """Provision a newly created server."""
+
+    def run(self):
+        """Run `provision` command."""
+        with AnsibleEnvironment(self.playground) as env:
+            env.run_playbook()
+
+
+class Status(ServerCommand):
+    """Status of a running server."""
+
+    def run(self):
+        """Run `status` command."""
+        self.playground.print_server_status()
+
+
+class Cleanup(Command):
+    """Remove servers for closed MRs."""
+
+    @classmethod
+    def add_subparser(cls, subparsers):
+        """Add options for `cleanup` command."""
+        parser = super().add_subparser(subparsers)
+        parser.add_argument(
+            "--dry-run",
+            "-n",
+            action="store_true",
+            help="check only, do not delete",
+        )
+        return parser
+
+    def run(self) -> None:
+        """Run `cleanup` command."""
+        # Load list of opened merge requests
+        mrs: set[int] = set()
+        for mr in self.playground.debusine.mergerequests.list(state="opened"):
+            mrs.add(mr.iid)
+
+        # Load list of existing servers
+        servers: dict[str, list[hcloud.servers.client.BoundServer]] = (
+            defaultdict(list)
+        )
+        for server in self.playground.hetzner.servers.get_all():
+            server_name = ServerName.parse(server.name)
+            if server_name.type != "playground":
+                log.warning(
+                    "Server %r has unsupported type prefix %r",
+                    server.name,
+                    server_name.type,
+                )
+                continue
+            servers[server_name.mr].append(server)
+
+        for iid in servers.keys() - mrs:
+            for server in servers[iid]:
+                print(f"Expired server: {server.name}")
+                if not self.args.dry_run:
+                    self.playground.delete_server(server)
+
+
+class DNSList(Command):
+    """List DNS records."""
+
+    NAME = "dns-list"
+
+    def run(self):
+        """Run `dns-list` command."""
+        for rec in self.playground.dns.records():
+            print(json.dumps(rec, indent=1))
+
+
+class DNSCheck(Command):
+    """Check and fix DNS records."""
+
+    NAME = "dns-check"
+
+    @classmethod
+    def add_subparser(cls, subparsers):
+        """Add options for `dns-check` command."""
+        parser = super().add_subparser(subparsers)
+        parser.add_argument(
+            "--fix", "-f", action="store_true", help="perform changes to DNS"
+        )
+        return parser
+
+    def run(self):  # noqa: C901
+        """Run `dns-check` command."""
+        records: dict[str, dict[str, Any]] = defaultdict(dict)
+        for rec in self.playground.dns.records():
+            if rec["type"] not in ("A", "AAAA"):
+                continue
+            records[rec["name"]][rec["type"]] = rec
+
+        servers: dict[str, hcloud.servers.client.BoundServer] = {}
+        for server in self.playground.hetzner.servers.get_all():
+            servers[server.name] = server
+
+        # Servers without records
+        for name in servers.keys() - records.keys():
+            server = servers[name]
+            if self.args.fix:
+                self.playground.create_server_dns_record(server)
+            else:
+                address = self.playground.get_address_ipv6(server)
+                log.info("Missing DNS record %s AAAA %s", name, address)
+
+        # Servers with incomplete records
+        recreate: set[str] = set()
+        for name in servers.keys() & records.keys():
+            for rec_type in {"AAAA", "A"} - records[name].keys():
+                recreate.add(name)
+                log.info("Missing DNS record %s %s", name, rec_type)
+        if self.args.fix:
+            for name in recreate:
+                server = servers[name]
+                for record in records[name].values():
+                    self.playground.delete_server_dns_record(record)
+                self.playground.create_server_dns_record(server)
+
+        # Records without servers
+        for name in records.keys() - servers.keys():
+            for rec_type, rec in records[name].items():
+                if self.args.fix:
+                    self.playground.delete_server_dns_record(rec)
+                else:
+                    log.info(
+                        "Leftover DNS record %s %s %s",
+                        name,
+                        rec_type,
+                        rec["value"],
+                    )
+
+        # Servers with records
+        dns_table = Table(box=box.SIMPLE)
+        dns_table.add_column("Name")
+        dns_table.add_column("Type")
+        dns_table.add_column("TTL")
+        dns_table.add_column("Value")
+        for name in records.keys() & servers.keys():
+            for rec_type, rec in records[name].items():
+                dns_table.add_row(
+                    f"[link=https://{name}.{self.playground.dns.domain}]{name}"
+                    f"[/link]",
+                    rec_type,
+                    str(rec["ttl"]),
+                    rec["value"],
+                )
+        rich.print(dns_table)
+
+
+def main():
+    """Run the playground-vm program."""
+    parser = argparse.ArgumentParser(
+        description="Manage ephemeral Hetzner machines"
+    )
+    subparsers = parser.add_subparsers(
+        help="actions", required=True, dest="command_name"
+    )
+
+    Create.add_subparser(subparsers)
+    Delete.add_subparser(subparsers)
+    List.add_subparser(subparsers)
+    Login.add_subparser(subparsers)
+    Provision.add_subparser(subparsers)
+    Status.add_subparser(subparsers)
+    Cleanup.add_subparser(subparsers)
+    DNSList.add_subparser(subparsers)
+    DNSCheck.add_subparser(subparsers)
+
+    args = parser.parse_args()
+
+    with args.command(args) as cmd:
+        cmd.run()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Fail as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
+    except Exception:
+        log.exception("uncaught exception")

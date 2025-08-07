@@ -1,0 +1,36 @@
+{% extends base_template %}
+{% block navbar_left %}
+    {{ block.super }}
+    {% include "web/_collection-menu.html" with collection=collection only %}
+{% endblock %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <h2>Details</h2>
+    <table class="table table-hover">
+        <tbody>
+            {% if item.collection %}
+                <tr>
+                    <th>Collection</th>
+                    <td>
+                        <a href="{{ item.collection.get_absolute_url }}">{{ item.collection.name }}@{{ item.collection.category }}</a>
+                    </td>
+                </tr>
+            {% elif item.artifact %}
+                <th>Artifact</th>
+                <td>
+                    <a href="{{ item.artifact.get_absolute_url }}">{{ item.name }}</a>
+                </td>
+            {% endif %}
+            <tr>
+                <th>Category</th>
+                <td>{{ item.category }}</td>
+            </tr>
+        </tbody>
+    </table>
+    {% if data %}
+        <div id="metadata" class="card mb-2">
+            <div class="card-header">Metadata</div>
+            <div class="card-body text-white bg-dark">{{ data }}</div>
+        </div>
+    {% endif %}
+{% endblock %}

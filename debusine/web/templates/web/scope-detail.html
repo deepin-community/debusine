@@ -1,0 +1,31 @@
+{% extends base_template %}
+{% load debusine %}
+{% block navbar_left %}
+    <li class="nav-item">
+        <a class="nav-link btn btn-light" href="{% url "homepage:homepage" %}">
+            <span class="bi bi-arrow-up-left-circle"></span> Debusine</a>
+    </li>
+    {{ block.super }}
+{% endblock %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>
+        This is the <b>{{ scope.label }}</b> scope, the main entry point for
+        everything in Debusine related to {{ scope.label }}.
+    </p>
+    <p>
+        This is also the main index of {{ scope.label }}-related <i>workspaces</i>: a workspace is where
+        <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#collections">Collections</a>
+        and
+        <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#artifacts">Artifacts</a>
+        are stored, and where
+        <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#workflows">Workflows</a> can be run on them.
+    </p>
+    <p>
+        See <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#scopes">Scopes documentation</a>
+        for more details on scopes, and <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#workspaces">Workspaces documentation</a>
+        for more details on workspaces.
+    </p>
+    <p>This is a list of available workspaces you can access within {{ scope.label }}:</p>
+    {% include "web/_workspace-list.html" with workspace_list=workspaces user=user only %}
+{% endblock %}

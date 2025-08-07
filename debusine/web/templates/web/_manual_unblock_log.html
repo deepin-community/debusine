@@ -1,0 +1,15 @@
+<table id="review-log" class="table table-sm">
+    <thead>
+        <tr>
+            <th>Time</th>
+            <th>User</th>
+            <th>Action</th>
+            <th>Notes</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for log in manual_unblock_log_entries %}
+            {% include "web/_manual_unblock_log_entry.html" with log=log only %}
+        {% endfor %}
+    </tbody>
+</table>

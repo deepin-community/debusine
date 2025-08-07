@@ -1,0 +1,19 @@
+{% with severity=content.severity %}
+    {% if severity == "info" %}
+        <span class="badge text-bg-success">I</span>
+    {% elif severity == "pedantic" %}
+        <span class="badge text-bg-success">P</span>
+    {% elif severity == "warning" %}
+        <span class="badge text-bg-warning">W</span>
+    {% elif severity == "error" %}
+        <span class="badge text-bg-danger">E</span>
+    {% elif severity == "experimental" %}
+        <span class="badge text-bg-info">X</span>
+    {% elif severity == "override" %}
+        <span class="badge text-bg-dark">O</span>
+    {% elif severity == "classification" %}
+        <span class="badge text-bg-secondary">C</span>
+    {% else %}
+        <span class="badge text-bg-dark">{{ severity }}</span>
+    {% endif %}
+{% endwith %}

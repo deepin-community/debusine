@@ -1,0 +1,17 @@
+[Unit]
+Description=Debusine Server celery worker
+After=debusine-server-migrate.service
+Requires=debusine-server-migrate.service
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+User=debusine-server
+Group=debusine-server
+WorkingDirectory=~
+PrivateTmp=true
+ExecStart=/usr/bin/python3 -m celery -A debusine.project worker -l INFO
+Restart=on-failure
+RestartSec=5
+Environment=LANG=C.UTF-8

@@ -1,0 +1,18 @@
+{% load debusine %}
+<table class="table table-sm" id="audit-log">
+    {% widget paginator.thead %}
+    <tbody>
+        {% for a in paginator.page_obj.object_list %}
+            <tr>
+                <td>{{ a.created_at|date:"Y-m-d H:i" }}</td>
+                <td>{% include "web/_user_link_full.html" with user=a.actor only %}</td>
+                <td>{{ a.changes_model.description }}</td>
+            </tr>
+        {% empty %}
+            <tr>
+                <td colspan="{{ table.columns|length }}">There are no rows to show matching the current filter</td>
+            </tr>
+        {% endfor %}
+    </tbody>
+    {% widget paginator.tfoot %}
+</table>

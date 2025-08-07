@@ -1,0 +1,23 @@
+[Unit]
+Description=Debusine Signing Worker
+After=debusine-signing-migrate.service
+Requires=debusine-signing-migrate.service
+ConditionPathExists=/etc/debusine/signing/config.ini
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+User=debusine-signing
+Group=debusine-signing
+WorkingDirectory=~
+PrivateMounts=true
+# TODO: Once we can assume Linux >= 6.4, this should become "/tmp:noswap
+# /var/tmp:noswap".  In the meantime, deployments that want extra protection
+# against private key material being swapped to disk under memory pressure
+# can set that using a drop-in unit.
+TemporaryFileSystem=/tmp /var/tmp
+ExecStart=/usr/bin/debusine-signing signing_worker
+Restart=on-failure
+RestartSec=5
+Environment=LANG=C.UTF-8

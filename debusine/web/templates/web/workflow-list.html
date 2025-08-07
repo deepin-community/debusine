@@ -1,0 +1,15 @@
+{% extends base_template %}
+{% load static %}
+{% load debusine %}
+{% load workflows %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>
+        This page lets you monitor <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#workflows">workflows</a> started in the {{ workspace }} workspace.
+    </p>
+    {% if paginator %}
+        {% widget paginator %}
+    {% else %}
+        <p>No workflows.</p>
+    {% endif %}
+{% endblock %}

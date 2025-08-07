@@ -1,0 +1,116 @@
+#!/bin/sh
+
+set -e
+
+# shellcheck disable=SC2034
+case "$1" in
+	configure)
+	user="debusine-server"
+	group="$user"
+
+	# Create the home directory
+	home="/var/lib/debusine/server"
+	adduser --quiet \
+		--system \
+		--group \
+		--gecos "Debusine Server System user" \
+		--home "$home" \
+		"$user"
+
+	# Create directories
+	directories="/var/log/debusine/server /var/cache/debusine/server $home $home/uploads $home/store"
+
+	# shellcheck disable=SC2086
+	mkdir -p $directories
+	# shellcheck disable=SC2086
+	chown "$user:$group" $directories
+
+	# Create the secret key
+	secret_key_file="$home/key"
+
+	if [ ! -f "$secret_key_file" ]; then
+		(umask 077; python3 -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())' > "$secret_key_file")
+		chown "$user:$group" "$secret_key_file"
+	fi
+
+	# shellcheck source=/dev/null
+	. /usr/share/debconf/confmodule
+	# shellcheck source=/dev/null
+	. /usr/share/dbconfig-common/dpkg/postinst.pgsql
+
+	if [ -e /etc/debusine/server/db_postgresql.py ]; then
+		chown "$user:$group" /etc/debusine/server/db_postgresql.py
+		chmod 600 /etc/debusine/server/db_postgresql.py
+	fi
+
+	dbc_first_version="0.4.2~1"
+	dbc_generate_include="template:/etc/debusine/server/db_postgresql.py"
+	dbc_generate_include_args="-U -o template_infile=/etc/debusine/server/db_postgresql.py.template"
+	dbc_generate_include_owner="$user:$group"
+	dbc_generate_include_perms=600
+	dbc_go debusine-server "$@"
+
+	# workaround dbconfig replacing the empty string with localhost (#429841)
+	if ! dbc_no_thanks ; then
+		db_get debusine-server/remote/host && host="$RET"
+		db_get debusine-server/pgsql/method
+		if [ "$RET" = "Unix socket" ] ; then
+			host=""
+		fi
+		sed -i "s/_DBC_HOST_/$host/" /etc/debusine/server/db_postgresql.py
+	fi
+
+	# Collect the static files
+	# --clear has two advantages:
+	# - Ensure that if in Debusine a static file was deleted (or renamed)
+	#   it is deleted from the static target folder
+	# - If a new Debusine package is built but no new changelog entry is written
+	#   the files modified timestamp didn't change and were not copied. With --clear
+	#   all files are copied across
+	runuser -u "$user" -- debusine-admin collectstatic -v 0 --no-input --clear
+
+	# Handle webserver configuration/restart
+	db_get debusine-server/configure-webserver
+
+	if [ "$RET" = "nginx" ] && [ -d /etc/nginx/sites-enabled ]; then
+		ln -s /usr/share/doc/debusine-server/examples/nginx-vhost.conf /etc/nginx/sites-enabled/debusine-server || true
+
+		db_input high debusine-server/nginx-choice || true
+
+		db_get debusine-server/restart-webserver
+		if [ "$RET" = "true" ]; then
+			invoke-rc.d nginx reload
+		fi
+	fi
+
+	if dpkg --compare-versions "$2" lt-nl 0.8.2~; then
+		# Renamed to debusine-server-vacuum-storage.timer.
+		# dh_installsystemd adds a postinst snippet to enable the
+		# new unit.  (Ideally we'd transfer over state like whether
+		# the old unit was disabled and any drop-in files, but in
+		# this case that's unlikely to be important.)
+		deb-systemd-helper purge debusine-server-monthly-cleanup.timer
+		if [ -d /run/systemd/system ]; then
+			systemctl reset-failed debusine-server-monthly-cleanup.timer 2>/dev/null || true
+		fi
+	fi
+
+	if dpkg --compare-versions "$2" lt-nl 0.10.1~; then
+		# Renamed to debusine-server-delete-expired.timer.
+		# dh_installsystemd adds a postinst snippet to enable the
+		# new unit.  (Ideally we'd transfer over state like whether
+		# the old unit was disabled and any drop-in files, but in
+		# this case that's unlikely to be important.)
+		deb-systemd-helper purge debusine-server-artifacts-cleanup.timer
+		if [ -d /run/systemd/system ]; then
+			systemctl reset-failed debusine-server-artifacts-cleanup.timer 2>/dev/null || true
+		fi
+	fi
+
+	db_stop
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

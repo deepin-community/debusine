@@ -1,0 +1,11 @@
+{% if tag.note %}
+    {{ tag.note | linebreaksbr }}
+{% else %}
+    <span class="text-secondary">Lintian did not output a note for this tag</span>
+{% endif %}
+{% if tag.pointer %}<code>[{{ tag.pointer }}]</code>{% endif %}
+<br>
+{% if tag.comment %}
+    Comment:
+    <pre>{{ tag.comment }}</pre>
+{% endif %}

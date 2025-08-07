@@ -1,0 +1,13 @@
+#!/bin/sh
+
+set -e
+
+# shellcheck source=/dev/null
+. /usr/share/debconf/confmodule
+# shellcheck source=/dev/null
+. /usr/share/dbconfig-common/dpkg/prerm.pgsql
+dbc_go debusine-signing "$@"
+
+#DEBHELPER#
+
+exit 0

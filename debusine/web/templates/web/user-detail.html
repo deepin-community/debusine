@@ -1,0 +1,70 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>This page lists your personal information.</p>
+    <h3>Account</h3>
+    <dl class="row" id="person-info">
+        <dt class="col-sm-3">Full name</dt>
+        <dd class="col-sm-9">
+            {{ person.get_full_name }}
+        </dd>
+        <dt class="col-sm-3">Username</dt>
+        <dd class="col-sm-9">
+            {{ person.username }}
+        </dd>
+        {% if person|has_perm:"can_manage" %}
+            <dt class="col-sm-3">Tokens</dt>
+            <dd class="col-sm-9">
+                {{ person.token_set.count }}
+            </dd>
+        {% endif %}
+    </dl>
+    {% if groups_by_scope %}
+        <h3>Groups</h3>
+        <table class="table" id="person-groups">
+            <thead>
+                <tr>
+                    <th>Scope</th>
+                    <th>Groups</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for scope, groups in groups_by_scope %}
+                    <tr>
+                        <td>{{ scope }}</td>
+                        <td>
+                            <ul class="list-unstyled">
+                                {% for group in groups %}<li>{{ group.name }}</li>{% endfor %}
+                            </ul>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+    {% if identities and person|has_perm:"can_manage" %}
+        <h3>Remote identities</h3>
+        <table class="table" id="person-identities">
+            <thead>
+                <tr>
+                    <th>Provider</th>
+                    <th>Subject</th>
+                    <th>Last used</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for provider, identity in identities %}
+                    <tr>
+                        <td>
+                            {% include "account/_signon_provider_icon.html" with provider=provider only %}
+                            {{ provider.label }}
+                        </td>
+                        <td>{{ identity.subject }}</td>
+                        <td>{{ identity.last_used|date:"Y-m-d H:i" }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+{% endblock %}

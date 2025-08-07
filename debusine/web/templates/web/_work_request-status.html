@@ -1,0 +1,11 @@
+{% if status == "pending" %}
+    <span class="badge text-bg-secondary">Pending</span>
+{% elif status == "running" %}
+    <span class="badge text-bg-secondary">Running</span>
+{% elif status == "completed" %}
+    <span class="badge text-bg-primary">Completed</span>
+{% elif status == "aborted" %}
+    <span class="badge text-bg-dark">Aborted</span>
+{% elif status == "blocked" %}
+    <span class="badge text-bg-dark">Blocked</span>
+{% endif %}

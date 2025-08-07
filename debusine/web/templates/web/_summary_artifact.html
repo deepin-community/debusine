@@ -1,0 +1,11 @@
+<li>
+    {{ description }}
+    {% if artifact.artifact %}
+        ({{ artifact.lookup }}: <a href="{{ artifact.artifact.get_absolute_url }}">#{{ artifact.id }}</a>)
+    {% else %}
+        ({{ artifact.lookup }})
+    {% endif %}
+    <ul>
+        {% for file in artifact.files %}<li>{{ file }}</li>{% endfor %}
+    </ul>
+</li>

@@ -1,0 +1,49 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p id="intro">
+        {% if current_user %}
+            This page lists all groups of which <b>you</b> are a member.
+        {% else %}
+            This page lists all groups of which <b>
+            {% include "web/_user_link_full.html" with user=person only %}
+        </b> is a member.
+    {% endif %}
+</p>
+<h2>Groups</h2>
+{% if membership_list %}
+    <table class="table table-sm" id="group-list">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Members</th>
+                <th>Ephemeral</th>
+                <th>Role</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for gm in membership_list %}
+                <tr>
+                    <td>
+                        <a href="{{ gm.group.get_absolute_url }}">{{ gm.group.name }}</a>
+                    </td>
+                    <td>{{ gm.group.users.count }}</td>
+                    <td>{{ gm.group.ephemeral|yesno:"yes,no" }}</td>
+                    <td>{{ gm.role }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p id="no-groups-message">
+        {% if current_user %}
+            <b>You</b> are not currently a member of any group.
+        {% else %}
+            <b>
+                {% include "web/_user_link_full.html" with user=person only %}
+            </b> is not currently a member of any group.
+        {% endif %}
+    </p>
+{% endif %}
+{% endblock %}

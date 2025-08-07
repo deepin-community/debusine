@@ -1,0 +1,3 @@
+examples/munin/debusine usr/share/munin/plugins/
+examples/nginx/snippets/debusine.conf etc/nginx/snippets/
+usr/bin/debusine-admin

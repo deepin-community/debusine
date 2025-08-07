@@ -1,0 +1,37 @@
+#!/bin/bash
+
+set -ex
+
+cd "$AUTOPKGTEST_TMP"
+
+# Enable dbconfig-common
+cat > config.dat <<EOF
+Name: debusine-server/dbconfig-install
+Value: true
+EOF
+
+DEBIAN_FRONTEND=noninteractive DEBCONF_DB_OVERRIDE=config.dat dpkg-reconfigure debusine-server
+
+systemctl start debusine-server.service || journalctl -xe
+
+# We expect debusine-server to be running
+systemctl is-active debusine-server.service
+
+# We expect debusine-server-migrate to be inactive but not failed
+if systemctl is-failed debusine-server-migrate.service; then
+   exit 1
+fi
+
+rm -f /etc/nginx/sites-enabled/default
+cp /usr/share/doc/debusine-server/examples/nginx-vhost.conf \
+  /etc/nginx/sites-enabled/debusine
+
+nginx -t
+systemctl restart nginx.service
+
+i=0
+while [ $i -lt 60 ]; do
+	curl --insecure --fail "https://$(hostname --fqdn)/api/1.0/service-status/" && exit 0
+	sleep 1
+	i=$((i + 1))
+done

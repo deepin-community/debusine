@@ -1,0 +1,8 @@
+{% load debusine %}
+{% if paginator.has_page_navigation %}
+    <tfoot>
+        <tr>
+            <td colspan="{{ table.columns.columns|length }}">{% widget paginator.page_navigation %}</td>
+        </tr>
+    </tfoot>
+{% endif %}

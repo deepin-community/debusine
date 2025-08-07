@@ -1,0 +1,21 @@
+{% load debusine %}
+<div id="{{ file_contents_div_id }}" class="card">
+    <div class="card-header d-flex">
+        <div class="me-auto">{{ file_in_artifact.path }}</div>
+        {% if not file_in_artifact.complete %}
+            <div class="badge bg-warning rounded-pill">incomplete</div>
+        {% else %}
+            <div class="btn-group btn-group-sm">
+                <a class="btn btn-light"
+                   href="{{ file_in_artifact.get_absolute_url_raw }}"><i title="View raw" class="bi {% icon "file_view_raw" %}"></i></a>
+                <a class="btn btn-light"
+                   href="{{ file_in_artifact.get_absolute_url_download }}"><i title="Download" class="bi {% icon "file_download" %}"></i></a>
+            </div>
+        {% endif %}
+    </div>
+    {% if file_in_artifact.complete %}
+        <div class="card-body text-white bg-dark">
+            {% block file_contents %}{% endblock %}
+        </div>
+    {% endif %}
+</div>

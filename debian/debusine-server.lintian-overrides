@@ -1,0 +1,3 @@
+# We need to call "systemctl reset-failed", and none of the helpers expose
+# that.  We take care to only run this if systemd is running.
+debusine-server: maintainer-script-calls-systemctl [postinst:*]

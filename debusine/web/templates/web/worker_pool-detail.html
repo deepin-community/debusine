@@ -1,0 +1,65 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <table class="table table-sm">
+        <tbody>
+            <tr id="row-name">
+                <th>Name</th>
+                <td>{{ worker_pool.name }}</td>
+            </tr>
+            <tr id="row-provider_type">
+                <th>Provider type</th>
+                <td>{{ worker_pool.provider_account.data.provider_type }}</td>
+            </tr>
+            <tr id="row-enabled">
+                <th>Enabled</th>
+                <td>{{ worker_pool.enabled|yesno }}</td>
+            </tr>
+            <tr id="row-instance_wide">
+                <th>Instance-wide</th>
+                <td>{{ worker_pool.instance_wide|yesno }}</td>
+            </tr>
+            <tr id="row-ephemeral">
+                <th>Ephemeral</th>
+                <td>{{ worker_pool.ephemeral|yesno }}</td>
+            </tr>
+            <tr id="row-registered_at">
+                <th>Registered at</th>
+                <td>{{ worker_pool.registered_at|date:"Y-m-d H:i" }} ({{ worker_pool.registered_at|timesince }} ago)</td>
+            </tr>
+            <tr id="row-architectures">
+                <th>Architectures</th>
+                <td>
+                    {% if worker_pool.architectures %}
+                        {{ worker_pool.architectures|sorted|join:", " }}
+                    {% else %}
+                        <em>none</em>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr id="row-tags">
+                <th>Tags</th>
+                <td>
+                    {% if worker_pool.tags %}
+                        {{ worker_pool.tags|sorted|join:", " }}
+                    {% else %}
+                        <em>none</em>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr id="row-specifications">
+                <th>Specifications</th>
+                <td class="text-white bg-dark">{{ worker_pool.specifications|format_yaml }}</td>
+            </tr>
+            <tr id="row-limits">
+                <th>Limits</th>
+                <td class="text-white bg-dark">{{ worker_pool.limits|format_yaml }}</td>
+            </tr>
+        </tbody>
+    </table>
+    {% if workers %}
+        <h2>Workers</h2>
+        {% widget workers %}
+    {% endif %}
+{% endblock %}

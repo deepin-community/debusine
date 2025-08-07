@@ -1,0 +1,29 @@
+{% if workspace_list %}
+    <table class="table table-sm" id="workspace-list-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Public</th>
+                <th>Default Expiration Delay (days)</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for workspace in workspace_list %}
+                <tr>
+                    <td>
+                        <a href="{{ workspace.get_absolute_url }}">{{ workspace.name }}</a>
+                    </td>
+                    <td>{% include "web/_check_icon.html" with value=workspace.public only %}</td>
+                    <td>{{ workspace.default_expiration_delay.days|default:"Never" }}</td>
+                    <td>
+                        <a href="{% url "workspaces:work-requests:list" wname=workspace.name %}">Work requests</a>
+                    </td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% else %}
+    <p>No workspaces.</p>
+{% endif %}
+{% if not user.is_authenticated %}<p>Not authenticated. Only public workspaces are listed.</p>{% endif %}

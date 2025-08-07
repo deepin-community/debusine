@@ -1,0 +1,41 @@
+#!/bin/sh
+
+set -e
+
+if [ -f /usr/share/debconf/confmodule ]; then
+	# shellcheck source=/dev/null
+	. /usr/share/debconf/confmodule
+fi
+if [ -f /usr/share/dbconfig-common/dpkg/postrm.pgsql ]; then
+	# shellcheck source=/dev/null
+	. /usr/share/dbconfig-common/dpkg/postrm.pgsql
+	dbc_go debusine-server "$@"
+fi
+
+if [ "$1" = "purge" ]; then
+	rm -f /etc/debusine/server/db_postgresql.py
+	if command -v ucf >/dev/null; then
+		ucf --purge /etc/debusine/server/db_postgresql.py
+		ucfr --purge debusine-server /etc/debusine/server/db_postgresql.py
+	fi
+fi
+
+if [ "$1" = remove ] && [ -e /usr/share/debconf/confmodule ]; then
+	# Handling web server configuration
+	db_get debusine-server/configure-webserver
+
+	if [ "$RET" = "nginx" ]; then
+		rm -f /etc/nginx/sites-enabled/debusine-server
+
+		db_get debusine-server/restart-webserver
+		if [ "$RET" = "true" ]; then
+			invoke-rc.d nginx reload
+		fi
+	fi
+
+	db_stop
+fi
+
+#DEBHELPER#
+
+exit 0

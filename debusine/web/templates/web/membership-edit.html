@@ -1,0 +1,27 @@
+{% extends base_template %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p id="intro">
+        {% if object.user == user %}
+            Update <b>your</b> role in group <b>{{ object.group }}</b>.
+        {% else %}
+            Update role of user <b>
+            {% include "web/_user_link_full.html" with user=object.user only %}
+            </b> in group <b>{{ object.group }}</b>.
+        {% endif %}
+    </p>
+    <form method="post">
+        {% csrf_token %}
+        {% for field in form %}
+            <div class="row g-3 align-items-center">
+                <div class="col-auto">{{ field.label_tag }}</div>
+                <div class="col-auto">{{ field }}</div>
+                <div class="col-auto">{{ field.errors }}</div>
+            </div>
+        {% endfor %}
+        <div class="mt-3">
+            <button class="btn btn-primary" type="submit">Update</button>
+            <a class="btn btn-secondary" href="{{ group.get_absolute_url }}">Cancel</a>
+        </div>
+    </form>
+{% endblock %}

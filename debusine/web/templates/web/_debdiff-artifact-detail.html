@@ -1,0 +1,67 @@
+{% load debusine %}
+<h2>Request</h2>
+<ul>
+    <li id="original">
+        <b>Original:</b> {{ artifact.data.original }}
+    </li>
+    <li id="new">
+        <b>New:</b> {{ artifact.data.new }}
+    </li>
+</ul>
+{% if debdiff_parser_error %}
+    <div id="error-parsing-debdiff-output"
+         class="alert alert-warning"
+         role="alert">
+        Error parsing debdiff output: <code>{{ debdiff_parser_error }}</code>
+    </div>
+{% endif %}
+{% if not debdiff_differences_reported %}
+    <p id="debdiff-report-no-differences">DebDiff did not report any differences.</p>
+{% elif debdiff_binary_parsed %}
+    {#Binary artifacts#}
+    <h4 id="files-in-original-not-in-new">
+        Files in <em>original</em> artifacts but not in <em>new</em> artifacts
+    </h4>
+    {% if debdiff_binary_parsed.removed_files %}
+        <pre>{{ debdiff_binary_parsed.removed_files }}</pre>
+    {% else %}
+        <p>
+            All files from the <em>original</em> artifacts are present in the <em>new</em> artifacts.
+        </p>
+    {% endif %}
+    <h4 id="files-in-new-not-in-original">
+        Files in <em>new</em> artifacts but not in <em>original</em> artifacts
+    </h4>
+    {% if debdiff_binary_parsed.added_files %}
+        <pre>{{ debdiff_binary_parsed.added_files }}</pre>
+    {% else %}
+        <p>
+            All files from the <em>new</em> artifacts were present in the <em>original</em> artifacts.
+        </p>
+    {% endif %}
+    <h4 id="control-diffs-changes">Control diffs changes</h4>
+    {% if debdiff_binary_parsed.control_diff %}
+        <pre>{{ debdiff_binary_parsed.control_diff }}</pre>
+    {% else %}
+        <p>No changes reported by debdiff in control files.</p>
+    {% endif %}
+{% else %}
+    {#Source artifacts#}
+    <h2 id="source-summary-of-changes">Summary of changes</h2>
+    <ul class="list-unstyled">
+        {% for file in debdiff_source_summary %}
+            <li>
+                {% if file.operation == "added" %}
+                    <i class="bi bi-file-earmark-plus text-success me-1" title="Added"></i>
+                {% elif file.operation == "removed" %}
+                    <i class="bi bi-file-earmark-minus text-danger me-1" title="Removed"></i>
+                {% elif file.operation == "modified" %}
+                    <i class="bi bi-file-earmark-diff text-secondary me-1" title="Modified"></i>
+                {% endif %}
+                <a href="#L{{ file.diff_line_number }}">{{ file.path }}</a>
+            </li>
+        {% endfor %}
+    </ul>
+    <h2 id="debdiff-output">debdiff output</h2>
+    {% widget debdiff_source_file_widget %}
+{% endif %}

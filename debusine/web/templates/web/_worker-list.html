@@ -1,0 +1,84 @@
+{% load debusine %}
+<table class="table table-sm" id="worker-list">
+    <thead>
+        {% if paginator.table.filters %}
+            <tr>
+                <th colspan="{{ table.columns|length }}">{% widget paginator.table.filters %}</th>
+            </tr>
+        {% endif %}
+        <tr>
+            <th class="col-1">{% widget paginator.table.columns.type %}</th>
+            <th>{% widget paginator.table.columns.name %}</th>
+            <th>{% widget paginator.table.columns.pool %}</th>
+            <th>{% widget paginator.table.columns.last_seen %}</th>
+            <th>{% widget paginator.table.columns.status %}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for worker in paginator.page_obj.object_list %}
+            <tr>
+                <td>
+                    {% if worker.worker_type == "external" %}
+                        <i class="bi {% icon "worker_external" %}" title="External"></i>
+                    {% elif worker.worker_type == "celery" %}
+                        <i class="bi {% icon "worker_celery" %}" title="Celery"></i>
+                    {% elif worker.worker_type == "signing" %}
+                        <i class="bi {% icon "worker_signing" %}" title="Signing"></i>
+                    {% else %}
+                        {{ worker.worker_type }}
+                    {% endif %}
+                </td>
+                <td>
+                    <a href="{{ worker.get_absolute_url }}">{{ worker.name }}</a>
+                </td>
+                <td>
+                    {% if worker.worker_pool %}
+                        <a href="{{ worker.worker_pool.get_absolute_url }}">{{ worker.worker_pool.name }}</a>
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+                <td>
+                    {% if worker.worker_type == WorkerType.CELERY %}
+                        -
+                    {% else %}
+                        {% with last_seen_at=worker.token.last_seen_at %}
+                            {% if last_seen_at %}
+                                {{ last_seen_at|timesince }} ago
+                            {% else %}
+                                Never
+                            {% endif %}
+                        {% endwith %}
+                    {% endif %}
+                </td>
+                <td>
+                    {% if worker.worker_type == WorkerType.CELERY %}
+                        -
+                    {% elif not worker.token.enabled %}
+                        {% include "web/_worker-status.html" with status="disabled" %}
+                    {% elif not worker.connected %}
+                        {% include "web/_worker-status.html" with status="disconnected" %}
+                    {% elif worker.running_work_requests %}
+                        {% spaceless %}
+                            {% for work_request in worker.running_work_requests %}
+                                {% if work_request.workspace|has_perm:"can_display" %}
+                                    <a href="{{ work_request.get_absolute_url }}">{{ work_request.get_label }}</a>
+                                {% else %}
+                                    Private Task
+                                {% endif %}
+                                <br>
+                            {% endfor %}
+                        {% endspaceless %}
+                    {% else %}
+                        {% include "web/_worker-status.html" with status="idle" %}
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr>
+                <td colspan="{{ table.columns|length }}">There are no rows to show matching the current filter</td>
+            </tr>
+        {% endfor %}
+    </tbody>
+    {% widget paginator.tfoot %}
+</table>

@@ -1,0 +1,87 @@
+#!/usr/bin/python3
+# Copyright © The Debusine Developers
+# See the AUTHORS file at the top-level directory of this distribution
+#
+# This file is part of Debusine. It is subject to the license terms
+# in the LICENSE file found in the top-level directory of this
+# distribution. No part of Debusine, including this file, may be copied,
+# modified, propagated, or distributed except according to the terms
+# contained in the LICENSE file.
+
+"""
+Delete and recreate the user's development database in postgres.
+
+Useful as a quickfix after migration conflicts during development
+"""
+
+import argparse
+import getpass
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+from rich.console import Console
+
+console = Console()
+workdir = Path(sys.argv[0]).parent.parent.absolute()
+
+
+class Fail(Exception):
+    """There was an error in the script."""
+
+
+def workdir_run(*cmd: str) -> None:
+    """Run a command."""
+    cwd = workdir
+    console.print(f"[gray]{cwd}[/]$ [green]{shlex.join(cmd)}[/green]")
+    subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def postgres_run(*cmd: str) -> None:
+    """Run a command as the postgres user."""
+    cwd = Path("~postgres").expanduser()
+    console.print(
+        f"[italic]postgres@[/]{cwd}$ [green]{shlex.join(cmd)}[/green]"
+    )
+    cmd = ["sudo", "-u", "postgres"] + list(cmd)
+    subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def main():
+    """Delete and recreate the user's development database."""
+    parser = argparse.ArgumentParser(
+        description="Delete and recreate the user's development database"
+    )
+    parser.add_argument(
+        "--force", "-f", action="store_true", help="perform the operation"
+    )
+    parser.add_argument(
+        "--leave-empty",
+        action="store_true",
+        help="do not run migrations on the recreated db",
+    )
+    args = parser.parse_args()
+
+    if args.force:
+        postgres_run("dropdb", "debusine")
+        postgres_run(
+            "createdb", "-O", getpass.getuser(), "-E", "UTF8", "debusine"
+        )
+        if not args.leave_empty:
+            workdir_run("./manage.py", "migrate")
+    else:
+        raise Fail(
+            "Please use -f/--force to recreate the development database",
+        )
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Fail as e:
+        console.print(e, style="bold red")
+        sys.exit(1)
+    except Exception:
+        console.print_exception()
+        sys.exit(2)

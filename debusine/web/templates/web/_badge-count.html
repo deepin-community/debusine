@@ -1,0 +1,5 @@
+{% if count != 0 %}
+    <span title="{{ title }}" class="badge text-bg-{{ bg_class }}">{{ count }}</span>
+{% else %}
+    <span title="{{ title }}" class="badge text-bg-light">{{ count }}</span>
+{% endif %}

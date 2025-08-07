@@ -1,0 +1,11 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>This is a list of all worker pools.</p>
+    {% if paginator %}
+        {% widget paginator %}
+    {% else %}
+        <p id="worker_pool-list-empty">No worker pools registered in this debusine instance.</p>
+    {% endif %}
+{% endblock %}

@@ -1,0 +1,50 @@
+#!/bin/bash
+
+set -e
+
+arch="$(dpkg --print-architecture)"
+case $arch in
+	amd64|arm64|armel|armhf|i386|mips64el|mipsel|ppc64el|s390x)
+		;;
+	*)
+		echo "skipping: $arch not in bookworm" >&2
+		exit 77
+esac
+
+if ! grep -qs ^debusine-worker: /etc/subuid; then
+	# unshare needs /etc/subuid and /etc/subgid, and this is only set up
+	# on our debusine-worker for >= bookworm (see
+	# debusine-worker.postinst for more information)
+	echo 'unshare-based tests require Debian >= bookworm' >&2
+	exit 77  # tell autopkgtest to skip test
+fi
+
+source debian/tests/utils/add-debusine-log-files-to-artifacts.sh
+
+adduser debusine-worker sbuild
+
+debian/tests/utils/integration-tests-setup-debusine-all.sh
+
+# To make autopkgtest faster on salsa: use xz faster compression
+mkdir /lib/systemd/system/debusine-worker.service.d/
+(echo "[Service]" ; echo 'Environment="XZ_OPT=-0"') >> \
+	/lib/systemd/system/debusine-worker.service.d/autopkgtest.conf
+systemctl daemon-reload
+systemctl restart debusine-worker
+
+debian/tests/integration-tests-task-mmdebstrap.py -v
+
+# The remaining tests depend on the mmdebstrap tests having run first to
+# create their environments.
+
+debian/tests/integration-tests-task-autopkgtest.py -v
+
+debian/tests/integration-tests-task-sbuild.py -v
+
+debian/tests/integration-tests-task-lintian.py -v
+
+debian/tests/integration-tests-task-piuparts.py -v
+
+debian/tests/integration-tests-task-blhc.py -v
+
+debian/tests/integration-tests-task-debdiff.py -v

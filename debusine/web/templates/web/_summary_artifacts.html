@@ -1,0 +1,18 @@
+{# TODO: It might be worth having nicer rendering of multiple lookups here. #}
+<li>
+    {{ description }} ({{ artifacts.lookup }})
+    <ul>
+        {% for artifact in artifacts.artifacts %}
+            <li>
+                {% if artifact.artifact %}
+                    <a href="{{ artifact.artifact.get_absolute_url }}">#{{ artifact.id }}</a>
+                {% else %}
+                    #{{ artifact.id }}
+                {% endif %}
+                <ul>
+                    {% for file in artifact.files %}<li>{{ file }}</li>{% endfor %}
+                </ul>
+            </li>
+        {% endfor %}
+    </ul>
+</li>

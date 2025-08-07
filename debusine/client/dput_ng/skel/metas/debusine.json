@@ -1,0 +1,12 @@
+{
+    "allow_dcut": false,
+    "codenames": "debian",
+    "hooks": [
+        "debusine-check-workflow",
+        "checksum",
+        "suite-mismatch",
+        "gpg",
+        "debusine-create-workflow"
+    ],
+    "valid_commands": []
+}

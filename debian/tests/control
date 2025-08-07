@@ -1,0 +1,139 @@
+Tests: unit-tests-tasks
+Depends:
+ python3-debusine,
+ python3-lxml,
+ python3-responses,
+Restrictions: allow-stderr
+
+Tests: unit-tests-client
+Depends:
+ debusine-client,
+ dput-ng,
+ python3-lxml,
+ python3-responses,
+Restrictions: allow-stderr
+
+Tests: unit-tests-worker
+Depends:
+ debusine-worker,
+ python3-lxml,
+ python3-responses,
+Restrictions: allow-stderr
+
+Tests: unit-tests-server
+Depends:
+ dbconfig-no-thanks,
+ debusine-server,
+ postgresql,
+ python3-lxml,
+ python3-paramiko,
+ python3-pyftpdlib,
+ python3-responses,
+ redis-server,
+Restrictions: allow-stderr, needs-root
+
+Tests: unit-tests-signing
+Depends:
+ dbconfig-no-thanks,
+ debusine-signing,
+ devscripts,
+ postgresql,
+ python3-cryptography,
+ python3-lxml,
+ python3-responses,
+Restrictions: allow-stderr, needs-root
+
+Tests: integration-tests-tasks-mmdebstrap-autopkgtest-sbuild-lintian-piuparts-blhc-debdiff
+Depends:
+ autopkgtest,
+ ca-certificates,
+ debian-archive-keyring,
+ debootstrap,
+ debusine-client,
+ debusine-server,
+ debusine-worker,
+ mmdebstrap,
+ nginx,
+ postgresql,
+ python3-lxml,
+ python3-responses,
+ redis-server,
+ sbuild,
+ ssl-cert,
+ sudo,
+ uidmap,
+Restrictions: allow-stderr, needs-root, isolation-container, skippable, needs-internet
+
+Tests: integration-tests-task-simplesystemimagebuild
+Architecture: amd64
+Depends:
+ ca-certificates,
+ binutils-for-host | binutils-multiarch,
+ debusine-client,
+ debusine-server,
+ debusine-worker,
+ debvm,
+ dosfstools,
+ e2fsprogs,
+ fdisk,
+ linux-image-generic,
+ mmdebstrap,
+ mount,
+ mtools,
+ nginx,
+ parted,
+ postgresql,
+ python3-lxml,
+ python3-responses,
+ qemu-utils,
+ redis-server,
+ ssl-cert,
+ sudo,
+ systemd,
+ systemd-ukify | systemd (<< 255.1-1),
+ uidmap,
+ xz-utils,
+Restrictions: allow-stderr, needs-root, isolation-container, skippable, needs-internet
+
+Tests: integration-tests-task-signing
+Depends:
+ ca-certificates,
+ debian-archive-keyring,
+ debusine-client,
+ debusine-server,
+ debusine-signing,
+ debusine-worker,
+ mmdebstrap,
+ nginx,
+ postgresql,
+ python3-lxml,
+ python3-responses,
+ redis-server,
+ sbsigntool [amd64 arm64 armhf i386 riscv64],
+ ssl-cert,
+ sudo,
+ uidmap,
+Restrictions: allow-stderr, needs-root, isolation-container, needs-internet
+
+Tests: integration-tests-generic
+Depends:
+ ca-certificates,
+ dbconfig-no-thanks,
+ debusine-client,
+ debusine-server,
+ debusine-worker,
+ nginx,
+ postgresql,
+ python3-lxml,
+ redis-server,
+ ssl-cert,
+ sudo,
+Restrictions: allow-stderr, needs-root, isolation-container
+
+Tests: smoke-test-server
+Depends:
+ curl,
+ debusine-server,
+ nginx,
+ postgresql
+Restrictions: allow-stderr, needs-root, isolation-container

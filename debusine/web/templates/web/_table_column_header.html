@@ -1,0 +1,18 @@
+{% load debusine %}
+<div class="d-flex align-items-center h-100">
+    <div class="me-1 align-middle">{{ column.title }}</div>
+    {{ column.sort_icon }}
+    {% if column.orderings %}
+        <div class="dropdown">
+            <button class="btn btn-sm dropdown-toggle dropdown-toggle-split"
+                    type="button"
+                    data-bs-toggle="dropdown"
+                    aria-expanded="false">
+                <span class="visually-hidden">Toggle Dropdown</span>
+            </button>
+            <ul class="dropdown-menu">
+                {% for o in column.orderings %}<li>{{ o.column_menu_item }}</li>{% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+</div>
