@@ -1,0 +1,44 @@
+{% load debusine %}
+{% load static %}
+{% load workflows %}
+<table class="table table-hover" id="workflow-list-table">
+    {% widget paginator.thead %}
+    <tbody>
+        {% for workflow in paginator.page_obj %}
+            <tr>
+                <td>
+                    <a href="{{ workflow.get_absolute_url }}">{{ workflow.id }}</a>
+                </td>
+                <td>{{ workflow.workflow_display_name_parameters }}</td>
+                <td>{% workflow_runtime_status_small workflow %}</td>
+                <td class>{% include "web/_work_request-result-small.html" with result=workflow.result only %}</td>
+                <td class="text-nowrap">{{ workflow.started_at|date:"Y-m-d H:i" }}</td>
+                <td class="text-nowrap">{{ workflow.completed_at|date:"Y-m-d H:i" }}</td>
+                <td class="text-nowrap">
+                    {% spaceless %}
+                        {% include "web/_badge-count.html" with title="Work requests completed successfully" bg_class="success" count=workflow.workflow_work_requests_success only %}
+                        <!-- -->-<!-- -->
+                        {% include "web/_badge-count.html" with title="Work requests terminated with a failure" bg_class="danger" count=workflow.workflow_work_requests_failure only %}
+                    {% endspaceless %}
+                    {% spaceless %}
+                        {% include "web/_badge-count.html" with title="Pending work requests" bg_class="secondary" count=workflow.workflow_work_requests_pending only %}
+                        <!-- -->-<!-- -->
+                        {% include "web/_badge-count.html" with title="Blocked work requests" bg_class="dark" count=workflow.workflow_work_requests_blocked only %}
+                    {% endspaceless %}
+                </td>
+                <td class="text-nowrap">{{ workflow.workflow_last_activity_at|date:"Y-m-d H:i" }}</td>
+                <td>{{ workflow.created_by }}</td>
+            </tr>
+        {% endfor %}
+    </tbody>
+</table>
+<script src="{% static "vendor/jquery/jquery.min.js" %}"></script>
+<link href="{% static "vendor/select2.js/select2.min.css" %}"
+      rel="stylesheet" />
+<script src="{% static "vendor/select2.js/select2.min.js" %}"></script>
+<script type="module">
+    for (const field of ["statuses", "results", "workflow_templates", "started_by"])
+        $(`#id_{{table.prefix}}filter-${field}`).select2({}).change(function(evt) {
+            evt.target.form.submit();
+        });
+</script>

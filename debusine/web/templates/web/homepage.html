@@ -1,0 +1,54 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1 class="mb-3">Welcome to debusine!</h1>
+    <p>
+        Debusine manages scheduling and distribution of Debian-related tasks to a
+        distributed network of machines.
+    </p>
+    <p>
+        It is under active development by <a href="https://www.freexian.com/">Freexian</a>
+        with the intention of providing easy access to a range of packaging tools
+        and distribution-wide experiments.
+    </p>
+    {% if user.is_authenticated %}
+        <p>
+            You are authenticated as <b>{{ user.username }}</b>.
+        </p>
+    {% endif %}
+    <p>
+        If it's your first time exploring Debusine, you can start from
+        <a href="https://freexian-team.pages.debian.net/debusine/explanation/introduction.html#what-is-debusine">What
+        is Debusine</a>
+        for an introduction, or browse the index to the whole
+        <a href="https://freexian-team.pages.debian.net/debusine/index.html">Debusine documentation</a>.
+        You may want to
+        <a href="https://freexian-team.pages.debian.net/debusine/howtos/set-up-debusine-client.html">set up debusine-client</a>
+        if you have not already done so.
+    </p>
+    {% if user.is_authenticated %}
+        <h2>Your latest work requests</h2>
+        <p>
+            <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#work-requests">Work Requests</a>
+            are how
+            <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#tasks">tasks</a>
+            are scheduled to be processed by workers. Here you can see a list of your
+            current and past work requests processed by Debusine.
+        </p>
+        {% if work_requests %}
+            {% widget work_requests %}
+        {% else %}
+            <p>No work requests created by {{ user.username }}.</p>
+        {% endif %}
+    {% endif %}
+    <h2>Scopes</h2>
+    <ul id="scope-list">
+        {% for scope in scopes %}
+            <li>
+                {% withscope scope %}
+                    <a href="{% url 'scopes:detail' %}">{{ scope }}</a>
+                {% endwithscope %}
+            </li>
+        {% endfor %}
+    </ul>
+{% endblock %}

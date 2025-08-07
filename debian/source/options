@@ -1,0 +1,6 @@
+extend-diff-ignore = "^[^/]*[.]egg-info/"
+tar-ignore = .coverage
+tar-ignore = .mypy_cache
+tar-ignore = .tox
+tar-ignore = build
+tar-ignore = docs/_build

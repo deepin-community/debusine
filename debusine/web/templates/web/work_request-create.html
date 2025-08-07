@@ -1,0 +1,22 @@
+{% extends base_template %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>
+        Work requests are how <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#tasks">tasks</a>
+        are scheduled in Debusine. See <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#work-requests">the Debusine concepts</a>
+        and <a href="https://freexian-team.pages.debian.net/debusine/reference/tasks.html">the tasks reference</a>
+        to learn more.
+    </p>
+    <p>
+        Work requests are usually created by
+        <a href="https://freexian-team.pages.debian.net/debusine/reference/debusine-cli.html">debusine-client</a>.
+        This page allows to create a work request manually using raw YAML data,
+        and is intended to be used mostly as a low-level debugging/testing
+        tool.
+    </p>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <input class="btn btn-primary btn-sm" type="submit" value="Create">
+    </form>
+{% endblock %}

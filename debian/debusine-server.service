@@ -1,0 +1,25 @@
+[Unit]
+Description=Debusine Server run with daphne
+Documentation=file:///usr/share/doc/debusine-doc/html/howtos/set-up-debusine-server.html https://freexian-team.pages.debian.net/debusine/howtos/set-up-debusine-server.html
+After=debusine-server-migrate.service
+Requires=debusine-server-migrate.service
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+User=debusine-server
+Group=debusine-server
+
+# https://github.com/django/daphne/pull/520
+Environment=PYTHONUNBUFFERED=1
+
+Restart=on-failure
+RestartSec=5
+
+ExecStartPre=/usr/bin/debusine-admin check
+ExecStart=/usr/bin/env DEBUSINE_WORKER_MANAGER=1 /usr/bin/daphne --unix-socket=/var/lib/debusine/server/daphne.sock debusine.project.asgi:application
+
+WorkingDirectory=~
+PrivateTmp=true
+Environment=LANG=C.UTF-8

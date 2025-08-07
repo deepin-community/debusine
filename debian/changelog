@@ -1,5 +1,213 @@
-template-repository (1.0-1) unstable; urgency=medium
+debusine (0.11.1) unstable; urgency=medium
 
-  * Initial release
+  * New release.  Highlights:
+    - Add a debdiff artifact view.
+    - Redesign table sorting, filtering, and header rendering.
+    - debusine setup: Manage the default server setting.
+    - Improve various aspects of dput-ng integration.
+    - debian_pipeline: Upload signed source packages and their binaries if
+      necessary.
+    - Fix various bugs in VM image building.
 
- -- Tsic404 <liuheng@deepin.org>  Sat, 28 Jan 2023 13:46:49 +0800
+ -- Colin Watson <cjwatson@debian.org>  Sun, 04 May 2025 12:00:19 +0100
+
+debusine (0.11.0) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Improve error reporting from tasks and workflows.
+    - Improve usability of token generation UI.
+    - Restructure dput-ng profiles to make them easier to override locally.
+    - Restrict starting workflows to workspace contributors.
+  * Debconf translations:
+    - Catalan (thanks, poc senderi).
+
+ -- Colin Watson <cjwatson@debian.org>  Tue, 15 Apr 2025 15:49:02 +0100
+
+debusine (0.10.0) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Implement provisioning of pool workers.
+    - Add "debusine setup" for editing server configuration interactively.
+    - Add dput-ng integration.
+
+ -- Colin Watson <cjwatson@debian.org>  Wed, 02 Apr 2025 11:55:21 +0100
+
+debusine (0.9.1) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Record runtime statistics for tasks.
+    - Support Hetzner Object Storage.
+    - Support worker pools on EC2 and Hetzner Cloud.
+    - Add web UI for group management.
+  * Debconf translations:
+    - Brazilian Portuguese (thanks, Paulo Henrique de Lima Santana; closes:
+      #1098447).
+    - Portuguese (thanks, Américo Monteiro; closes: #1100601).
+
+ -- Colin Watson <cjwatson@debian.org>  Mon, 24 Mar 2025 12:28:09 +0000
+
+debusine (0.9.0) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Generalize file storage and add an S3 backend.
+    - Implement task configuration mechanism.
+    - Move signing keys to a new asset system, to allow better control.
+    - Add most of a mechanism for cloning workspaces for experiments.
+    - Remove schroot support from sbuild task (closes: #1098674).
+
+ -- Colin Watson <cjwatson@debian.org>  Tue, 25 Feb 2025 18:15:37 +0000
+
+debusine (0.8.1) unstable; urgency=medium
+
+  * New release.
+    - Use an in-memory channel layer for tests, rather than Redis (closes:
+      #1092587).
+
+ -- Colin Watson <cjwatson@debian.org>  Mon, 13 Jan 2025 16:29:22 +0000
+
+debusine (0.8.0) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Enforce permissions in many more places.
+    - Reorganize web UI URLs around scopes and workspaces.
+    - Add package_publish and reverse_dependencies_autopkgtest workflows.
+
+ -- Colin Watson <cjwatson@debian.org>  Thu, 26 Dec 2024 00:07:47 +0000
+
+debusine (0.7.2) unstable; urgency=medium
+
+  * Use hello from bookworm in piuparts integration test.
+
+ -- Colin Watson <cjwatson@debian.org>  Wed, 13 Nov 2024 10:58:25 +0000
+
+debusine (0.7.1) unstable; urgency=medium
+
+  * Fetch packages from matching suites in integration tests.
+
+ -- Colin Watson <cjwatson@debian.org>  Tue, 12 Nov 2024 20:49:55 +0000
+
+debusine (0.7.0) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Rework URLs to allow for scopes.
+    - Add permissions framework and several initial checks.
+    - Add several workflows, including a debian_pipeline workflow.
+  * Make sure $HOME of debusine-* users is owned by the user.
+  * Debconf translations:
+    - Dutch (thanks, Frans Spiesschaert; closes: #1087216).
+
+ -- Colin Watson <cjwatson@debian.org>  Tue, 12 Nov 2024 10:46:56 +0000
+
+debusine (0.6.0) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Add system for coordinating multiple sub-workflows.
+    - Add autopkgtest workflow.
+    - Add package upload workflow.
+  * Debconf translations:
+    - German (thanks, Christoph Brinkhaus; closes: #1081125).
+    - Spanish (thanks, Camaleón; closes: #1081762).
+
+ -- Colin Watson <cjwatson@debian.org>  Thu, 10 Oct 2024 20:31:52 +0100
+
+debusine (0.5.0) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Improvements with the aim of making debusine usable as a build daemon.
+    - Progress towards making debusine usable by security teams.
+    - Provide a more attractive and consistent UI for artifacts and work
+      requests.
+    - Make task-killing tests more reliable (closes: #1077903).
+
+ -- Colin Watson <cjwatson@debian.org>  Tue, 03 Sep 2024 10:26:12 +0100
+
+debusine (0.4.1) unstable; urgency=medium
+
+  * New release.
+    - Declare that we require Python 3.11 in Debian packaging (closes:
+      #1074254).
+
+ -- Colin Watson <cjwatson@debian.org>  Fri, 28 Jun 2024 09:55:46 +0100
+
+debusine (0.4.0.1) unstable; urgency=medium
+
+  * Reupload 0.4.0 with binaries.
+
+ -- Colin Watson <cjwatson@debian.org>  Mon, 24 Jun 2024 12:49:28 +0100
+
+debusine (0.4.0) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Allow retrying work requests.
+    - Binary-only NMU support for sbuild.
+    - Add a signing service.
+    - Fix some integration test failures.
+
+ -- Colin Watson <cjwatson@debian.org>  Mon, 24 Jun 2024 11:32:34 +0100
+
+debusine (0.3.2) unstable; urgency=medium
+
+  * New release, mainly to fix autopkgtest failures on slow architectures.
+
+ -- Colin Watson <cjwatson@debian.org>  Mon, 03 Jun 2024 08:38:43 +0100
+
+debusine (0.3.1) unstable; urgency=medium
+
+  * New release, mainly bug-fixes to 0.3.0 (see release-history document for
+    details).
+
+ -- Colin Watson <cjwatson@debian.org>  Tue, 28 May 2024 11:23:48 +0100
+
+debusine (0.3.0) unstable; urgency=medium
+
+  * New release (see release-history document for details).  Highlights:
+    - The focus of this milestone is on automatic orchestration of building
+      blocks, to allow tasks to be scheduled for all items of a collection.
+      For example, Debusine can now automatically schedule Lintian tasks for
+      all packages in a suite.
+    - Added collections and workflows.
+    - Added a new lookup syntax, taking advantage of collections.
+  * Run integration tests using piuparts from trixie rather than unstable.
+  * Mark debusine-doc as Multi-Arch: foreign.
+
+ -- Colin Watson <cjwatson@debian.org>  Thu, 23 May 2024 08:37:15 +0100
+
+debusine (0.2.1) unstable; urgency=medium
+
+  * New release, mainly bug fixes.
+  * Remove "Recommends: fakemachine"; debos doesn't require it.
+  * Install systemd units with dh_installsystemd.
+  * Ensure that the worker runs with the kvm group.
+  * Remove worker dependency on libwww-perl.
+  * Limit simplesystemimagebuild autopkgtest to amd64 for now.
+
+ -- Colin Watson <cjwatson@debian.org>  Thu, 07 Mar 2024 12:02:42 +0000
+
+debusine (0.2.0) unstable; urgency=medium
+
+  * New release (see release-history document for details).  Highlights:
+    - Added artifact file storage system.
+    - Debian developers can use Debusine to run various QA tasks against
+      packages they are preparing.  Those tasks can be scheduled through the
+      API or through the web UI.
+  * Note that it is not possible to directly migrate a database installed
+    using 0.1.0.  Migrations from this release to future releases will be
+    possible.
+
+ -- Colin Watson <cjwatson@debian.org>  Thu, 29 Feb 2024 12:39:05 +0000
+
+debusine (0.1.0) experimental; urgency=medium
+
+  * Initial Release.
+
+  [ Raphaël Hertzog ]
+  * Made plans and came up with the design.
+
+  [ Carles Pina i Estany ]
+  * Implemented the initial features. We now have:
+    - A server that can drives many workers over a worker-initiated websocket
+      connection. The worker use the server's API to get work requests
+      and provide results.
+    - An Sbuild task that workers can run
+
+ -- Raphaël Hertzog <raphael@freexian.com>  Fri, 09 Sep 2022 15:12:54 +0200

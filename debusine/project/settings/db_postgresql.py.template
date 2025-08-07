@@ -1,0 +1,18 @@
+"""
+PostgreSQL settings.
+
+Defaults to unix socket with user auth.
+"""
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': '_DBC_DBNAME_',
+        'USER': '_DBC_DBUSER_',
+        'PASSWORD': '_DBC_DBPASS_',
+        'HOST': '_DBC_HOST_',
+        'PORT': '_DBC_DBPORT_',
+        'TEST': {'NAME': 'debusine-test'},
+        'ATOMIC_REQUESTS': True,
+    }
+}

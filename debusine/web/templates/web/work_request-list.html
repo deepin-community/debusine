@@ -1,0 +1,18 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>
+        <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#work-requests">Work Requests</a>
+        are how
+        <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#tasks">tasks</a>
+        are scheduled to be processed by workers. Here you can see a list of
+        current and past work requests processed by Debusine.
+    </p>
+    {% if workspace %}<p>Workspace: {{ workspace }}</p>{% endif %}
+    {% if paginator %}
+        {% widget paginator %}
+    {% else %}
+        <p id="work_request-list-empty">No work requests.</p>
+    {% endif %}
+{% endblock %}

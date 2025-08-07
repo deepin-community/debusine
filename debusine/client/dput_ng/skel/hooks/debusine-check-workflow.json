@@ -1,0 +1,5 @@
+{
+    "description": "check debusine workflow for distribution",
+    "path": "debusine.client.dput_ng.hooks.check_workflow",
+    "pre": true
+}

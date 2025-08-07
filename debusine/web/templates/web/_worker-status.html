@@ -1,0 +1,9 @@
+{% if status == "disconnected" %}
+    <span class="badge text-bg-warning">Disconnected</span>
+{% elif status == "idle" %}
+    <span class="badge text-bg-success">Idle</span>
+{% elif status == "disabled" %}
+    <span class="badge text-bg-danger">Disabled</span>
+{% else %}
+    {{ status }}
+{% endif %}

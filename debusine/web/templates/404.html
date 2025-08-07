@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>404 Not Found</title>
+    </head>
+    <body>
+        <h1>404 Not Found</h1>
+        {% if error %}
+            <p>{{ error }}</p>
+        {% elif exception != "Resolver404" %}
+            <p>{{ exception }}</p>
+        {% endif %}
+    </body>
+</html>

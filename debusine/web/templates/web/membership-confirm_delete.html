@@ -1,0 +1,19 @@
+{% extends base_template %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p id="intro">
+        {% if object.user == user %}
+            Are you sure you want to remove <b>yourself</b>
+        {% else %}
+            Are you sure you want to remove user <b>
+            {% include "web/_user_link_full.html" with user=object.user only %}
+        </b>
+    {% endif %}
+    from group <b>{{ object.group.name }}</b> in scope <b>{{ object.group.scope }}</b>?
+</p>
+<form method="post">
+    {% csrf_token %}
+    <button class="btn btn-danger btn-primary btn-sm" type="submit">Delete</button>
+    <a class="btn btn-primary btn-sm" href="{{ group.get_absolute_url }}">Cancel</a>
+</form>
+{% endblock %}

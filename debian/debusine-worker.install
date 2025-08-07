@@ -1,0 +1,3 @@
+usr/bin/debusine-worker
+bin/debefivm-create /usr/share/debusine-worker
+bin/mini-ukify /usr/share/debusine-worker

@@ -1,0 +1,3 @@
+# The incus executor makes this executable when adding it to container
+# images.
+python3-debusine: script-not-executable [usr/lib/python3/dist-packages/debusine/tasks/executors/data/lxc.generator]

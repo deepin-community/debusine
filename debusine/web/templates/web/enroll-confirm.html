@@ -1,0 +1,39 @@
+{% extends base_template %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    {% if payload %}
+        <p>
+            <tt>debusine setup</tt> (possibly run by you) requested access to this debusine server using your account.
+        </p>
+        <p id="created-at">
+            The request was made at {{ object.created_at|date:"Y-m-d H:i" }} ({{ object.created_at|timesince }} ago) from <b>{{ payload.hostname }}</b> for scope
+            <b>{{ payload.scope }}</b>.
+        </p>
+        <p id="challenge">
+            Please check that the challenge words in <tt>debusine setup</tt>'s output are: <b>{{ payload.challenge }}</b>.
+        </p>
+        <p>If the challenge checks out as you expect, you can confirm enrollment with the button below.</p>
+        {% if not scope_valid %}
+            <div id="bad-scope" class="alert alert-warning" role="alert">
+                The scope <b>{{ payload.scope }}</b> is not present in this Debusine instance.
+            </div>
+        {% endif %}
+    {% else %}
+        <div id="bad-payload" class="alert alert-warning" role="alert">
+            The data filed for this enrollment seem to be corrupted: please retry the procedure with <tt>debusine setup</tt>.
+        </div>
+    {% endif %}
+    {% if payload %}
+        <form method="post" id="confirm-form">
+            {% csrf_token %}
+            <button class="btn btn-danger btn-sm"
+                    type="submit"
+                    name="outcome"
+                    value="confirm">Confirm</button>
+            <button class="btn btn-secondary btn-sm"
+                    type="submit"
+                    name="outcome"
+                    value="cancel">Cancel</button>
+        </form>
+    {% endif %}
+{% endblock %}

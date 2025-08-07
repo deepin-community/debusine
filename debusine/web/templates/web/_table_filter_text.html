@@ -1,0 +1,9 @@
+<div class="input-group flex-grow-1">
+    <label class="input-group-text" for="{{ filter.filter_prefix }}">{{ filter.label }}:</label>
+    <input type="text"
+           class="form-control"
+           id="{{ filter.filter_prefix }}"
+           name="{{ filter.filter_prefix }}"
+           value="{{ filter.value }}"
+           {% if filter.placeholder %}placeholder="{{ filter.placeholder }}"{% endif %}>
+</div>

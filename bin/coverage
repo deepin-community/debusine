@@ -1,0 +1,496 @@
+#!/usr/bin/python3
+#
+# Copyright © The Debusine Developers
+# See the AUTHORS file at the top-level directory of this distribution
+#
+# This file is part of Debusine. It is subject to the license terms
+# in the LICENSE file found in the top-level directory of this
+# distribution. No part of Debusine, including this file, may be copied,
+# modified, propagated, or distributed except according to the terms
+# contained in the LICENSE file.
+
+"""Run coverage testing on a subset of Debusine's code."""
+
+import abc
+import argparse
+import importlib
+import importlib.util
+import os
+import re
+import shlex
+import subprocess
+import sys
+import types
+from collections import defaultdict
+from collections.abc import Generator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import NamedTuple, Self
+
+from rich.console import Console
+
+COVERAGE = ["python3", "-m", "coverage"]
+
+console = Console()
+top_srcdir = Path(sys.argv[0]).parent.parent.absolute()
+
+
+class Fail(Exception):
+    """There was an error in the script."""
+
+
+@contextmanager
+def local_sys_path() -> Generator[None, None, None]:
+    """Temporarily add top_srcdir to sys.path."""
+    old_sys_path = list(sys.path)
+    try:
+        sys.path = [top_srcdir.as_posix()] + sys.path
+        yield
+    finally:
+        sys.path = old_sys_path
+
+
+class Options(NamedTuple):
+    """Test running options."""
+
+    #: True to stop tests at the first failure
+    failfast: bool
+    #: Patterns used with -k
+    patterns: list[str]
+    #: Verbose output
+    verbose: bool
+    #: Use pg_virtualenv
+    isolate_db: bool = False
+    #: Do not run commands, print them only
+    dry_run: bool = False
+
+
+class Runner(abc.ABC):
+    """A way to run tests."""
+
+    #: True if this runner can run on multiple targets with the same command
+    MULTIPLE_TARGETS: bool = False
+
+    def __init__(self, options: Options, targets: list["Target"]) -> None:
+        """
+        Set up runner.
+
+        :param targets: list of targets to run
+        """
+        if not self.MULTIPLE_TARGETS and len(targets) > 1:
+            raise AssertionError(
+                "multiple targets given to runner that doesn't support them"
+            )
+        self.options = options
+        self.targets = targets
+        self.returncode: int | None = None
+
+    def get_wrappers_cmd(self) -> list[str]:
+        """Get generic wrappers to be prepended to command line."""
+        return []
+
+    def get_coverage_cmd(self) -> list[str]:
+        """Get coverage testing command line."""
+        return COVERAGE + ["run"]
+
+    @abc.abstractmethod
+    def get_runner_cmd(self) -> list[str]:
+        """Get the test runner command line."""
+
+    def get_cmd(self) -> list[str]:
+        """Get the command to run all tests."""
+        cmd = []
+        cmd += self.get_wrappers_cmd()
+        cmd += self.get_coverage_cmd()
+        cmd += self.get_runner_cmd()
+        return cmd
+
+    def get_environment(self) -> dict[str, str] | None:
+        """Get extra environment vars to use for tests."""
+        return None
+
+    @property
+    def name(self) -> str:
+        """Get a string identifying this runner."""
+        return ' '.join(t.modname for t in self.targets)
+
+    def run(self) -> None:
+        """Run tests for the current targets."""
+        kwargs: dict[str, str] = {}
+        cmd = self.get_cmd()
+        if env := self.get_environment():
+            run_env = dict(os.environ)
+            run_env.update(env)
+            kwargs["env"] = run_env
+            for k, v in env.items():
+                console.print(
+                    "$", f"export {k}={v!r}", markup=False, style="green"
+                )
+        console.print("$", shlex.join(cmd), markup=False, style="green")
+        if self.options.dry_run:
+            return
+
+        result = subprocess.run(
+            cmd,
+            cwd=top_srcdir,
+            **kwargs,
+        )
+        self.stdout = result.stdout
+        self.stderr = result.stderr
+        self.returncode = result.returncode
+        if self.returncode != 0:
+            console.print(
+                f"Tests failed for {self.name}",
+                markup=False,
+                style="bright_red",
+            )
+
+
+class Django(Runner):
+    """Run tests with Django's test runner."""
+
+    MULTIPLE_TARGETS = True
+
+    def get_wrappers_cmd(self) -> list[str]:
+        """Get generic wrappers to be prepended to command line."""
+        cmd = super().get_wrappers_cmd()
+        if self.options.isolate_db:
+            cmd += ["pg_virtualenv"]
+        return cmd
+
+    def get_runner_cmd(self) -> list[str]:
+        """Get the test runner command line."""
+        cmd: list[str] = ["./manage.py", "test"]
+        if self.options.verbose:
+            cmd.append("-v2")
+        if self.options.failfast:
+            cmd.append("--failfast")
+        for pattern in self.options.patterns:
+            cmd += ["-k", pattern]
+        cmd += [target.modname for target in self.targets]
+        return cmd
+
+
+class DjangoParallel(Django):
+    """Run tests with Django's test runner, in parallel."""
+
+    # Avoid coalescing multiple packages in a single parallel test run: we know
+    # some packages can be parallel tested, but all of them may not be
+    # parallel-tested together (yet)
+    MULTIPLE_TARGETS = False
+
+    def get_coverage_cmd(self) -> list[str]:
+        """Get coverage testing command line."""
+        cmd = super().get_coverage_cmd()
+        cmd.append("--concurrency=multiprocessing")
+        return cmd
+
+    def get_runner_cmd(self) -> list[str]:
+        """Get the test runner command line."""
+        cmd = super().get_runner_cmd()
+        cmd.append("--parallel=auto")
+        return cmd
+
+
+class DjangoSigning(Django):
+    """Run tests with Django's test runner, with signing configuration."""
+
+    def get_environment(self) -> dict[str, str] | None:
+        """Get extra environment vars to use for tests."""
+        return {"DJANGO_SETTINGS_MODULE": "debusine.signing.settings"}
+
+
+class Unittest(Runner):
+    """Run tests using unittest's discover."""
+
+    def get_runner_cmd(self) -> list[str]:
+        """Get the test runner command line."""
+        cmd: list[str] = ["-m", "unittest", "discover"]
+        if self.options.verbose:
+            cmd.append("--verbose")
+        if self.options.failfast:
+            cmd.append("--failfast")
+        for pattern in self.options.patterns:
+            cmd += ["-k", pattern]
+        cmd += [target.modname for target in self.targets]
+        return cmd
+
+
+class Runners:
+    """Collection of runners and their targets."""
+
+    def __init__(self, options: Options) -> None:
+        """Initialize structures."""
+        self.options = options
+        self.multiple: dict[type[Runner], list[Target]] = defaultdict(list)
+        self.runners: list[Runner] = []
+        self.collecting: bool = False
+
+    def __enter__(self) -> Self:
+        """Start collecting targets."""
+        self.collecting = True
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,  # noqa: U100
+        exc_val: BaseException | None,  # noqa: U100
+        exc_tb: types.TracebackType | None,  # noqa: U100
+    ) -> None:
+        """Stop collecting targets."""
+        for runner_class, targets in self.multiple.items():
+            self.runners.append(runner_class(self.options, targets))
+        self.multiple.clear()
+        self.collecting = False
+
+    def add(self, target: "Target") -> None:
+        """Add a target."""
+        assert self.collecting
+        if target.runner.MULTIPLE_TARGETS:
+            self.multiple[target.runner].append(target)
+        else:
+            self.runners.append(target.runner(self.options, [target]))
+
+    @property
+    def targets(self) -> list["Target"]:
+        """Get a list of all targets."""
+        assert not self.collecting
+        return [target for runner in self.runners for target in runner.targets]
+
+    def run(self) -> None:
+        """Run all runners."""
+        assert not self.collecting
+        for runner in self.runners:
+            runner.run()
+
+
+class Coverage:
+    """Collect coverage data and generate reports."""
+
+    def __init__(self, targets: list["Target"], *, dry_run: bool = False):
+        """Store coverage options."""
+        self.targets = targets
+        self.dry_run = dry_run
+
+    def run(self, *args: str) -> None:
+        """Run a coverage command."""
+        cmd: list[str] = []
+        cmd += COVERAGE
+        cmd.extend(args)
+        console.print("$", shlex.join(cmd), markup=False, style="green")
+        if self.dry_run:
+            return
+        subprocess.run(cmd, cwd=top_srcdir, check=True)
+
+    def __enter__(self) -> Self:
+        """Start coverage collection."""
+        self.run("erase")
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,  # noqa: U100
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,  # noqa: U100
+    ) -> None:
+        """Do coverage reporting."""
+        if exc_val is not None:
+            return
+        self.run("combine")
+
+        report_args = [
+            "--precision=2",
+            "--include",
+            ",".join(t.include for t in self.targets),
+        ]
+        self.run("html", *report_args)
+        self.run("report", "--skip-covered", "--show-missing", *report_args)
+
+
+class Target(NamedTuple):
+    """Test target."""
+
+    #: Path relative to top_srcdir
+    relpath: Path
+    #: Module name
+    modname: str
+    #: Include pattern
+    include: str
+    #: Test runner to use
+    runner: type[Runner]
+
+    @classmethod
+    def get_runner(cls, modname: str) -> type[Runner]:
+        """Select the runner to use for the given module."""
+        if not (m := re.match(r"debusine\.(?P<app>\w+)(\.|$)", modname)):
+            return Unittest
+
+        django_parallel: type[Runner]
+        try:
+            importlib.import_module("tblib")
+            django_parallel = DjangoParallel
+        except ModuleNotFoundError:
+            django_parallel = Django
+
+        match m.group("app"):
+            case "signing":
+                return DjangoSigning
+            case "server" | "web":
+                return DjangoParallel
+            case "project" | "test" | "django":
+                # TODO: verify which of these can be run in parallel
+                return Django
+            case "db":
+                if modname.startswith("debusine.db.playground"):
+                    return django_parallel
+                else:
+                    return Django
+            case _:
+                return Unittest
+
+    @classmethod
+    def create_dir(cls, path: Path) -> Self:
+        """Infer a test target from a directory."""
+        path = path.absolute()
+        relpath = path.relative_to(top_srcdir)
+        modname = relpath.as_posix().replace("/", ".")
+        return Target(
+            relpath=relpath,
+            modname=modname,
+            include=f"{relpath}/*",
+            runner=cls.get_runner(modname),
+        )
+
+    @classmethod
+    def create_file(cls, path: Path) -> Self:
+        """Infer a test target from a file."""
+        # Test a single module, inferring test location from debusine
+        # coding practices
+        path = path.absolute()
+        relpath = path.relative_to(top_srcdir)
+        name = relpath.name.removesuffix(".py")
+        testfile = path.parent / "tests" / f"test_{name}.py"
+        testfile_relpath = testfile.relative_to(top_srcdir)
+        if not testfile.exists():
+            raise Fail(
+                f"{testfile_relpath} not found for"
+                f" {path.relative_to(top_srcdir)}"
+            )
+        modname = (
+            testfile_relpath.as_posix().removesuffix(".py").replace("/", ".")
+        )
+        return Target(
+            relpath=relpath,
+            modname=modname,
+            include=relpath.as_posix(),
+            runner=cls.get_runner(modname),
+        )
+
+    @classmethod
+    def create(cls, path: Path) -> Self:
+        """Infer a test target from a path."""
+        if path.is_dir():
+            return cls.create_dir(path)
+        elif path.is_file():
+            return cls.create_file(path)
+        else:
+            with local_sys_path():
+                try:
+                    spec = importlib.util.find_spec(path.as_posix())
+                except ModuleNotFoundError:
+                    raise Fail(
+                        "running a test by name is not yet implemented:"
+                        " use -k instead"
+                    )
+            path = Path(spec.origin)
+            if path.name == "__init__.py":
+                path = path.parent
+            return cls.create(path)
+
+
+def main():
+    """Run coverage testing on a subset of Debusine's code."""
+    parser = argparse.ArgumentParser(
+        description="Run coverage testing on a subset of Debusine's code."
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Verbose output",
+    )
+    parser.add_argument(
+        "-f",
+        "--failfast",
+        action="store_true",
+        help="stop running the test suite after first failed test",
+    )
+    parser.add_argument(
+        "-k",
+        dest="patterns",
+        action="append",
+        type=str,
+        help=(
+            "Only run test methods and classes"
+            " that match the pattern or substring."
+            " Can be used multiple times. Same as unittest -k option."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print computed todo list instead of running tests",
+    )
+    parser.add_argument(
+        "--isolate-db",
+        action="store_true",
+        help="use pg_virtualenv to run tests in a separate database",
+    )
+    parser.add_argument(
+        "path",
+        type=Path,
+        nargs="*",
+        action="store",
+        help="code path to test for coverage",
+    )
+    args = parser.parse_args()
+
+    options = Options(
+        failfast=args.failfast,
+        patterns=args.patterns or [],
+        verbose=args.verbose,
+        isolate_db=args.isolate_db,
+        dry_run=args.dry_run,
+    )
+
+    paths: list[Path]
+    if not args.path or any(
+        p.exists() and p.samefile(Path("debusine")) for p in args.path
+    ):
+        paths = [
+            p
+            for p in Path("debusine").iterdir()
+            if p.is_dir() and not p.name.startswith("_")
+        ]
+    else:
+        paths = args.path
+
+    # Build the list of test/coverage targets
+    with Runners(options) as runners:
+        for path in paths:
+            runners.add(Target.create(path))
+
+    # Run tests and collect coverage
+    with Coverage(runners.targets, dry_run=args.dry_run):
+        runners.run()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Fail as e:
+        console.print(e, style="bold red")
+        sys.exit(1)
+    except Exception:
+        console.print_exception()
+        sys.exit(2)

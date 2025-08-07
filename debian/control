@@ -1,15 +1,236 @@
-Source: template-repository
-Section: unknown
+Source: debusine
+Section: devel
 Priority: optional
-Maintainer: Tsic404 <liuheng@deepin.org>
-Build-Depends: debhelper (>= 11)
-Standards-Version: 4.1.3
-Homepage: https://github.com/deepin-community/template-repository
-#Vcs-Browser: https://salsa.debian.org/debian/deepin-community-template-repository
-#Vcs-Git: https://salsa.debian.org/debian/deepin-community-template-repository.git
+Maintainer: Raphaël Hertzog <raphael@freexian.com>
+Uploaders: Colin Watson <cjwatson@debian.org>
+Build-Depends:
+ debhelper-compat (= 13),
+ devscripts,
+ dh-sequence-python3,
+ dh-sequence-sphinxdoc <!nodoc>,
+ dput-ng <!nocheck>,
+ graphviz <!nodoc>,
+ libjs-jquery-isonscreen <!nodoc>,
+ libjs-jquery-tablesorter <!nodoc>,
+ libjs-jquery-throttle-debounce <!nodoc>,
+ libjs-select2.js,
+ openssl <!nocheck>,
+ postgresql <!nocheck>,
+ pybuild-plugin-pyproject,
+ python3 <!nocheck>,
+ python3-aiohttp <!nodoc>,
+ python3-boto3 <!nodoc>,
+ python3-botocore <!nodoc>,
+ python3-celery <!nodoc>,
+ python3-channels-redis <!nodoc>,
+ python3-configobj <!nodoc>,
+ python3-coverage <!nocheck>,
+ python3-cryptography <!nocheck>,
+ python3-daphne <!nodoc>,
+ python3-dateutil <!nocheck>,
+ python3-debian <!nodoc>,
+ python3-django (>= 3:4.2) <!nodoc>,
+ python3-django-celery-results <!nodoc>,
+ python3-django-channels <!nodoc>,
+ python3-django-cte <!nodoc>,
+ python3-django-pglocks <!nodoc>,
+ python3-django-pgtrigger <!nodoc>,
+ python3-djangorestframework <!nodoc>,
+ python3-doc <!nocheck>,
+ python3-email-validator <!nodoc>,
+ python3-fabric <!nocheck> <!nodoc>,
+ python3-fasteners <!nodoc>,
+ python3-hatch-vcs,
+ python3-hatchling,
+ python3-hcloud <!nocheck> <!nodoc>,
+ python3-jsonpath-rw <!nodoc>,
+ python3-jwcrypto <!nocheck>,
+ python3-lxml <!nocheck>,
+ python3-nacl <!nocheck>,
+ python3-packaging <!nocheck>,
+ python3-paramiko <!nocheck>,
+ python3-prometheus-client <!nocheck> <!nodoc>,
+ python3-psutil <!nocheck> <!nodoc>,
+ python3-psycopg2 <!nodoc>,
+ python3-pydantic <!nodoc>,
+ python3-pyftpdlib <!nocheck>,
+ python3-pygments <!nodoc>,
+ python3-requests <!nocheck>,
+ python3-requests-file <!nocheck> <!nodoc>,
+ python3-requests-oauthlib <!nocheck>,
+ python3-requests-toolbelt <!nodoc>,
+ python3-responses <!nocheck>,
+ python3-rich <!nocheck>,
+ python3-sphinx <!nodoc>,
+ python3-sphinx-copybutton <!nodoc>,
+ python3-sphinx-rtd-theme <!nodoc>,
+ python3-tenacity <!nodoc>,
+ python3-yaml <!nodoc>,
+ redis-server <!nocheck>,
+ sbsigntool [amd64 arm64 armhf i386 riscv64] <!nocheck>,
+ xkcdpass <!nocheck>,
+Standards-Version: 4.6.2
+Homepage: https://salsa.debian.org/freexian-team/debusine
+Vcs-Browser: https://salsa.debian.org/freexian-team/debusine
+Vcs-Git: https://salsa.debian.org/freexian-team/debusine.git
+Rules-Requires-Root: no
+X-Python3-Version: >= 3.11
 
-Package: template-repository
-Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: <insert up to 60 chars description>
- <insert long description, indented with spaces>
+Package: python3-debusine
+Architecture: all
+Section: python
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+Description: Main Python library for debusine
+ Debusine is a general purpose software factory tailored to the needs of a
+ Debian-based distribution.
+ .
+ This package contains most of the Python libraries.
+
+Package: python3-debusine-server
+Architecture: all
+Section: python
+Depends:
+ python3-debusine (= ${source:Version}),
+ python3-debusine-signing (= ${source:Version}),
+ python3-django (>= 3:4.2),
+ ${misc:Depends},
+ ${python3:Depends},
+Description: Server part of the Python library for debusine
+ Debusine is a general purpose software factory tailored to the needs of a
+ Debian-based distribution.
+ .
+ This package contains the server related part of the Python libraries.
+
+Package: python3-debusine-signing
+Architecture: all
+Section: python
+Depends:
+ python3-debusine (= ${source:Version}),
+ ${misc:Depends},
+ ${python3:Depends},
+Breaks:
+ python3-debusine-server (<< 0.3.3~)
+Replaces:
+ python3-debusine-server (<< 0.3.3~)
+Description: Signing worker part of the Python library for debusine
+ Debusine is a general purpose software factory tailored to the needs of a
+ Debian-based distribution.
+ .
+ This package contains the signing worker related part of the Python
+ libraries.
+
+Package: debusine-server
+Architecture: all
+Depends:
+ adduser,
+ arch-test,
+ daphne,
+ dbconfig-pgsql | dbconfig-no-thanks,
+ libjs-select2.js,
+ python3-debusine-server (= ${source:Version}),
+ ${misc:Depends},
+ ${python3:Depends},
+Recommends:
+ default-mta | mail-transport-agent,
+ nginx-core | httpd,
+ postgresql,
+ redis-server,
+ sensible-utils,
+Suggests:
+ munin-node,
+Description: Services to run a debusine server
+ Debusine is a general purpose software factory tailored to the needs of a
+ Debian-based distribution.
+ .
+ This package provides all the required services to run a debusine server.
+
+Package: debusine-client
+Architecture: all
+Depends:
+ python3-debusine (= ${source:Version}),
+ ${misc:Depends},
+ ${python3:Depends},
+Enhances:
+ dput-ng,
+Description: Command line client to interact with a debusine server
+ Debusine is a general purpose software factory tailored to the needs of a
+ Debian-based distribution.
+ .
+ This package provides the command line client used to interact with a
+ debusine server.
+
+Package: debusine-worker
+Architecture: all
+Depends:
+ adduser,
+ arch-test,
+ python3-debusine (= ${source:Version}),
+ udev,
+ ${misc:Depends},
+ ${python3:Depends},
+Recommends:
+ autopkgtest,
+ binutils-for-host | binutils-multiarch,
+ debootstrap,
+ debvm,
+ dosfstools,
+ e2fsprogs,
+ fdisk,
+ mmdebstrap,
+ mount,
+ mtools,
+ parted,
+ qemu-utils,
+ sbuild,
+ systemd,
+ systemd-ukify | systemd (<< 255.1-1),
+ uidmap,
+ xz-utils,
+Suggests:
+ incus,
+ qemu-kvm,
+Description: Standalone daemon handling work requests for a debusine server
+ Debusine is a general purpose software factory tailored to the needs of a
+ Debian-based distribution.
+ .
+ This package provides the services to run a debusine worker executing work
+ requests sent by a debusine server.
+
+Package: debusine-signing
+Architecture: all
+Depends:
+ arch-test,
+ dbconfig-pgsql | dbconfig-no-thanks,
+ openssl,
+ python3-debusine-signing (= ${source:Version}),
+ python3-gpg,
+ ${misc:Depends},
+ ${python3:Depends},
+Recommends:
+ devscripts,
+ sbsigntool,
+Description: Signing service for debusine
+ Debusine is a general purpose software factory tailored to the needs of a
+ Debian-based distribution.
+ .
+ This package provides a service that holds private keys and uses them to
+ sign data on behalf of debusine.
+
+Package: debusine-doc
+Architecture: all
+Multi-Arch: foreign
+Built-Using:
+ ${sphinxdoc:Built-Using},
+Section: doc
+Depends:
+ ${misc:Depends},
+ ${sphinxdoc:Depends},
+Description: Documentation for debusine
+ Debusine is a general purpose software factory tailored to the needs of a
+ Debian-based distribution.
+ .
+ The documentation includes end-user documentation (how to use), administrator
+ documentation (how to setup) and developer documentation (how to contribute,
+ design and API).

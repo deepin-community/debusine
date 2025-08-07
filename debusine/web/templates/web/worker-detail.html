@@ -1,0 +1,100 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <table class="table table-sm">
+        <tbody>
+            <tr id="row-name">
+                <th>Name</th>
+                <td>{{ worker.name }}</td>
+            </tr>
+            <tr id="row-worker_type">
+                <th>Type</th>
+                <td>
+                    {% if worker.worker_type == "external" %}
+                        <i class="bi {% icon "worker_external" %}"></i>
+                    {% elif worker.worker_type == "celery" %}
+                        <i class="bi {% icon "worker_celery" %}"></i>
+                    {% elif worker.worker_type == "signing" %}
+                        <i class="bi {% icon "worker_signing" %}"></i>
+                    {% endif %}
+                    {{ worker.worker_type }}
+                </td>
+            </tr>
+            <tr id="row-registered_at">
+                <th>Registered at</th>
+                <td>
+                    {% if worker.registered_at %}
+                        {{ worker.registered_at|date:"Y-m-d H:i" }} ({{ worker.registered_at|timesince }} ago)
+                    {% else %}
+                        never
+                    {% endif %}
+                </td>
+            </tr>
+            <tr id="row-connected_at">
+                <th>Connected at</th>
+                <td>
+                    {% if worker.connected_at %}
+                        {{ worker.connected_at|date:"Y-m-d H:i" }} ({{ worker.connected_at|timesince }} ago)
+                    {% else %}
+                        never
+                    {% endif %}
+                </td>
+            </tr>
+            <tr id="row-instance_created_at">
+                <th>Instance created at</th>
+                <td>
+                    {% if worker.instance_created_at %}
+                        {{ worker.instance_created_at|date:"Y-m-d H:i" }} ({{ worker.instance_created_at|timesince }} ago)
+                    {% else %}
+                        never
+                    {% endif %}
+                </td>
+            </tr>
+            <tr id="row-concurrency">
+                <th>Concurrency</th>
+                <td>{{ worker.concurrency }}</td>
+            </tr>
+            {% if show_metadata %}
+                <tr id="row-metadata">
+                    <th>Metadata</th>
+                    <td>
+                        <div class="card">
+                            <div class="card-body text-white bg-dark">{{ worker.metadata|format_yaml }}</div>
+                            <div class="card-footer text-end text-white text-italic fw-light bg-dark">
+                                <small><em>
+                                    {% if worker.dynamic_metadata_updated_at %}
+                                        Dynamic metadata updated at {{ worker.dynamic_metadata_updated_at|date:"Y-m-d H:i" }} ({{ worker.dynamic_metadata_updated_at|timesince }} ago)
+                                    {% else %}
+                                        Dynamic metadata never updated.
+                                    {% endif %}
+                                </em></small>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            {% endif %}
+            {% if worker.worker_pool %}
+                <tr id="row-worker_pool">
+                    <th>Worker pool</th>
+                    <td>
+                        {% if show_metadata and worker.worker_pool_data %}
+                            <div class="card">
+                                <div class="card-header">
+                                    <a href="{{ worker.worker_pool.get_absolute_url }}">{{ worker.worker_pool.name }}</a>
+                                </div>
+                                <div class="card-body text-white bg-dark">{{ worker.worker_pool_data|format_yaml }}</div>
+                            </div>
+                        {% else %}
+                            <a href="{{ worker.worker_pool.get_absolute_url }}">{{ worker.worker_pool.name }}</a>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endif %}
+        </tbody>
+    </table>
+    {% if work_requests %}
+        <h2>Work requests served</h2>
+        {% widget work_requests %}
+    {% endif %}
+{% endblock %}

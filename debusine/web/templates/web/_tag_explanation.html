@@ -1,0 +1,23 @@
+{% with explanation=tag_content.explanation %}
+    {% with uuid=tag_content.uuid %}
+        <div class="accordion" id="explanation-{{ uuid }}">
+            <div class="accordion-item">
+                <h2 class="accordion-header">
+                    <button class="accordion-button collapsed"
+                            type="button"
+                            data-bs-toggle="collapse"
+                            data-bs-target="#collapseexplanation-{{ uuid }}"
+                            aria-expanded="false"
+                            aria-controls="collapseexplanation-{{ uuid }}">Explanation</button>
+                </h2>
+                <div id="collapseexplanation-{{ uuid }}"
+                     class="accordion-collapse collapse accordion-collapse"
+                     data-bs-parent="#explanation-{{ uuid }}">
+                    <div class="accordion-body">
+                        <pre>{{ explanation }}</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    {% endwith %}
+{% endwith %}

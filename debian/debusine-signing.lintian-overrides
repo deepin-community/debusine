@@ -1,0 +1,2 @@
+# package has no own debconf template as all is done via dbconfig
+debusine-signing: no-debconf-templates

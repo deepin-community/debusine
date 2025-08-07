@@ -1,0 +1,80 @@
+# Debconf translations for debusine.
+# Copyright (C) 2025 THE debusine'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the debusine package.
+# Paulo Henrique de Lima Santana (phls) <phls@debian.org>, 2025.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: debusine_0.8.1\n"
+"Report-Msgid-Bugs-To: debusine@packages.debian.org\n"
+"POT-Creation-Date: 2024-07-15 16:24+0200\n"
+"PO-Revision-Date: 2025-02-16 16:04-0300\n"
+"Last-Translator: Paulo Henrique de Lima Santana (phls) <phls@debian.org>\n"
+"Language-Team: Brazilian Portuguese <debian-l10n-"
+"portuguese@lists.debian.org>\n"
+"Language: pt_BR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: Poedit 3.5\n"
+
+#. Type: select
+#. Description
+#: ../debusine-server.templates:1001
+msgid "Web server to configure automatically:"
+msgstr "Servidor web para configurar automaticamente:"
+
+#. Type: select
+#. Description
+#: ../debusine-server.templates:1001
+msgid ""
+"debusine-server supports any web server that supports proxying to a Unix-"
+"domain socket, but only nginx can be configured automatically."
+msgstr ""
+"O debusine-server suporta qualquer servidor web que suporte proxy para um "
+"soquete de domínio Unix, mas somente o Nginx pode ser configurado "
+"automaticamente."
+
+#. Type: select
+#. Description
+#: ../debusine-server.templates:1001
+msgid ""
+"Please select the web server that should be configured automatically for "
+"debusine-server."
+msgstr ""
+"Por favor selecione o servidor web que deve ser configurado automaticamente "
+"para o debusine-server."
+
+#. Type: note
+#. Description
+#: ../debusine-server.templates:2001
+msgid "Configuring debusine-server in Nginx"
+msgstr "Configurando o debusine-server no Nginx"
+
+#. Type: note
+#. Description
+#: ../debusine-server.templates:2001
+msgid ""
+"The debusine-server Nginx configuration file is a vhost configuration. "
+"Hence, it comes with a server name which is set to localhost. You will have "
+"to change it properly."
+msgstr ""
+"O arquivo de configuração do debusine-server no Nginx é uma configuração "
+"vhost. Portanto, ele vem com um nome de servidor que é definido como "
+"localhost. Você terá que alterá-lo corretamente."
+
+#. Type: boolean
+#. Description
+#: ../debusine-server.templates:3001
+msgid "Should the web server be restarted now?"
+msgstr "O servidor web deve ser reiniciado agora?"
+
+#. Type: boolean
+#. Description
+#: ../debusine-server.templates:3001
+msgid ""
+"In order to activate the new configuration, the configured web server has to "
+"be restarted."
+msgstr ""
+"Para ativar uma nova configuração, o servidor web configurado precisa ser "
+"reiniciado."

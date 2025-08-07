@@ -1,0 +1,17 @@
+[Unit]
+Description=Migrate Debusine Signing Worker to latest database schema
+After=network.target
+After=postgresql.service
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=oneshot
+User=debusine-signing
+Group=debusine-signing
+
+ExecStart=/usr/bin/debusine-signing migrate
+
+WorkingDirectory=~
+PrivateTmp=true

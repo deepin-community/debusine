@@ -1,0 +1,20 @@
+{% load artifacts %}
+{% load debusine %}
+<td>
+    <span class="bi bi-{{ artifact|artifact_icon_name }}"></span>
+    {{ artifact|artifact_category_label|capfirst }}
+</td>
+<td>
+    <a class="text-decoration-none" href="{{ artifact.get_absolute_url }}">{{ artifact.get_label }}</a>
+    {% if not artifact.complete %}(incomplete){% endif %}
+</td>
+<td>
+    <div class="btn-group btn-group-sm"
+         role="group"
+         aria-label="Artifact shortcuts">
+        {% ui_shortcuts artifact as shortcuts %}
+        {% for shortcut in shortcuts %}
+            {% widget shortcut %}
+        {% endfor %}
+    </div>
+</td>

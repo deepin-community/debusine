@@ -1,0 +1,24 @@
+Template: debusine-server/configure-webserver
+Type: select
+Choices: none, nginx
+Default: none
+_Description: Web server to configure automatically:
+ debusine-server supports any web server that supports proxying to a
+ Unix-domain socket, but only nginx can be configured automatically.
+ .
+ Please select the web server that should be configured
+ automatically for debusine-server.
+
+Template: debusine-server/nginx-choice
+Type: note
+_Description: Configuring debusine-server in Nginx
+ The debusine-server Nginx configuration file is a vhost configuration.
+ Hence, it comes with a server name which is set to localhost. You
+ will have to change it properly.
+
+Template: debusine-server/restart-webserver
+Type: boolean
+Default: true
+_Description: Should the web server be restarted now?
+ In order to activate the new configuration, the configured
+ web server has to be restarted.

@@ -1,0 +1,11 @@
+{% if status == "PASS" %}
+    <span class="badge text-bg-success">Pass</span>
+{% elif status == "FAIL" %}
+    <span class="badge text-bg-warning">Fail</span>
+{% elif status == "FLAKY" %}
+    <span class="badge text-bg-warning">Flaky</span>
+{% elif status == "SKIP" %}
+    <span class="badge text-bg-info">Skip</span>
+{% else %}
+    <span class="badge text-bg-danger">Unknown status: {{ status }}</span>
+{% endif %}

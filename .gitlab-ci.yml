@@ -1,0 +1,239 @@
+---
+include:
+  - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/salsa-ci.yml
+  - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/pipeline-jobs.yml
+
+# Extend the stages defined by salsa-ci
+stages:
+  - upstream-tests  # Added to run upstream tests first
+  - provisioning
+  - build
+  - publish
+  - test
+  - deploy  # Added to deploy the pages
+
+variables:
+  DROP_PRIVS: 'setpriv --reuid=debusine-test --regid=debusine-test --init-groups --reset-env --'
+  RELEASE: 'bookworm-backports'
+  SALSA_CI_DISABLE_BUILD_PACKAGE_ANY: 1
+  SALSA_CI_DISABLE_BUILD_PACKAGE_I386: 1
+  SALSA_CI_DISABLE_CROSSBUILD_ARM64: 1
+  SALSA_CI_DISABLE_APTLY: 0
+  SALSA_CI_AUTOPKGTEST_ALLOWED_EXIT_STATUS: '0,2'
+  SALSA_CI_IMAGES_LINTIAN: ${SALSA_CI_IMAGES}/lintian:bookworm
+
+## Traditional upstream tests on top of salsa-ci
+image: 'debian:bookworm-backports'
+
+.prepare-test: &prepare-test
+  - export LANG=C.UTF-8
+  - useradd -m debusine-test
+  - "chown -R debusine-test: ."
+  - $DROP_PRIVS env NON_INTERACTIVE=1 bin/quick-setup.sh create_directories
+  - ci/pin-django-from-bookworm-backports.sh
+  - apt-get update
+
+.before-test: &before-test
+  - *prepare-test
+  # Runtime dependencies
+  - NON_INTERACTIVE=1 bin/quick-setup.sh install_packages
+
+documentation-linting:
+  stage: upstream-tests
+  script:
+    - *before-test
+    # Generate documentation
+    - $DROP_PRIVS make -C docs html O="-w _build/warnings.txt"
+    - rm -rf docs/_build/doctrees  # Save space in generated artifact
+    - "! test -s docs/_build/warnings.txt || (echo 'ERROR: Sphinx generated warnings:' >&2; cat docs/_build/warnings.txt >&2; exit 1)"
+    - $DROP_PRIVS make -C docs linkcheck
+  artifacts:
+    expose_as: "generated documentation"
+    paths:
+      - docs/_build/html/index.html  # Single out index.html for the benefit of expose_as
+      - docs/_build
+    when: always
+    expire_in: 2 weeks
+  allow_failure: true
+
+code-linting:
+  stage: upstream-tests
+  dependencies: []
+  script:
+    - *before-test
+    - apt-get install -y git libpq-dev pre-commit
+    # https://github.com/pypa/setuptools/issues/4519
+    - echo 'setuptools<72' >constraints.txt
+    - $DROP_PRIVS env PIP_CONSTRAINT="$(pwd)/constraints.txt" pre-commit run -a
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+
+migrations:
+  stage: upstream-tests
+  dependencies: []
+  script:
+    - *before-test
+    - service postgresql start || true
+    - su - postgres -c "createuser -d root" || true
+    - su - postgres -c "createdb --owner root debusine"
+    - python3 manage.py migrate
+    - python3 manage.py makemigrations --check --dry-run
+
+.unit-tests-shared: &unit-tests-shared
+  stage: upstream-tests
+  dependencies: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+
+.unit-tests-coverage: &unit-tests-coverage
+  coverage: '/TOTAL COVERAGE.* (\d+(?:\.\d+)?%)/'
+  artifacts:
+    expose_as: 'test coverage report'
+    paths:
+      - .coverage/html/index.html
+      - .coverage
+    when: always
+    expire_in: 2 weeks
+
+.unit-tests-shared-prepare: &unit-tests-shared-prepare
+  - service postgresql start || true
+  - service redis-server start
+  - su - postgres -c "createuser -d debusine-test" || true
+
+.unit-tests-shared-cleanup: &unit-tests-shared-cleanup
+  - service postgresql stop || true
+
+unit-tests-trixie:
+  <<: *unit-tests-shared
+  image: "debian:trixie"
+  variables:
+    RELEASE: "trixie"
+  script:
+    - *prepare-test
+    - apt-get -y install python3-django
+    - NON_INTERACTIVE=1 bin/quick-setup.sh install_packages
+    - *unit-tests-shared-prepare
+    - $DROP_PRIVS make coverage VERBOSE=1 TOTAL_COVERAGE=1
+    - *unit-tests-shared-cleanup
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_COMMIT_BRANCH =~ /^debian\/.*-backports$/
+      when: never
+    - when: on_success
+
+unit-tests:
+  <<: *unit-tests-shared
+  <<: *unit-tests-coverage
+  script:
+    - *before-test
+    - apt-get -y install python3-hatch-vcs python3-hatchling
+    - *unit-tests-shared-prepare
+    - $DROP_PRIVS make coverage VERBOSE=1 TOTAL_COVERAGE=1
+    - *unit-tests-shared-cleanup
+    - "(python3 -m coverage report -m | grep --silent '^TOTAL.*100%$') || (echo 'ERROR: Coverage must be 100%' >&2 ; exit 1)"
+    - hatchling metadata >/dev/null
+
+unit-tests-pip:
+  <<: *unit-tests-shared
+  script:
+    - *prepare-test
+    - apt-get install -y python3-venv sensible-utils postgresql postgresql-client redis-server graphviz make openssl sbsigntool python3-gpg arch-test dpkg-dev devscripts dput-ng
+    - $DROP_PRIVS python3 -m venv venv
+    - $DROP_PRIVS sed -i 's/psycopg2/&-binary/' pyproject.toml
+    - $DROP_PRIVS venv/bin/pip install -e .[server,client,signing,tests] coverage
+    # We have to symlink the dput and gpg modules in from the system rather
+    # than installing them from PyPI.
+    - $DROP_PRIVS ln -s /usr/lib/python3/dist-packages/dput venv/lib/python*/site-packages/
+    - $DROP_PRIVS ln -s /usr/lib/python3/dist-packages/gpg venv/lib/python*/site-packages/
+    - *unit-tests-shared-prepare
+    - $DROP_PRIVS sh -c ". venv/bin/activate; make coverage VERBOSE=1 TOTAL_COVERAGE=1"
+    - *unit-tests-shared-cleanup
+  rules:
+    - if: $CI_COMMIT_BRANCH =~ /^debian\/.*-backports$/
+      when: never
+    - when: on_success
+
+# Pass git-derived version information through to the generated tarball.
+# This requires complete history.
+extract-source:
+  extends: .provisioning-extract-source
+  before_script:
+    - apt-get update
+    - apt-get -y install python3-hatch-vcs python3-hatchling
+    - git fetch --unshallow
+    - git fetch --tags https://salsa.debian.org/freexian-team/debusine
+    - hatchling version >debian/.salsa-ci-hatchling-version
+  variables:
+    SALSA_CI_GBP_BUILDPACKAGE_ARGS: "--git-export=WC"
+
+autopkgtest:
+  extends: .test-autopkgtest
+  parallel:
+    matrix:
+      - SALSA_CI_AUTOPKGTEST_ARGS:
+          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=unit-tests-tasks --test-name=unit-tests-client --test-name=unit-tests-worker --test-name=unit-tests-server --test-name=unit-tests-signing --test-name=smoke-test-server"
+          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-generic"
+          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-task-signing"
+          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-tasks-mmdebstrap-autopkgtest-sbuild-lintian-piuparts-blhc-debdiff"
+          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-task-simplesystemimagebuild"
+          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-task-simplesystemimagebuild"
+
+autopkgtest-trixie:
+  extends: .test-autopkgtest
+  variables:
+    RELEASE: "trixie"
+  parallel:
+    matrix:
+      - SALSA_CI_AUTOPKGTEST_ARGS:
+          - "--test-name=unit-tests-tasks --test-name=unit-tests-client --test-name=unit-tests-worker --test-name=unit-tests-server --test-name=unit-tests-signing --test-name=smoke-test-server"
+          - "--test-name=integration-tests-generic"
+          - "--test-name=integration-tests-task-signing"
+          - "--test-name=integration-tests-tasks-mmdebstrap-autopkgtest-sbuild-lintian-piuparts-blhc-debdiff"
+          - "--test-name=integration-tests-task-simplesystemimagebuild"
+  allow_failure: true
+  rules:
+    - if: $CI_COMMIT_BRANCH =~ /^debian\/.*-backports$/
+      when: never
+    - when: on_success
+
+piuparts:
+  extends: .test-piuparts
+  before_script:
+    - ci/pin-django-from-bookworm-backports.sh
+  variables:
+    SALSA_CI_PIUPARTS_PRE_INSTALL_SCRIPT: ci/pin-django-from-bookworm-backports.sh
+
+aptly:
+  extends: .publish-aptly
+  variables:
+    RELEASE: 'bookworm'
+
+pages:
+  stage: deploy
+  dependencies:
+    - unit-tests             # To retrieve .coverage artifact
+    - aptly                  # To retrieve the apt repository
+    - documentation-linting  # To retrieve the documentation
+  script:
+    # Move documentation in the public space
+    - mv docs/_build/html/ public/
+    # Move coverage report in the public space
+    - mv .coverage/html public/coverage
+    # Copy the repository created by aptly
+    - (mkdir public/repository && cd aptly && cp -rfv . ../public/repository)
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    # Don't publish the documentation in random forks
+    - if: $CI_PROJECT_PATH != "freexian-team/debusine" && $CI_PROJECT_PATH != "rhertzog/debusine"
+      when: never
+    - if: $CI_COMMIT_BRANCH == "devel"

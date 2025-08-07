@@ -1,0 +1,45 @@
+{% extends base_template %}
+{% load static %}
+{% block content %}
+    <h1 class="mb-3">{{ title }}</h1>
+    {% if request.signon %}
+        <h2 class="mb-3">Log in with an external account</h2>
+        <ul class="list-group mb-4">
+            {% for provider, identity in request.signon.status %}
+                <li class="list-group-item list-group-item-action">
+                    {% include "account/_signon_provider_icon.html" with provider=provider only %}
+                    {% if identity %}
+                        Logged in with {{ provider.label }} as {{ identity.subject }}
+                    {% else %}
+                        <a href="{{ provider.get_authorization_url }}">Login with {{ provider.label }}</a>
+                    {% endif %}
+                    {% if provider.name == "salsa" %}
+                        <br>
+                        <small><i class="bi bi-exclamation-triangle"></i> In this early phase of Debusine development, external login with
+                            Salsa is limited to users in the <i>debian</i> group: that is,
+                        Debian Developers</small>
+                    {% endif %}
+                </li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+    <h2 class="mb-3">Log in with a Debusine account</h2>
+    {% if form.errors %}<p>Your username and password didn't match. Please try again.</p>{% endif %}
+    <form method="post" action="{% url "login" %}">
+        {% csrf_token %}
+        <table class="table table-sm">
+            <tr>
+                <td>{{ form.username.label_tag }}</td>
+                <td>{{ form.username }}</td>
+            </tr>
+            <tr>
+                <td>{{ form.password.label_tag }}</td>
+                <td>{{ form.password }}</td>
+            </tr>
+        </table>
+        <p>
+            <input class="btn btn-primary btn-sm" type="submit" value="Login">
+        </p>
+        {% if next != logout_path %}<input type="hidden" name="next" value="{{ next }}" />{% endif %}
+    </form>
+{% endblock %}

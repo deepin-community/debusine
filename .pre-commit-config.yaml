@@ -1,0 +1,145 @@
+---
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    # Deliberately pinned to <5.0.0 for compatibility with pre-commit
+    # <3.2.0.
+    rev: v4.6.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-ast
+      - id: check-merge-conflict
+      - id: check-yaml
+        args:
+          # .gitlab-ci.yml uses extensions, so do a syntax-only check.
+          - --unsafe
+      - id: debug-statements
+      - id: file-contents-sorter
+        files: ^\.codespell-ignore
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.19.1
+    hooks:
+      - id: pyupgrade
+        args:
+          - --keep-percent-format
+          - --py311-plus
+  - repo: https://github.com/isidentical/teyit
+    rev: 0.4.3
+    hooks:
+      - id: teyit
+  - repo: https://github.com/PyCQA/isort
+    # Deliberately pinned to <6.0.0 for compatibility with pre-commit
+    # <3.2.0.
+    rev: 5.13.2
+    hooks:
+      - id: isort
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 25.1.0
+    hooks:
+      - id: black
+  - repo: https://github.com/djlint/djLint
+    rev: v1.36.4
+    hooks:
+      - id: djlint-reformat
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.1.2
+    hooks:
+      - id: flake8
+        args:
+          - --docstring-convention=all
+          - --unused-arguments-ignore-variadic-names
+          - --unused-arguments-ignore-stub-functions
+        additional_dependencies:
+          - flake8-absolute-import
+          - flake8-builtins
+          - flake8-docstrings
+          - flake8-logging-format
+          - flake8-rst-docstrings
+          - flake8-unused-arguments
+          # https://github.com/globality-corp/flake8-logging-format/issues/68
+          - setuptools
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        args: ["-I", ".codespell-ignore"]
+        exclude: |
+          (?x)^(
+            data/
+            |debian/po/
+            |debusine/web/static/web/css/debusine-code-highlight.css
+          )
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    # Deliberately pinned to an old version for compatibility with
+    # django-stubs 5.1.0.
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        args: []
+        pass_filenames: false
+        additional_dependencies:
+          # Unfortunately we have to duplicate the relevant parts of
+          # .[server,signing,tests] here; see
+          # https://github.com/pre-commit/pre-commit/issues/730.
+          - aiohttp
+          - boto3
+          - botocore
+          - celery[redis]
+          - channels
+          - channels_redis
+          - cryptography
+          - daphne
+          - Django>=4.2,<5.3
+          - django-celery-results
+          - django-cte
+          - django-pglocks
+          - django-pgtrigger
+          - djangorestframework
+          - email_validator
+          - fabric
+          - fasteners
+          - hcloud
+          - jsonpath-rw
+          - jwcrypto
+          - lxml
+          - packaging
+          - paramiko
+          - prometheus-client
+          - psycopg2
+          - psutil
+          - pydantic
+          - pyftpdlib
+          - PyNaCl
+          - python-dateutil
+          - python_debian
+          - PyYAML
+          - requests
+          - requests-file
+          - requests-oauthlib
+          - requests-toolbelt
+          - responses!=0.25.5
+          - rich
+          - tenacity
+          # Dependencies specific to mypy.
+          - boto3-stubs[boto3,ec2,s3]
+          - django-stubs[compatible-mypy]
+          - djangorestframework-stubs
+          - pydantic[email]
+          - types-lxml
+          - types-paramiko
+          - types-psutil
+          - types-pygments
+          - types-python-dateutil
+          - types-PyYAML
+          - types-requests
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        # Always pass this as input, since it's sourced by other scripts.
+        args: [debian/tests/utils/add-debusine-log-files-to-artifacts.sh]
+  - repo: https://github.com/jendrikseipp/vulture
+    rev: v2.14
+    hooks:
+      - id: vulture

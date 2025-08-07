@@ -1,0 +1,2 @@
+examples/worker/config.ini
+bin/configure-worker-incus.sh

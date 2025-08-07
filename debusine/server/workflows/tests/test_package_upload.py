@@ -1,0 +1,696 @@
+# Copyright © The Debusine Developers
+# See the AUTHORS file at the top-level directory of this distribution
+#
+# This file is part of Debusine. It is subject to the license terms
+# in the LICENSE file found in the top-level directory of this
+# distribution. No part of Debusine, including this file, may be copied,
+# modified, propagated, or distributed except according to the terms
+# contained in the LICENSE file.
+
+"""Unit tests for the package upload workflow."""
+
+from collections.abc import Sequence
+from typing import Any
+from unittest.mock import call, patch
+
+try:
+    import pydantic.v1 as pydantic
+except ImportError:
+    import pydantic as pydantic  # type: ignore
+
+from debusine.artifacts.models import ArtifactCategory, CollectionCategory
+from debusine.db.context import context
+from debusine.db.models import (
+    Artifact,
+    CollectionItem,
+    TaskDatabase,
+    WorkRequest,
+    WorkflowTemplate,
+    default_workspace,
+)
+from debusine.server.tasks.models import PackageUploadTarget
+from debusine.server.workflows import (
+    PackageUploadWorkflow,
+    WorkflowValidationError,
+)
+from debusine.server.workflows.base import orchestrate_workflow
+from debusine.server.workflows.models import PackageUploadWorkflowData
+from debusine.tasks.models import BaseDynamicTaskData, LookupMultiple, TaskTypes
+from debusine.test.django import TestCase
+
+
+class PackageUploadWorkflowTests(TestCase):
+    """Unit tests for :py:class:`PackageUploadWorkflow`."""
+
+    def create_package_upload_workflow(
+        self,
+        *,
+        extra_task_data: dict[str, Any],
+        validate: bool = True,
+    ) -> PackageUploadWorkflow:
+        """Create a package upload workflow."""
+        task_data = {
+            "target": "sftp://upload.example.org/queue/",
+            "require_signature": False,
+        }
+        task_data.update(extra_task_data)
+        wr = self.playground.create_workflow(
+            task_name="package_upload", task_data=task_data, validate=validate
+        )
+        return PackageUploadWorkflow(wr)
+
+    def create_source_package(self, *, name: str = "hello") -> Artifact:
+        """Create a minimal `debian:source-package` artifact."""
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={
+                "name": name,
+                "version": "1.0",
+                "type": "dpkg",
+                "dsc_fields": {},
+            },
+        )
+        return artifact
+
+    def create_source_binary_artifacts(
+        self, architectures: Sequence[str] | None = None
+    ) -> tuple[Artifact, list[Artifact]]:
+        """Return one source and a list of binary packages (one per arch)."""
+        if architectures is None:
+            architectures = ("amd64",)
+        collection = self.playground.create_collection(
+            "test", CollectionCategory.TEST
+        )
+
+        source = self.create_source_package()
+        binaries = [
+            self.playground.create_minimal_binary_packages_artifact(
+                "hello", "1.0-1", "1.0-1", architecture
+            )
+            for architecture in architectures
+        ]
+        for binary in binaries:
+            CollectionItem.objects.create_from_artifact(
+                binary,
+                parent_collection=collection,
+                name=f"binary-{binary.data['architecture']}",
+                created_by_user=self.playground.get_default_user(),
+                data={},
+                created_by_workflow=None,
+            )
+
+        return source, binaries
+
+    def test_validate_input_source_binary_artifacts_not_set(self) -> None:
+        """Invalid: source_artifact and binaries_artifacts not set."""
+        w = self.create_package_upload_workflow(
+            extra_task_data={}, validate=False
+        )
+
+        with self.assertRaisesRegex(
+            WorkflowValidationError,
+            '"source_artifact" or "binary_artifacts" must be set',
+        ):
+            w.validate_input()
+
+    @context.disable_permission_checks()
+    def test_validate_input_source_package_vendor_codename_not_set(
+        self,
+    ) -> None:
+        """Raise WorkflowValidationError: vendor and codename required."""
+        source = self.create_source_package()
+
+        w = self.create_package_upload_workflow(
+            extra_task_data={"source_artifact": source.id},
+            validate=False,
+        )
+
+        with self.assertRaisesRegex(
+            WorkflowValidationError,
+            '"vendor" and "codename" are required when '
+            'source artifact category is debian:source-package',
+        ):
+            w.validate_input()
+
+    def test_create_orchestrator(self) -> None:
+        """A PackageUploadWorkflow can be instantiated."""
+        source_artifact = self.create_source_package().id
+        binary_artifacts = ["internal@collections/name:build-arm64"]
+        target_distribution = "debian:bookworm"
+
+        w = self.create_package_upload_workflow(
+            extra_task_data={
+                "source_artifact": source_artifact,
+                "binary_artifacts": binary_artifacts,
+                "target_distribution": target_distribution,
+                "vendor": "debian",
+                "codename": "bookworm",
+            }
+        )
+
+        self.assertEqual(w.data.source_artifact, source_artifact)
+        self.assertEqual(
+            w.data.binary_artifacts, LookupMultiple.parse_obj(binary_artifacts)
+        )
+
+        self.assertEqual(w.data.target_distribution, target_distribution)
+
+    def orchestrate(self, *, data: dict[str, Any]) -> WorkRequest:
+        """Create a PackageUpload workflow and call orchestrate_workflow."""
+        template = WorkflowTemplate.objects.create(
+            name="package_upload",
+            workspace=default_workspace(),
+            task_name="package_upload",
+        )
+
+        wr = self.playground.create_workflow(
+            template,
+            task_data={**{"target": "sftp://upload.example.org/queue"}, **data},
+        )
+
+        wr.mark_running()
+        orchestrate_workflow(wr)
+
+        return wr
+
+    def test_populate_makesourcepackageupload(self) -> None:
+        """
+        Workflow create two children work request.
+
+        Work requests created:
+        -makesourcepackageupload
+        -package_upload
+        """
+        with context.disable_permission_checks():
+            source = self.create_source_package()
+
+        with patch.object(
+            PackageUploadWorkflow,
+            "requires_artifact",
+            wraps=PackageUploadWorkflow.requires_artifact,
+        ) as requires_artifact:
+            wr = self.orchestrate(
+                data={
+                    "source_artifact": source.id,
+                    "target_distribution": "debian:bookworm",
+                    "since_version": "1.0",
+                    "require_signature": False,
+                    "vendor": "debian",
+                    "codename": "bullseye",
+                }
+            )
+
+        self.assertEqual(wr.children.count(), 2)
+
+        [make_source] = wr.children.filter(task_name="makesourcepackageupload")
+
+        self.assertEqual(
+            make_source.workflow_data_json,
+            {
+                "display_name": "Make .changes file",
+                "step": "source-package-upload",
+            },
+        )
+
+        self.assertEqual(
+            make_source.task_data,
+            {
+                "environment": "debian/match:codename=bullseye",
+                "input": {"source_artifact": source.id},
+                "since_version": "1.0",
+                "target_distribution": "debian:bookworm",
+            },
+        )
+
+        self.assertEqual(make_source.parent, wr)
+
+        self.assertEqual(
+            make_source.event_reactions_json,
+            {
+                "on_creation": [],
+                "on_failure": [],
+                "on_success": [
+                    {
+                        "action": "update-collection-with-artifacts",
+                        "artifact_filters": {"category": "debian:upload"},
+                        "collection": "internal@collections",
+                        "name_template": "package-upload-source",
+                        "variables": None,
+                    }
+                ],
+                "on_unblock": [],
+            },
+        )
+
+        # Assert that self.requires_artifact() was called.
+        # It cannot test the dependencies because source_artifact was
+        # a real artifact and not a promise (so no dependencies were added)
+        self.assertIn(
+            call(make_source, source.id), requires_artifact.mock_calls
+        )
+
+        [package_upload] = wr.children.filter(task_name="packageupload")
+        self.assertEqual(package_upload.task_type, TaskTypes.SERVER)
+        self.assertEqual(
+            package_upload.workflow_data_json,
+            {
+                "display_name": (
+                    "Package upload internal@collections/"
+                    "name:package-upload-source"
+                ),
+                "step": (
+                    "package-upload-internal@collections/"
+                    "name:package-upload-source"
+                ),
+            },
+        )
+        self.assertEqual(
+            package_upload.task_data,
+            {
+                "input": {
+                    "upload": "internal@collections/name:package-upload-source"
+                },
+                "target": "sftp://upload.example.org/queue",
+                "delayed_days": None,
+            },
+        )
+
+        self.assertQuerySetEqual(
+            package_upload.dependencies.all(),
+            list(
+                WorkRequest.objects.filter(task_name="makesourcepackageupload")
+            ),
+        )
+
+    def test_populate_source_is_package_upload(self) -> None:
+        """Category source package is UPLOAD: skip makesourcepackageupload."""
+        source = self.playground.create_upload_artifacts().upload
+
+        wr = self.orchestrate(
+            data={
+                "source_artifact": source.id,
+                "target_distribution": "debian:bookworm",
+                "since_version": "1.0",
+                "require_signature": False,
+            }
+        )
+
+        self.assertEqual(wr.children.count(), 1)
+
+        [package_upload] = wr.children.filter(task_name="packageupload")
+        self.assertEqual(
+            package_upload.workflow_data_json,
+            {
+                "display_name": f"Package upload {source.id}",
+                "step": f"package-upload-{source.id}",
+            },
+        )
+        self.assertEqual(
+            package_upload.task_data,
+            {
+                "input": {"upload": source.id},
+                "target": "sftp://upload.example.org/queue",
+                "delayed_days": None,
+            },
+        )
+
+    def test_populate_package_uploads_binaries_only(self) -> None:
+        """The workflow create children package uploads: binaries only."""
+        with context.disable_permission_checks():
+            (_, [binary]) = self.create_source_binary_artifacts()
+
+        wr = self.orchestrate(
+            data={
+                "binary_artifacts": [binary.id],
+                "target_distribution": "debian:bookworm",
+                "require_signature": False,
+            },
+        )
+
+        self.assertEqual(
+            wr.children.filter(task_name="packageupload").count(), 1
+        )
+
+        # Other properties of the created package is tested on different
+        # unit tests
+
+    def test_populate_merge_uploads(self) -> None:
+        """Test mergeuploads task is created (merge_uploads=True)."""
+        architectures = ("amd64", "i386")
+        with context.disable_permission_checks():
+            (source, binaries) = self.create_source_binary_artifacts(
+                architectures=architectures
+            )
+        binaries_collection = binaries[0].parent_collections.earliest("id")
+
+        wr = self.orchestrate(
+            data={
+                "source_artifact": source.id,
+                "binary_artifacts": {
+                    "collection": binaries_collection.id,
+                    "name__startswith": "binary-",
+                },
+                "require_signature": False,
+                "target_distribution": "debian/match:codename=bookworm",
+                "merge_uploads": True,
+                "vendor": "debian",
+                "codename": "bullseye",
+            }
+        )
+
+        self.assertEqual(
+            wr.children.filter(task_name="mergeuploads").count(), 1
+        )
+
+        [merge_uploads] = wr.children.filter(task_name="mergeuploads")
+
+        self.assertEqual(
+            merge_uploads.task_data,
+            {
+                "input": {
+                    "uploads": [
+                        "internal@collections/name:package-upload-source"
+                    ]
+                    + [
+                        f"{binaries_collection.id}@collections/"
+                        f"name:binary-{architecture}"
+                        for architecture in architectures
+                    ]
+                },
+            },
+        )
+
+        self.assertQuerySetEqual(
+            merge_uploads.dependencies.all(),
+            list(
+                WorkRequest.objects.filter(task_name="makesourcepackageupload")
+            ),
+        )
+
+        self.assertEqual(
+            wr.children.filter(task_name="packageupload").count(), 1
+        )
+        [package_upload] = wr.children.filter(task_name="packageupload")
+        self.assertEqual(
+            package_upload.task_data,
+            {
+                "input": {
+                    "upload": "internal@collections/name:package-upload-merged"
+                },
+                "target": "sftp://upload.example.org/queue",
+                "delayed_days": None,
+            },
+        )
+
+    def test_upload_debsign(self) -> None:
+        """Upload signed artifacts."""
+        with context.disable_permission_checks():
+            source, [binary] = self.create_source_binary_artifacts()
+
+        wr = self.orchestrate(
+            data={
+                "source_artifact": source.id,
+                "binary_artifacts": [binary.id],
+                "require_signature": False,
+                "target_distribution": "debian/match:codename=bookworm",
+                "merge_uploads": True,
+                "key": "ABC123",
+                "vendor": "debian",
+                "codename": "bookworm",
+            },
+        )
+
+        [signer] = wr.children.filter(
+            task_type=TaskTypes.SIGNING, task_name="debsign"
+        )
+        self.assertEqual(
+            signer.task_data,
+            {
+                "key": "ABC123",
+                "unsigned": "internal@collections/name:package-upload-merged",
+            },
+        )
+        identifier = "internal@collections/name:package-upload-merged"
+        self.assertEqual(
+            signer.workflow_data_json,
+            {
+                "display_name": f"Sign upload for {identifier}",
+                "step": f"debsign-{identifier}",
+            },
+        )
+
+        self.assertQuerySetEqual(
+            signer.dependencies.all(),
+            list(
+                WorkRequest.objects.filter(
+                    task_type=TaskTypes.WORKER, task_name="mergeuploads"
+                )
+            ),
+        )
+        signed_name = (
+            "package-upload-signed-"
+            "internal_collections_name_package-upload-merged"
+        )
+        self.assertEqual(
+            signer.event_reactions_json,
+            {
+                "on_creation": [],
+                "on_failure": [],
+                "on_success": [
+                    {
+                        "action": "update-collection-with-artifacts",
+                        "artifact_filters": {"category": "debian:upload"},
+                        "collection": "internal@collections",
+                        "name_template": signed_name,
+                        "variables": None,
+                    }
+                ],
+                "on_unblock": [],
+            },
+        )
+
+        [uploader] = wr.children.filter(task_name="packageupload")
+        self.assertEqual(
+            uploader.task_data,
+            {
+                "input": {"upload": f"internal@collections/name:{signed_name}"},
+                "target": "sftp://upload.example.org/queue",
+                "delayed_days": None,
+            },
+        )
+
+        self.assertEqual(
+            uploader.workflow_data_json,
+            {
+                "display_name": "Package upload "
+                "internal@collections/name:package-upload-merged",
+                "step": (
+                    "package-upload-internal@collections/"
+                    "name:package-upload-merged"
+                ),
+            },
+        )
+
+    def test_upload_externaldebsign(self) -> None:
+        """Upload external signed artifacts."""
+        with context.disable_permission_checks():
+            source, [binary] = self.create_source_binary_artifacts()
+
+        wr = self.orchestrate(
+            data={
+                "source_artifact": source.id,
+                "binary_artifacts": [binary.id],
+                "target_distribution": "debian/match:codename=bookworm",
+                "merge_uploads": True,
+                "require_signature": True,
+                "vendor": "debian",
+                "codename": "bookworm",
+            },
+        )
+
+        [signer] = wr.children.filter(
+            task_type=TaskTypes.WAIT, task_name="externaldebsign"
+        )
+        self.assertEqual(
+            signer.task_data,
+            {"unsigned": "internal@collections/name:package-upload-merged"},
+        )
+        identifier = "internal@collections/name:package-upload-merged"
+        self.assertEqual(
+            signer.workflow_data_json,
+            {
+                "display_name": (
+                    "Wait for signature on " f"upload for {identifier}"
+                ),
+                "step": f"external-debsign-{identifier}",
+                "needs_input": True,
+            },
+        )
+
+        self.assertQuerySetEqual(
+            signer.dependencies.all(),
+            list(
+                WorkRequest.objects.filter(
+                    task_type=TaskTypes.WORKER, task_name="mergeuploads"
+                )
+            ),
+        )
+        signed_name = (
+            "package-upload-signed-"
+            "internal_collections_name_package-upload-merged"
+        )
+        self.assertEqual(
+            signer.event_reactions_json,
+            {
+                "on_creation": [],
+                "on_failure": [],
+                "on_success": [
+                    {
+                        "action": "update-collection-with-artifacts",
+                        "artifact_filters": {"category": "debian:upload"},
+                        "collection": "internal@collections",
+                        "name_template": signed_name,
+                        "variables": None,
+                    }
+                ],
+                "on_unblock": [],
+            },
+        )
+
+        [uploader] = wr.children.filter(task_name="packageupload")
+        self.assertEqual(
+            uploader.task_data,
+            {
+                "input": {"upload": f"internal@collections/name:{signed_name}"},
+                "target": "sftp://upload.example.org/queue",
+                "delayed_days": None,
+            },
+        )
+
+    def test_upload_delayed(self) -> None:
+        """Upload to a delayed queue."""
+        with context.disable_permission_checks():
+            source = self.create_source_package()
+
+        wr = self.orchestrate(
+            data={
+                "source_artifact": source.id,
+                "delayed_days": 3,
+                "vendor": "debian",
+                "codename": "bookworm",
+            }
+        )
+
+        signed_name = (
+            "package-upload-signed-"
+            "internal_collections_name_package-upload-source"
+        )
+        uploader = wr.children.filter(task_name="packageupload").get()
+        self.assertEqual(
+            uploader.task_data,
+            {
+                "input": {"upload": f"internal@collections/name:{signed_name}"},
+                "target": "sftp://upload.example.org/queue",
+                "delayed_days": 3,
+            },
+        )
+
+    def test_orchestrate_idempotent(self) -> None:
+        """Calling orchestrate twice does not create new work requests."""
+        with context.disable_permission_checks():
+            source, binaries = self.create_source_binary_artifacts(
+                architectures=("amd64", "i386")
+            )
+        binaries_collection = binaries[0].parent_collections.earliest("id")
+
+        # Force a predictable default ordering.
+        with patch(
+            "debusine.db.models.collections.CollectionItem._meta.ordering",
+            ["id"],
+        ):
+            wr = self.orchestrate(
+                data={
+                    "source_artifact": source.id,
+                    "binary_artifacts": {
+                        "collection": binaries_collection.id,
+                        "name__startswith": "binary-",
+                    },
+                    "vendor": "debian",
+                    "codename": "bookworm",
+                    "merge_uploads": True,
+                },
+            )
+
+        children = set(wr.children.all())
+
+        # Force a different predictable default ordering.
+        with patch(
+            "debusine.db.models.collections.CollectionItem._meta.ordering",
+            ["-id"],
+        ):
+            PackageUploadWorkflow(wr).populate()
+
+        self.assertQuerySetEqual(wr.children.all(), children, ordered=False)
+
+    def test_compute_dynamic_data_source_artifact(self) -> None:
+        source_artifact = self.create_source_package(name="hello")
+
+        wr = self.playground.create_workflow(
+            task_name="package_upload",
+            task_data=PackageUploadWorkflowData(
+                source_artifact=source_artifact.id,
+                target=pydantic.parse_obj_as(
+                    PackageUploadTarget,
+                    "sftp://example.org",
+                ),
+                vendor="debian",
+                codename="trixie",
+            ),
+        )
+        workflow = PackageUploadWorkflow(wr)
+
+        self.assertEqual(
+            workflow.compute_dynamic_data(TaskDatabase(wr)),
+            BaseDynamicTaskData(subject="hello"),
+        )
+
+    def test_compute_dynamic_data_binary_artifacts(self) -> None:
+        binary_artifact = (
+            self.playground.create_minimal_binary_package_artifact(
+                srcpkg_name="hello"
+            )
+        )
+
+        wr = self.playground.create_workflow(
+            task_name="package_upload",
+            task_data=PackageUploadWorkflowData(
+                binary_artifacts=LookupMultiple.parse_obj([binary_artifact.id]),
+                source_artifact=None,
+                target=pydantic.parse_obj_as(
+                    PackageUploadTarget,
+                    "sftp://example.org",
+                ),
+                vendor="debian",
+                codename="trixie",
+            ),
+        )
+        workflow = PackageUploadWorkflow(wr)
+
+        self.assertEqual(
+            workflow.compute_dynamic_data(TaskDatabase(wr)),
+            BaseDynamicTaskData(subject="hello"),
+        )
+
+    @context.disable_permission_checks()
+    def test_get_label(self) -> None:
+        """Test get_label()."""
+        source = self.create_source_package()
+        w = self.create_package_upload_workflow(
+            extra_task_data={
+                "source_artifact": source.id,
+                "target_distribution": "debian:bookworm",
+                "vendor": "debian",
+                "codename": "bookworm",
+            }
+        )
+        self.assertEqual(w.get_label(), "run package uploads")

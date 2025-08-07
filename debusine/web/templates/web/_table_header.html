@@ -1,0 +1,13 @@
+{% load debusine %}
+<thead>
+    {% if table.filters %}
+        <tr>
+            <th colspan="{{ table.columns.columns|length }}">{% widget table.filters %}</th>
+        </tr>
+    {% endif %}
+    <tr>
+        {% for column in table.columns %}
+            <th {% if column.help_text %}title="{{ column.help_text }}"{% endif %}>{% widget column %}</th>
+        {% endfor %}
+    </tr>
+</thead>

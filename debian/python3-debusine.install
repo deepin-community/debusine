@@ -1,0 +1,16 @@
+usr/lib/python3*/dist-packages/debusine-*.dist-info/
+usr/lib/python3*/dist-packages/debusine/__init__.py
+usr/lib/python3*/dist-packages/debusine/artifacts/
+usr/lib/python3*/dist-packages/debusine/assets/
+usr/lib/python3*/dist-packages/debusine/client/
+usr/lib/python3*/dist-packages/debusine/py.typed
+usr/lib/python3*/dist-packages/debusine/tasks/
+usr/lib/python3*/dist-packages/debusine/test/
+usr/lib/python3*/dist-packages/debusine/utils/
+usr/lib/python3*/dist-packages/debusine/worker/
+
+# Modules that require Django, but without a direct dependency.  These
+# should only be used from other parts of debusine that require Django and
+# declare a proper dependency.
+usr/lib/python3*/dist-packages/debusine/__main__.py
+usr/lib/python3*/dist-packages/debusine/django/

@@ -1,0 +1,16 @@
+<li class="nav-item dropdown">
+    <a class="nav-link dropdown-toggle"
+       href="#"
+       role="button"
+       data-bs-toggle="dropdown"
+       aria-expanded="false">{{ collection.name }}</a>
+    <ul class="dropdown-menu">
+        <li>
+            <a class="dropdown-item" href="{{ collection.get_absolute_url }}">View</a>
+        </li>
+        <li>
+            <a class="dropdown-item"
+               href="{% url 'workspaces:collections:search' wname=collection.workspace.name cname=collection.name ccat=collection.category %}">Search</a>
+        </li>
+    </ul>
+</li>

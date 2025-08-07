@@ -1,0 +1,14 @@
+<tr>
+    <td title="{{ log.timestamp }}">{{ log.timestamp|timesince }}</td>
+    <td>{{ log.user }}</td>
+    <td>
+        {% if log.action == "accept" %}
+            <span class="bi bi-check2 text-success" title="Accept"></span>
+        {% elif log.action == "reject" %}
+            <span class="bi bi-x text-danger" title="Reject"></span>
+        {% elif log.action is not None %}
+            <span class="bi bi-x text-danger" title="Unknown action: {{ log.action }}"></span>
+        {% endif %}
+    </td>
+    <td>{{ log.notes|linebreaks }}</td>
+</tr>

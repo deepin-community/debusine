@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+
+# Copyright © The Debusine Developers
+# See the AUTHORS file at the top-level directory of this distribution
+#
+# This file is part of Debusine. It is subject to the license terms
+# in the LICENSE file found in the top-level directory of this
+# distribution. No part of Debusine, including this file, may be copied,
+# modified, propagated, or distributed except according to the terms
+# contained in the LICENSE file.
+
+"""
+Print a PEP-440-compatible version identifier.
+
+This identifier can be passed in the `SETUPTOOLS_SCM_PRETEND_VERSION`
+environment variable.  While dh-python would try to do this for us if left
+to its own devices, there are various corner cases that it doesn't handle.
+"""
+
+import re
+from argparse import ArgumentParser
+from pathlib import Path
+
+parser = ArgumentParser()
+parser.add_argument("upstream_version")
+args = parser.parse_args()
+
+salsa_ci_hatchling_version = Path("debian/.salsa-ci-hatchling-version")
+
+if "+salsaci+" in args.upstream_version and salsa_ci_hatchling_version.exists():
+    # When building in CI, we get git-derived version information passed
+    # through to us, since we don't have access to git metadata when
+    # building the package.
+    print(salsa_ci_hatchling_version.read_text())
+else:
+    # Treat pre-releases as essentially being repackagings of the same
+    # upstream version.  (In particular, this is true for backports.)
+    version = re.sub(r"~.*", "", args.upstream_version)
+    # "+something" suffixes are most likely to be present in stable updates.
+    # It's probably best to treat these as repackagings of the same upstream
+    # version too; a PEP-440-style post-release isn't quite expressive
+    # enough.
+    version = re.sub(r"\+.*", "", version)
+
+    print(version)

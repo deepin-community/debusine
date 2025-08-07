@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -e
+
+# shellcheck source-path=SCRIPTDIR
+source debian/tests/utils/add-debusine-log-files-to-artifacts.sh
+
+debian/tests/utils/integration-tests-setup-debusine-server.sh
+debian/tests/utils/integration-tests-setup-debusine-client.sh
+
+debian/tests/integration-tests-generic.py -v

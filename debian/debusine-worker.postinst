@@ -1,0 +1,48 @@
+#!/bin/sh
+
+set -e
+
+case "$1" in
+	configure)
+		passwd_version=$(dpkg-query -W -f'${Version}' passwd)
+		if dpkg --compare-versions "$passwd_version" ge "1:4.13+dfsg1"
+		then
+			# --add-subids-for-system was added in bookworm
+			# (this is needed for the setup of unshare)
+			# Workers running on older than bookworm need
+			# to be set up manually for unshare or not run
+			# tasks that need unshare
+			add_subids="--add-subids-for-system"
+		else
+			add_subids=""
+		fi
+		user="debusine-worker"
+		group="$user"
+		home="/var/lib/debusine/worker"
+
+		# Create debusine-worker user
+		if ! getent passwd "$user" > /dev/null 2>&1
+		then
+			useradd --system \
+				$add_subids \
+				--comment "Debusine Worker System user" \
+				--home-dir "$home" \
+				--create-home \
+				"$user"
+		fi
+    
+		# Create directories
+		directories="/etc/debusine/worker $home /var/log/debusine/worker"
+
+		# shellcheck disable=SC2086
+		mkdir -p $directories
+
+		# Change directory permissions
+		# shellcheck disable=SC2086
+		chown "$user:$group" $directories
+	;;
+esac
+
+#DEBHELPER#
+
+exit 0

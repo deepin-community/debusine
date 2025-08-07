@@ -1,0 +1,181 @@
+#!/usr/bin/python3
+#
+# Copyright © The Debusine Developers
+# See the AUTHORS file at the top-level directory of this distribution
+#
+# This file is part of Debusine. It is subject to the license terms
+# in the LICENSE file found in the top-level directory of this
+# distribution. No part of Debusine, including this file, may be copied,
+# modified, propagated, or distributed except according to the terms
+# contained in the LICENSE file.
+#
+
+"""
+Monitor debusine using a munin plugin.
+
+It is a multigraph plugin and plots the workrequest queue by workrequest type
+and for worker workrequests, it plots them by architecture. Additionally, there
+is a graph showing busy/connected/registered workers. These graps may help
+estimating whether the resources of a debusine installation suit the demand.
+
+Magic markers:
+#%# capabilities=autoconf multigraph
+"""
+
+import json
+import os
+import os.path
+import re
+import sys
+import typing
+import urllib.request
+
+JSONObject = dict[str, typing.Any]
+
+
+def die(message: str) -> typing.NoReturn:
+    """Print an error message and exit."""
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def guess_fqdn() -> str | None:
+    """
+    Guess the server name.
+
+    Attempt to use the DEBUSINE_FQDN environment variable and fall back to the
+    local.py configuration file.
+    """
+    try:
+        return os.environ["DEBUSINE_FQDN"]
+    except KeyError:
+        pass
+    try:
+        with open("/etc/debusine/server/local.py", encoding="utf8") as fh:
+            for line in fh:
+                if match := re.match(
+                    r"""^\s*DEBUSINE_FQDN\s*=\s*(["'])([^"'\\]+)\1\s*$""", line
+                ):
+                    return match.group(2)
+    except FileNotFoundError:
+        pass
+    return None
+
+
+def render_fetch_workers(data: JSONObject) -> None:
+    """Print the output for fetching the workers graph."""
+    for field in ("busy", "connected", "registered"):
+        print(
+            field + ".value",
+            sum(obj[field] for obj in data["workers"].values()),
+        )
+
+
+def render_fetch_tasks(data: JSONObject) -> None:
+    """Print the output for fetching the tasks graph."""
+    for key in ("Server", "Internal", "Workflow", "Signing", "Worker"):
+        print(key.lower() + ".value", data["tasks"][key]["pending"])
+
+
+def render_fetch_archtasks(data: JSONObject) -> None:
+    """Print the output for fetching the archtasks graph."""
+    for key, obj in sorted(data["worker_tasks_arch"].items()):
+        if key == "null":
+            continue
+        print(f"{key}.value {obj['pending']}")
+
+
+def do_fetch(data: JSONObject) -> None:
+    """Print the output for the fetch subcommand."""
+    print("multigraph debusine_workers")
+    render_fetch_workers(data)
+    print("multigraph debusine_tasks")
+    render_fetch_tasks(data)
+    print("multigraph debusine_archtasks")
+    render_fetch_archtasks(data)
+
+
+def do_config(data: JSONObject) -> None:
+    """Print the output for the config subcommand."""
+    print(
+        """multigraph debusine_workers
+graph_title Debusine workers
+graph_vlabel count
+graph_category devel
+graph_order registered connected busy
+busy.label Busy workers
+busy.draw AREA
+busy.colour 0066b3
+busy.min 0
+connected.label Connected workers
+connected.draw AREA
+connected.colour 00cc00
+connected.min 0
+registered.label Registered workers
+registered.draw AREA
+registered.colour ff8000
+registered.min 0
+multigraph debusine_tasks
+graph_title Debusine task queue size
+graph_vlabel count
+graph_category devel
+graph order server internal workflow signing worker
+server.label Server tasks
+server.draw AREASTACK
+server.min 0
+internal.label Internal tasks
+internal.draw AREASTACK
+internal.min 0
+workflow.label Workflows
+workflow.draw AREASTACK
+workflow.min 0
+signing.label Signing tasks
+signing.draw AREASTACK
+signing.min 0
+worker.label Worker tasks
+worker.draw AREASTACK
+worker.min 0
+multigraph debusine_archtasks
+graph_title Debusine worker task queue by architecture
+graph_vlabel count
+graph_category devel"""
+    )
+    for key in sorted(data["worker_tasks_arch"]):
+        if key == "null":
+            continue
+        print(
+            f"""{key}.label {key}
+{key}.draw AREASTACK
+{key}.min 0"""
+        )
+
+
+def load_data() -> JSONObject:
+    """Query the debusine server API for the statistics."""
+    if (fqdn := guess_fqdn()) is None:
+        die("please set DEBUSINE_FQDN")
+    with urllib.request.urlopen(
+        f"https://{fqdn}/api/1.0/service-status/"
+    ) as req:
+        data = json.load(req)
+        if not isinstance(data, dict):
+            die("debusine returned a non-object for service-status")
+        return data
+
+
+def main() -> None:
+    """Run the munin plugin."""
+    if os.environ.get("MUNIN_CAP_MULTIGRAPH", "0") != "1":
+        die("plugin requires multigraph support")
+    if len(sys.argv) < 2 or sys.argv[1] == "fetch":
+        do_fetch(load_data())
+    elif sys.argv[1] == "autoconf":
+        print("yes" if guess_fqdn() is not None else "no")
+    elif sys.argv[1] == "config":
+        do_config(load_data())
+    else:
+        die(f"invalid subcommand {sys.argv[1]}")
+
+
+if __name__ == "__main__":
+    main()

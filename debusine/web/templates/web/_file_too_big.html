@@ -1,0 +1,6 @@
+{% extends "web/_file_base.html" %}
+{% block file_contents %}
+    File too big ({{ file_in_artifact.file.size|filesizeformat }} &gt; {{ file_max_size|filesizeformat }}):
+    you can <a href="{{ file_in_artifact.get_absolute_url_raw }}">view it raw</a>
+    or <a href="{{ file_in_artifact.get_absolute_url_download }}">download</a> it instead.
+{% endblock %}

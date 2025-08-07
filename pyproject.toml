@@ -1,0 +1,354 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "[0-9]*"]
+
+[project]
+name = "debusine"
+dynamic = ["version"]
+description = "Debusine is a general purpose software factory tailored to the needs of a Debian-based distribution."
+readme = "README.md"
+requires-python = ">= 3.11"
+license = "GPL-3.0-or-later"
+license-files = { paths = ["LICENSE"] }
+authors = [
+  { name = "The Debusine Developers", email = "raphael@freexian.com" },
+]
+classifiers = [
+  "Framework :: Django",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Software Development",
+  "Typing :: Typed",
+]
+dependencies = [
+  "aiohttp >= 3.8.4",               # deb: python3-aiohttp (>= 3.8.4)
+  "fasteners",                      # deb: python3-fasteners
+  "psutil >= 5.9.4",                # deb: python3-psutil (>= 5.9.4)
+  "pydantic >= 1.7.4",              # deb: python3-pydantic (>= 1.7.4)
+  "email_validator",                # deb: python3-email-validator
+  "prometheus-client",              # deb: python3-prometheus-client
+  "python-dateutil",                # deb: python3-dateutil
+  "python_debian >= 0.1.49",        # deb: python3-debian (>= 0.1.49)
+  "PyYAML >= 6.0",                  # deb: python3-yaml (>= 6.0)
+  "requests >= 2.28.1",             # deb: python3-requests (>= 2.28.1)
+  "requests-file",                  # deb: python3-requests-file
+  "requests-toolbelt",              # deb: python3-requests-toolbelt
+  "rich",                           # deb: python3-rich
+  "tenacity >= 8.2.1",              # deb: python3-tenacity (>= 8.2.1)
+                                    # Packages not in pypi
+                                    # deb: arch-test
+                                    # deb: libjs-select2.js
+                                    # deb: pre-commit
+                                    # deb: sensible-utils (>= 0.0.17)
+]
+
+[project.urls]
+"Source code" = "https://salsa.debian.org/freexian-team/debusine"
+
+[project.optional-dependencies]
+server = [
+  "boto3",                          # deb: python3-boto3
+  "botocore",                       # deb: python3-botocore
+  "celery[redis]",                  # deb: python3-celery
+  "channels",                       # deb: python3-django-channels
+  "channels_redis >= 4.0.0",        # deb: python3-channels-redis (>= 4.0.0)
+  "daphne >= 4.0.0",                # deb: daphne (>= 4.0.0)
+  "Django >= 4.2,<5.3",             # deb: python3-django (>= 3:4.2)
+  "django-celery-results",          # deb: python3-django-celery-results
+  "django-cte",                     # deb: python3-django-cte
+  "django-pglocks",                 # deb: python3-django-pglocks
+  "django-pgtrigger",               # deb: python3-django-pgtrigger
+  "djangorestframework >= 3.14.0",  # deb: python3-djangorestframework (>= 3.14.0)
+  "fabric",                         # deb: python3-fabric
+  "hcloud",                         # deb: python3-hcloud
+  "jsonpath-rw >= 1.4.0",           # deb: python3-jsonpath-rw (>= 1.4.0)
+  "jwcrypto >= 1.1.0",              # deb: python3-jwcrypto (>= 1.1.0)
+  "packaging",                      # deb: python3-packaging
+  "psycopg2 >= 2.9.5",              # deb: python3-psycopg2 (>= 2.9.5)
+  "pygments >= 2.14.0",             # deb: python3-pygments (>= 2.14.0)
+  "requests-oauthlib >= 1.3.0",     # deb: python3-requests-oauthlib (>= 1.3.0)
+  "unidiff",                        # deb: python3-unidiff
+]
+client = [
+  "configobj >= 5.0.8",             # deb: python3-configobj (>= 5.0.8)
+  "xkcdpass >= 1.19.3",             # deb: xkcdpass (>= 1.19.3)
+]
+signing = [
+  "Django >= 4.2,<5.3",             # deb: python3-django (>= 3:4.2)
+  "psycopg2 >= 2.9.5",              # deb: python3-psycopg2 (>= 2.9.5)
+  "PyNaCl",                         # deb: python3-nacl
+                                    # Packages not (usefully) in pypi
+                                    # deb: devscripts
+                                    # deb: openssl
+                                    # deb: sbsigntool [amd64 arm64 armhf i386 riscv64]
+                                    # deb: python3-gpg (>= 1.12.0)
+]
+tests = [
+  "cryptography",                   # deb: python3-cryptography
+  "lxml >= 4.9.23",                 # deb: python3-lxml
+  "paramiko",                       # deb: python3-paramiko
+  "pyftpdlib",                      # deb: python3-pyftpdlib
+  "responses >= 0.18.0",            # deb: python3-responses (>= 0.18.0)
+                                    # Packages not in pypi
+                                    # deb: dpkg-dev
+                                    # deb: dput-ng
+]
+dev = [
+  "black >= 23.1",                  # deb: black (>= 23.1)
+  "coverage >= 6.5.0",              # deb: python3-coverage (>= 6.5.0)
+  "django_debug_toolbar >= 3.8.1",  # deb: python3-django-debug-toolbar (>= 1:3.8.1)
+  "selenium >= 4.8.3",              # deb: python3-selenium (>= 4.8.3)
+  "tox >= 3.28.0",                  # deb: tox (>= 3.28.0)
+                                    # Packages not in pypi
+                                    # deb: postgresql
+                                    # deb: postgresql-client
+                                    # deb: redis-server
+]
+docs = [
+  "Sphinx >= 5.3.0",                # deb: python3-sphinx (>= 5.3.0)
+  "sphinx_rtd_theme >= 1.2.0",      # deb: python3-sphinx-rtd-theme (>= 1.2.0)
+  "sphinx_autobuild >= 2021.3.14",  # deb: python3-sphinx-autobuild (>= 2021.3.14)
+  "sphinx_copybutton >= 0.4.0",     # deb: python3-sphinx-copybutton (>= 0.4.0)
+                                    # Packages not in pypi
+                                    # deb: graphviz
+                                    # deb: make
+]
+
+[project.scripts]
+debusine = "debusine.client.__main__:entry_point"
+debusine-worker = "debusine.worker.__main__:entry_point"
+
+# Django-based entry points.  These are sensitive to sys.argv[0].
+debusine-admin = "debusine.__main__:main"
+debusine-signing = "debusine.__main__:main"
+
+[tool.mypy]
+mypy_path = ["debian/tests"]
+packages = [
+    "debusine",
+    "utils",
+]
+modules = [
+    "integration-tests-generic",
+    "integration-tests-task-autopkgtest",
+    "integration-tests-task-lintian",
+    "integration-tests-task-mmdebstrap",
+    "integration-tests-task-sbuild",
+]
+exclude = [
+    '^debusine/project/settings/local\.py$',
+    '^debusine/signing/settings/local\.py$',
+]
+plugins = [
+    "mypy_django_plugin.main",
+    "mypy_drf_plugin.main",
+    "pydantic.mypy",
+]
+strict = true
+
+[[tool.mypy.overrides]]
+module = "celery.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "channels.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "channels_redis.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "configobj.*"
+ignore_missing_imports = true
+
+# This might previously have existed such that there's still a .pyc file
+# lying around.  Just ignore it.
+[[tool.mypy.overrides]]
+module = "debusine.project.settings.local"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "debusine.signing.settings.local"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "django_cte.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "django_pglocks.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "dput.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "fabric.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "gpg.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "jsonpath_rw.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "jwcrypto.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "packaging.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pyftpdlib.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "requests_file"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "requests_oauthlib"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "requests_toolbelt.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "unidiff.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "xkcdpass.*"
+ignore_missing_imports = true
+
+[tool.django-stubs]
+django_settings_module = "debusine.project.settings"
+strict_settings = false
+
+[tool.black]
+line-length=80
+skip-string-normalization = true
+
+[tool.codespell]
+skip = '.git,*.pdf,*.svg,*.min.js,.coverage,_build'
+# assertIn: https://github.com/codespell-project/codespell/issues/3430
+ignore-words-list = 'assertIn,buildd,bu,filetests'
+
+[tool.isort]
+# Align isort with flake8
+profile = "black"
+line_length = 80
+order_by_type = false
+case_sensitive = true
+known_first_party = "debusine,utils"
+
+[tool.pylint.MAIN]
+max-line-length = 80
+
+[tool.pylint.'MESSAGES CONTROL']
+disable = "too-many-instance-attributes,too-many-locals,too-many-public-methods,too-few-public-methods"
+
+[tool.djlint]
+profile="django"
+custom_blocks="withscope"
+# H006: Img tag should have height and width attributes
+# H021: Inline styles should be avoided
+# H023: Do not use entity references
+# H030: Consider adding a meta description
+# H031: Consider adding meta keywords
+# T003: Endblock should have name
+ignore="H006,H021,H023,H030,H031,T003"
+
+[tool.vulture]
+min_confidence = 80
+paths = ["debusine"]
+exclude = ["debusine/db/migrations/"]
+ignore_names = [
+  "OpenBinaryModeWriting",
+  "OpenTextModeWriting",
+  "PublicKey",
+  "_LoggingWatcher",
+  "_MonkeyPatchedWSGIResponse",
+  "_RequestContextManager",
+  "app_configs",
+]
+
+[tool.towncrier]
+directory = "newsfragments"
+filename = "docs/reference/release-history.rst"
+template = "newsfragments/release-history-template.rst"
+issue_format = "`#{issue} <https://salsa.debian.org/freexian-team/debusine/-/issues/{issue}>`__"
+underlines = ["-", "~", "^"]
+wrap = true
+
+[[tool.towncrier.section]]
+name = "Server"
+path = "server"
+
+[[tool.towncrier.section]]
+name = "Web UI"
+path = "web"
+
+[[tool.towncrier.section]]
+name = "Client"
+path = "client"
+
+[[tool.towncrier.section]]
+name = "Workflows"
+path = "workflows"
+
+[[tool.towncrier.section]]
+name = "Tasks"
+path = "tasks"
+
+[[tool.towncrier.section]]
+name = "Worker"
+path = "worker"
+
+[[tool.towncrier.section]]
+name = "Signing"
+path = "signing"
+
+[[tool.towncrier.section]]
+name = "General"
+path = ""
+
+[[tool.towncrier.type]]
+directory = "incompatible"
+name = "Incompatible Changes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "feature"
+name = "Features"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "bugfix"
+name = "Bug Fixes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "doc"
+name = "Documentation"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "misc"
+name = "Miscellaneous"
+showcontent = false

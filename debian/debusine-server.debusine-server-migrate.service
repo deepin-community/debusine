@@ -1,0 +1,18 @@
+[Unit]
+Description=Migrate Debusine Server to latest database schema
+After=network.target
+After=postgresql.service
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=oneshot
+User=debusine-server
+Group=debusine-server
+
+ExecStart=/usr/bin/debusine-admin migrate
+
+WorkingDirectory=~
+PrivateTmp=true
+Environment=LANG=C.UTF-8

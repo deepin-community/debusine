@@ -1,0 +1,207 @@
+{% extends base_template %}
+{% load artifacts %}
+{% load debusine %}
+{% load static %}
+{% block tail_js %}
+    {{ block.super }}
+    <script type="module">
+    const selectTab = () => {
+        {# If a user opens the page with a URL#files or URL#debdiff: it opens #}
+        {# the correct tab. #}
+        {##}
+        {# Also, if the user passes "#LNN-files" or "#LNN-debdiff": it selects #}
+        {# the tab as well based on the suffix of the line (in order to show #}
+        {# the correct file) #}
+        let hash = window.location.hash;
+
+        if (!hash) return;
+
+        hash = hash.slice(1);
+
+        let dataBsTarget;
+        if (/^L\d+-/.test(hash)) {
+            {# Hash is #LNN-tab_name: the Line NN of the tab "tab_name") #}
+            dataBsTarget = `#nav-${hash.split("-", 2)[1]}`;
+        } else {
+            dataBsTarget = `#nav-${hash}`;
+        }
+        const trigger = document.querySelector(`button[data-bs-target="${dataBsTarget}"]`);
+
+        if (trigger) {
+            const tab = new bootstrap.Tab(trigger);
+            tab.show()
+        }
+    };
+
+    const updateUrlHash = (event) => {
+        const tab_name = event.target.dataset.bsTarget;
+        const hash = "#" + tab_name.split("-", 2)[1];
+        history.replaceState(null, "", hash);
+    };
+
+    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tabButton => {
+        tabButton.addEventListener('shown.bs.tab', updateUrlHash);
+    });
+
+    selectTab();
+
+    </script>
+{% endblock %}
+{% block content %}
+    <h1 class="mb-4" title="{{ artifact.category }}">
+        <span class="bi bi-{{ artifact|artifact_icon_name }}"></span>
+        {{ title }}
+    </h1>
+    <nav>
+        <div class="nav nav-tabs" id="nav-tab" role="tablist">
+            {% if specialized_tab %}
+                <button class="nav-link active"
+                        id="nav-{{ specialized_tab.slug }}-tab"
+                        data-bs-toggle="tab"
+                        data-bs-target="#nav-{{ specialized_tab.slug }}"
+                        type="button"
+                        role="tab"
+                        aria-controls="nav-{{ specialized_tab.slug }}"
+                        aria-selected="false">{{ specialized_tab.label }}</button>
+            {% endif %}
+            <button class="nav-link {% if not specialized_tab %}active{% endif %} {% if file_count == 0 %}disabled{% endif %}"
+                    id="nav-files-tab"
+                    data-bs-toggle="tab"
+                    data-bs-target="#nav-files"
+                    type="button"
+                    role="tab"
+                    aria-controls="nav-files"
+                    aria-selected="false">
+                {% if file_count == 1 %}
+                    File (1)
+                {% else %}
+                    Files ({{ file_count }})
+                {% endif %}
+            </button>
+            <button class="nav-link"
+                    id="nav-metadata-tab"
+                    data-bs-toggle="tab"
+                    data-bs-target="#nav-metadata"
+                    type="button"
+                    role="tab"
+                    aria-controls="nav-metadata"
+                    aria-selected="false">Metadata</button>
+            <button class="nav-link {% if relation_count == 0 %}disabled{% endif %} "
+                    id="nav-relations-tab"
+                    data-bs-toggle="tab"
+                    data-bs-target="#nav-relations"
+                    type="button"
+                    role="tab"
+                    aria-controls="nav-relations"
+                    aria-selected="false">
+                {% if relation_count == 1 %}
+                    Relation (1)
+                {% else %}
+                    Relations ({{ relation_count }})
+                {% endif %}
+            </button>
+        </div>
+    </nav>
+    <div class="tab-content" id="nav-content">
+        {% if specialized_tab %}
+            <div class="tab-pane fade show active"
+                 id="nav-{{ specialized_tab.slug }}"
+                 role="tabpanel"
+                 aria-labelledby="nav-{{ specialized_tab.slug }}-tab"
+                 tabindex="0">{% include specialized_tab.template %}</div>
+        {% endif %}
+        <div class="tab-pane fade {% if not specialized_tab %}show active{% endif %}"
+             id="nav-files"
+             role="tabpanel"
+             aria-labelledby="nav-files-tab"
+             tabindex="0">
+            {% if file_count == 1 %}
+                {% widget file %}
+            {% elif file_count > 1 %}
+                <table id="file-list" class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Size (bytes)</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for fileinartifact in file_list %}
+                            <tr>
+                                <td>
+                                    {% if fileinartifact.complete %}
+                                        <a href="{{ fileinartifact.get_absolute_url }}">{{ fileinartifact.basename }}</a>
+                                    {% else %}
+                                        {{ fileinartifact.basename }} (incomplete)
+                                    {% endif %}
+                                </td>
+                                <td title="{{ fileinartifact.file.size }}">{{ fileinartifact.file.size|filesizeformat }}</td>
+                                <td>
+                                    <div class="btn-group btn-group-sm" role="toolbar" aria-label="Shortcuts">
+                                        {% ui_shortcuts fileinartifact as shortcuts %}
+                                        {% for shortcut in shortcuts %}
+                                            {% widget shortcut %}
+                                        {% endfor %}
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                No files.
+            {% endif %}
+        </div>
+        <div class="tab-pane fade"
+             id="nav-metadata"
+             role="tabpanel"
+             aria-labelledby="nav-metadata-tab"
+             tabindex="0">
+            <div id="metadata" class="card">
+                <div class="card-body text-white bg-dark">{{ artifact_data }}</div>
+            </div>
+        </div>
+        <div class="tab-pane fade"
+             id="nav-relations"
+             role="tabpanel"
+             aria-labelledby="nav-relations-tab"
+             tabindex="0">
+            {% if relation_count > 0 %}
+                <table id="relation-list" class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Relation</th>
+                            <th>Direction</th>
+                            <th>Type</th>
+                            <th>Name</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for related in forward.all %}
+                            <tr>
+                                <td>{{ related.relation_type }}</td>
+                                <td>
+                                    <i class="bi {% icon "artifact_relation_target" %}"></i>
+                                </td>
+                                {% include "web/_artifact-list-row.html" with artifact=related %}
+                            </tr>
+                        {% endfor %}
+                        {% for related in reverse_extends %}
+                            <tr>
+                                <td>{{ related.relation_type }}</td>
+                                <td>
+                                    <i class="bi {% icon "artifact_relation_source" %}"></i>
+                                </td>
+                                {% include "web/_artifact-list-row.html" with artifact=related %}
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <p>No relations.</p>
+            {% endif %}
+        </div>
+    </div>
+{% endblock %}

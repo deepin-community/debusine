@@ -1,0 +1,57 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>
+        Here you can generate and maintain the API tokens that are needed to
+        <a href="https://freexian-team.pages.debian.net/debusine/howtos/set-up-debusine-client.html">set up debusine-client</a>
+        to access this instance of Debusine.
+    </p>
+    <p>
+        You can generate a token manually, or you can run <tt>debusine setup</tt> to automatically register your client. You can remove tokens here to revoke access that you previously granted.
+    </p>
+    <p>
+        Here is an example <tt>~/.config/debusine/client/config.ini</tt> file you can use:
+    </p>
+    {% include "web/user_token-config_snippet.html" %}
+    <h2>Your existing tokens</h2>
+    {% if token_list %}
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th>Enabled</th>
+                    <th>Created at</th>
+                    <th>Comment</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for token in token_list %}
+                    <tr>
+                        <td>{% include "web/_check_icon.html" with value=token.enabled only %}</td>
+                        <td>{{ token.created_at }}</td>
+                        <td>{{ token.comment }}</td>
+                        <td>
+                            <a href="{% url "user:token-delete" pk=token.pk username=person.username %}">Delete</a>&nbsp;|&nbsp;<a href="{% url "user:token-edit" pk=token.pk username=person.username %}">Edit</a>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td colspan="5">
+                        <a class="btn btn-primary btn-sm"
+                           type="button"
+                           href="{% url "user:token-create" username=person.username %}">Create another token</a>
+                    </td>
+                </tr>
+            </tfoot>
+        </table>
+    {% else %}
+        <p>
+            You do not currently have any tokens:
+            <a href="{% url "user:token-create" username=person.username %}">create a new token</a>
+            to be able to use debusine-client.
+        </p>
+    {% endif %}
+{% endblock %}

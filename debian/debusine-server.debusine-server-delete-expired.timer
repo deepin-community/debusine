@@ -1,0 +1,8 @@
+[Unit]
+Description=Daily cleanup of Debusine expired or unused objects
+
+[Timer]
+OnCalendar=daily
+
+[Install]
+WantedBy=timers.target

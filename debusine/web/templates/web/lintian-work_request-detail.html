@@ -1,0 +1,51 @@
+{% extends "web/_base.html" %}
+{% block title %}Lintian task detail{% endblock %}
+{% block content %}
+    <h1>Lintian task detail</h1>
+    <p>
+        <a href="{{ work_request.get_absolute_url }}?view=generic">Generic view</a>
+    </p>
+    <ul>
+        <li>
+            Result:
+            {% include "web/_work_request-result.html" %}
+        </li>
+        <li>Fail on: {{ fail_on_severity }}</li>
+        {% if lintian_txt_path %}
+            <li>
+                <a href="{{ lintian_txt_path }}">Lintian output</a>
+            </li>
+        {% endif %}
+    </ul>
+    <h2>Request</h2>
+    <ul>
+        {% if request_data.source_artifact.lookup %}
+            {% include "web/_summary_artifact.html" with description="Source artifact" artifact=request_data.source_artifact only %}
+        {% endif %}
+        {% if request_data.binary_artifacts.lookup %}
+            {% include "web/_summary_artifacts.html" with description="Binary artifacts" artifacts=request_data.binary_artifacts %}
+        {% endif %}
+    </ul>
+    <h2>Summary of tags</h2>
+    <ul>
+        {% for severity, count in tags_count_severity.items %}<li>{{ severity }}: {{ count }}</li>{% endfor %}
+    </ul>
+    <h2>Tags</h2>
+    {% for file, file_tags in tags.items %}
+        <h3>{{ file }}</h3>
+        {% for tag_name, tag_content in file_tags.items %}
+            <h4>
+                {% include "web/_tag_severity.html" with tag=tag_name content=tag_content only %}
+                {{ tag_name }}
+            </h4>
+            {% if tag_content.explanation %}
+                {% include "web/_tag_explanation.html" with tag_content=tag_content only %}
+            {% endif %}
+            <ul>
+                {% for tag in tag_content.occurrences %}
+                    <li>{% include "web/_lintian_tag.html" with tag=tag only %}</li>
+                {% endfor %}
+            </ul>
+        {% endfor %}
+    {% endfor %}
+{% endblock %}

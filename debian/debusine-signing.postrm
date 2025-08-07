@@ -1,0 +1,25 @@
+#!/bin/sh
+
+set -e
+
+if [ -f /usr/share/debconf/confmodule ]; then
+	# shellcheck source=/dev/null
+	. /usr/share/debconf/confmodule
+fi
+if [ -f /usr/share/dbconfig-common/dpkg/postrm.pgsql ]; then
+	# shellcheck source=/dev/null
+	. /usr/share/dbconfig-common/dpkg/postrm.pgsql
+	dbc_go debusine-signing "$@"
+fi
+
+if [ "$1" = "purge" ]; then
+	rm -f /etc/debusine/signing/db_postgresql.py
+	if command -v ucf >/dev/null; then
+		ucf --purge /etc/debusine/signing/db_postgresql.py
+		ucfr --purge debusine-signing /etc/debusine/signing/db_postgresql.py
+	fi
+fi
+
+#DEBHELPER#
+
+exit 0

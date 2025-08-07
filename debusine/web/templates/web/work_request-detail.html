@@ -1,0 +1,161 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>
+        <span class="bi {% icon "work_request" %}" title="Work request"></span>
+        {{ title }}
+    </h1>
+    {% if specialized_view_path %}
+        <p>
+            <a href="{{ specialized_view_path }}">{{ work_request.task_name }} view</a>
+        </p>
+    {% endif %}
+    {% if work_request.is_workflow or work_request.is_part_of_workflow %}
+        <h2>Workflow information</h2>
+        <ul>
+            {% with work_request_root=work_request.get_workflow_root %}
+                {% if work_request_root != work_request %}
+                    <li>
+                        Root: <a href="{{ work_request_root.get_absolute_url }}">{{ work_request_root.workflow_display_name }}</a>
+                    </li>
+                {% endif %}
+            {% endwith %}
+            {% if work_request.parent %}
+                <li>
+                    Parent: <a href="{{ work_request.parent.get_absolute_url }}">{{ work_request.parent.workflow_display_name }}</a>
+                </li>
+            {% endif %}
+            {% if work_request.children.all %}
+                <li>{% include "web/_work_request-descendants.html" %}</li>
+            {% endif %}
+        </ul>
+        {% if perms.db.change_workrequest and work_request.can_be_unblocked and work_request.unblock_strategy == "manual" %}
+            <div class="card mb-2">
+                <div class="card-header">Review blocked workflow step</div>
+                <div class="card-body">
+                    {% if manual_unblock_log_entries %}
+                        {% include "web/_manual_unblock_log.html" with manual_unblock_log_entries=manual_unblock_log_entries only %}
+                    {% endif %}
+                    <form id="manual-unblock-form"
+                          method="post"
+                          action="{{ work_request.get_absolute_url_unblock }}">
+                        {% csrf_token %}
+                        {{ manual_unblock_form.as_p }}
+                        <input class="btn btn-success btn-sm"
+                               type="submit"
+                               name="action"
+                               value="Accept">
+                        <input class="btn btn-danger btn-sm"
+                               type="submit"
+                               name="action"
+                               value="Reject">
+                        <input class="btn btn-info btn-sm"
+                               type="submit"
+                               name="action"
+                               value="Record notes only">
+                    </form>
+                </div>
+            </div>
+        {% endif %}
+    {% endif %}
+    {% if work_request.requires_signature and user == work_request.created_by %}
+        <div id="requires-signature" class="card mb-2">
+            <div class="card-header">Waiting for signature</div>
+            <div class="card-body">
+                Run <code>debusine provide-signature {{ work_request.id }}</code> to sign this request.
+            </div>
+        </div>
+    {% endif %}
+    {% if validation_error %}
+        <h2>Validation error</h2>
+        <pre><code>{{ validation_error }}</code></pre>
+    {% endif %}
+    {% if work_request.output_data.errors %}
+        <h2>Errors</h2>
+        <ul id="errors">
+            {% for error in work_request.output_data.errors %}
+                <li>
+                    <pre><code>{{ error.message }}</code></pre>
+                </li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+    <div id="metadata" class="card mb-2">
+        {% if task_data_configured %}
+            <div class="card-header">
+                <ul class="nav nav-tabs card-header-tabs">
+                    <li class="nav-item">
+                        <a class="nav-link active"
+                           id="tab_task_data_configured"
+                           data-bs-toggle="tab"
+                           data-bs-target="#task_data_configured"
+                           aria-current="true"
+                           href="#">Configured metadata</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link"
+                           id="tab_task_data_original"
+                           data-bs-toggle="tab"
+                           data-bs-target="#task_data_original"
+                           href="#">Original metadata</a>
+                    </li>
+                </ul>
+            </div>
+            <div class="card-body text-white bg-dark tab-content">
+                <div class="tab-pane active"
+                     id="task_data_configured"
+                     aria-labelledby="tab_task_data_configured">{{ task_data }}</div>
+                <div class="tab-pane"
+                     id="task_data_original"
+                     aria-labelledby="tab_task_data_original">{{ task_data_original }}</div>
+            </div>
+        {% else %}
+            <div class="card-header">Metadata</div>
+            <div class="card-body text-white bg-dark">{{ task_data }}</div>
+        {% endif %}
+    </div>
+    <table id="artifacts" class="table table-sm wr-artifacts">
+        <thead>
+            <tr>
+                <th></th>
+                <th>Type</th>
+                <th>Name</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <th title="Input artifacts"
+                    rowspan="{{ source_artifacts|length|add:"1" }}">
+                    <span class="bi {% icon 'artifacts_input' %}"></span>
+                </th>
+            </tr>
+            {% if source_artifacts %}
+                {% include "web/_artifact-list.html" with artifacts=source_artifacts only %}
+            {% elif source_artifacts_not_implemented %}
+                <tr>
+                    <td colspan="4">Listing source artifacts not yet implemented for this task type</td>
+                </tr>
+            {% else %}
+                <tr>
+                    <td colspan="4">No input artifacts</td>
+                </tr>
+            {% endif %}
+        </tbody>
+        <tbody>
+            <tr>
+                <th title="Output artifacts"
+                    rowspan="{{ built_artifacts|length|add:"1" }}">
+                    <span class="bi {% icon 'artifacts_output' %}"></span>
+                </th>
+            </tr>
+            {% if built_artifacts %}
+                {% include "web/_artifact-list.html" with artifacts=built_artifacts only %}
+            {% else %}
+                <tr>
+                    <td colspan="4">No artifacts produced</td>
+                </tr>
+            {% endif %}
+        </tbody>
+    </table>
+{% endblock %}

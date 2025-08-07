@@ -1,0 +1,21 @@
+{% load override_query_parameters %}
+{% spaceless %}
+    {% if asc %}
+        {% if name == order %}
+            {% if asc == "1" %}
+                <span class="order-active">&#9650;</span>
+                <a href="?{% override_query_parameters order=name asc=0 %}"
+                   class="order-inactive"><span class="arrow">&#9660;</span></a>
+            {% else %}
+                <a href="?{% override_query_parameters order=name asc=1 %}"
+                   class="order-inactive"><span class="arrow">&#9650;</span></a>
+                <span class="order-active">&#9660;</span>
+            {% endif %}
+        {% else %}
+            <a href="?{% override_query_parameters order=name asc=1 %}"
+               class="order-inactive">&#9650;</a>
+            <a href="?{% override_query_parameters order=name asc=0 %}"
+               class="order-inactive">&#9660;</a>
+        {% endif %}
+    {% endif %}
+{% endspaceless %}

@@ -1,0 +1,34 @@
+{% extends base_template %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>
+        A Collection is a set of artifacts or other collections that are intended to be used together.
+        See <a href="https://freexian-team.pages.debian.net/debusine/explanation/concepts.html#collections">Collections documentation</a>
+        for more details.
+    </p>
+    <p>
+        This is a list of collections you can access from the <a href="{{ workspace.get_absolute_url }}">{{ workspace.name }}</a> workspace:
+    </p>
+    {% if collection_list %}
+        <table class="table table-hover" id="collection-list-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Category</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for collection in collection_list %}
+                    <tr>
+                        <td>
+                            <a href="{{ collection.get_absolute_url }}">{{ collection.name }}</a>
+                        </td>
+                        <td>{{ collection.category }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No collections.</p>
+    {% endif %}
+{% endblock %}

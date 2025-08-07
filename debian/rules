@@ -1,4 +1,94 @@
 #!/usr/bin/make -f
 
+include /usr/share/dpkg/default.mk
+
+export SETUPTOOLS_SCM_PRETEND_VERSION := $(shell debian/get-version '$(DEB_VERSION_UPSTREAM)')
+
 %:
-	dh $@
+	dh $@ --buildsystem=pybuild
+
+ifeq (,$(filter $(DEB_BUILD_OPTIONS),nodoc))
+execute_after_dh_auto_build:
+	bin/quick-setup.sh create_directories # so data/logs exist, needed during the documentation building step
+	# LANG settings to work around a bug in Python: https://github.com/python/cpython/issues/93251
+	# The ticket talks about:
+	# -socket.getfqdn(): this happens in Debusine's code in ./debusine/project/settings/defaults.py
+	# -locale.setlocale(locale.LC_ALL, ''): this happens in sphinx code
+	# -LANG=ru_RU.CP1251: one of the locales used by reprotest
+	# -hostname is not resolvable: reprotest sets the hostname to reprotest-capture-hostname
+	#  but reprotest-capture-hostname is not resolvable (not via /etc/hosts or any other method)
+	sed -i -e "s|https://docs.python.org/|/usr/share/doc/python3-doc/html|" docs/conf.py
+	LANG= LC_ALL= LANGUAGE= PYTHONPATH=. python3 -m sphinx --no-color -bhtml docs/ build/html # HTML generator
+	sed -i -e "s|/usr/share/doc/python3-doc/html|https://docs.python.org/|" docs/conf.py
+	# LANG= LC_ALL= LANGUAGE= PYTHONPATH=. python3 -m sphinx --no-color -bman docs/ build/man # Manpage generator
+endif
+
+override_dh_auto_test:
+	# XXX: Disable tests as they require postgresql and redis to run
+	# and to be configured. One day we might run those in a temporary
+	# space.
+	# dh_auto_test -- --system=custom --test-args="make coverage"
+
+execute_after_dh_auto_install:
+	# Copy python3-debusine-{server,signing} settings from the
+	# distributed ones into /etc/debusine/{server,signing}. Create a
+	# link from selected.py to production.py.
+	set -e; \
+	CONFIG_SRC_DIR=`echo debian/tmp/usr/lib/python3*/dist-packages/debusine/project/settings`; \
+	CONFIG_DEST_PACKAGED_DIR=/etc/debusine/server; \
+	CONFIG_DEST_DIR=debian/tmp/$$CONFIG_DEST_PACKAGED_DIR; \
+	mkdir -p "$$CONFIG_DEST_DIR"; \
+	rm "$$CONFIG_SRC_DIR/db_postgresql.py"; \
+	rm "$$CONFIG_SRC_DIR/selected.py"; \
+	mv "$$CONFIG_SRC_DIR/"* "$$CONFIG_DEST_DIR"; \
+	rmdir "$$CONFIG_SRC_DIR"; \
+	ln -s "$$CONFIG_DEST_PACKAGED_DIR" "$$CONFIG_SRC_DIR"; \
+	ln -s --relative "$$CONFIG_DEST_DIR/production.py" "$$CONFIG_DEST_DIR/selected.py"
+
+	set -e; \
+	CONFIG_SRC_DIR=`echo debian/tmp/usr/lib/python3*/dist-packages/debusine/signing/settings`; \
+	CONFIG_DEST_PACKAGED_DIR=/etc/debusine/signing; \
+	CONFIG_DEST_DIR=debian/tmp/$$CONFIG_DEST_PACKAGED_DIR; \
+	mkdir -p "$$CONFIG_DEST_DIR"; \
+	rm "$$CONFIG_SRC_DIR/db_postgresql.py"; \
+	rm "$$CONFIG_SRC_DIR/selected.py"; \
+	mv "$$CONFIG_SRC_DIR/"* "$$CONFIG_DEST_DIR"; \
+	rmdir "$$CONFIG_SRC_DIR"; \
+	ln -s "$$CONFIG_DEST_PACKAGED_DIR" "$$CONFIG_SRC_DIR"; \
+	ln -s --relative "$$CONFIG_DEST_DIR/production.py" "$$CONFIG_DEST_DIR/selected.py"
+
+override_dh_python3:
+	dh_python3 --package=python3-debusine-server --depends-section=server
+	dh_python3 --package=python3-debusine-signing --depends-section=signing
+	dh_python3 --package=python3-debusine
+	dh_python3 --package=debusine-client --depends-section=client
+	dh_python3 --no-package=python3-debusine --no-package=python3-debusine-server --no-package=python3-debusine-signing
+	rm -rf debian/debusine-client/usr/lib/python3*/dist-packages/debusine-*.dist-info
+	rm -rf debian/python3-debusine-server/usr/lib/python3*/dist-packages/debusine-*.dist-info
+	rm -rf debian/python3-debusine-signing/usr/lib/python3*/dist-packages/debusine-*.dist-info
+
+execute_after_dh_installsystemd:
+	dh_installsystemd --package=debusine-server \
+		--name=debusine-server-celery
+	dh_installsystemd --package=debusine-server \
+		--name=debusine-server-periodic-tasks
+	dh_installsystemd --package=debusine-server \
+		--name=debusine-server-provisioner
+	dh_installsystemd --package=debusine-server \
+		--name=debusine-server-scheduler
+	dh_installsystemd --package=debusine-server \
+		--name=debusine-server-delete-expired \
+		debusine-server-delete-expired.timer
+	dh_installsystemd --package=debusine-server --no-start \
+		--name=debusine-server-delete-expired \
+		debusine-server-delete-expired.service
+	dh_installsystemd --package=debusine-server \
+		--name=debusine-server-vacuum-storage \
+		debusine-server-vacuum-storage.timer
+	dh_installsystemd --package=debusine-server --no-start \
+		--name=debusine-server-vacuum-storage \
+		debusine-server-vacuum-storage.service
+	dh_installsystemd --package=debusine-server \
+		--name=debusine-server-migrate
+	dh_installsystemd --package=debusine-signing \
+		--name=debusine-signing-migrate

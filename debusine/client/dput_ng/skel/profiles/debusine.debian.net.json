@@ -1,0 +1,20 @@
+{
+    "allow_unsigned_uploads": true,
+    "debusine_scope": "debian",
+    "debusine_workflows_by_distribution": {
+        "bullseye-security": "upload-to-bullseye-security",
+        "bookworm": "upload-to-bookworm",
+        "bookworm-security": "upload-to-bookworm-security",
+        "sid": "upload-to-unstable",
+        "unstable": "upload-to-unstable",
+        "experimental": "upload-to-experimental"
+    },
+    "debusine_workflow_data": {
+        "source_artifact": "@UPLOAD@"
+    },
+    "debusine_workspace": "developers",
+    "fqdn": "debusine.debian.net",
+    "incoming": "/",
+    "meta": "debusine",
+    "method": "debusine"
+}
