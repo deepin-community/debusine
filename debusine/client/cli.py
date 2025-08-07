@@ -36,6 +36,7 @@ from debusine.artifacts import LocalArtifact, Upload
 from debusine.assets import AssetCategory, asset_data_model
 from debusine.client import exceptions
 from debusine.client.client_utils import (
+    copy_file,
     get_debian_package,
     prepare_changes_for_upload,
     prepare_deb_for_upload,
@@ -46,6 +47,7 @@ from debusine.client.debusine import Debusine
 from debusine.client.exceptions import DebusineError
 from debusine.client.models import (
     CreateWorkflowRequest,
+    FileResponse,
     RelationType,
     WorkRequestExternalDebsignRequest,
     WorkRequestRequest,
@@ -85,8 +87,8 @@ class Cli:
         parser.add_argument(
             '--server',
             help=(
-                'Set server to be used (use configuration file default '
-                'if not specified)'
+                'Set server to be used, either by section name or as '
+                'FQDN/scope (use configuration file default if not specified)'
             ),
         )
 
@@ -187,6 +189,15 @@ class Cli:
             "work_request_id",
             type=int,
             help="Work request id that needs a signature",
+        )
+        provide_signature.add_argument(
+            "--local-file",
+            "-l",
+            type=Path,
+            help=(
+                "Path to the .changes file to sign, locally. "
+                "If not specified, it will be downloaded from the server."
+            ),
         )
         provide_signature.add_argument(
             "extra_args",
@@ -411,11 +422,13 @@ class Cli:
     def _build_debusine_object(self) -> Debusine:
         """Return the debusine object matching the command line parameters."""
         configuration = ConfigHandler(
-            server_name=self.args.server,
-            config_file_path=self.args.config_file,
+            server_name=self.args.server, config_file_path=self.args.config_file
         )
 
-        server_configuration = configuration.server_configuration()
+        try:
+            server_configuration = configuration.server_configuration()
+        except ValueError as exc:
+            self._fail(exc)
 
         logging_level = logging.WARNING if self.args.silent else logging.INFO
 
@@ -508,7 +521,10 @@ class Cli:
                 )
             case "provide-signature":
                 self._provide_signature(
-                    debusine, self.args.work_request_id, self.args.extra_args
+                    debusine,
+                    self.args.work_request_id,
+                    self.args.local_file,
+                    self.args.extra_args,
                 )
             case "create-artifact":
                 if self.args.data is not None:
@@ -706,13 +722,39 @@ class Cli:
         with self._api_call_or_fail():
             debusine.work_request_retry(work_request_id)
 
+    def _fetch_local_file(
+        self, src: Path, dest: Path, artifact_file: FileResponse
+    ) -> None:
+        """Copy src to dest and verify that its hash matches artifact_file."""
+        assert src.exists()
+        hashes = copy_file(src, dest, artifact_file.checksums.keys())
+        if hashes["size"] != artifact_file.size:
+            self._fail(
+                f'"{src}" size mismatch (expected {artifact_file.size} bytes)'
+            )
+
+        for hash_name, expected_value in artifact_file.checksums.items():
+            if hashes[hash_name] != expected_value:
+                self._fail(
+                    f'"{src}" hash mismatch (expected {hash_name} '
+                    f'= {expected_value})'
+                )
+
     def _provide_signature_debsign(
         self,
         debusine: Debusine,
         work_request: WorkRequestResponse,
+        local_file: Path | None,
         debsign_args: list[str],
     ) -> None:
         """Provide a work request with an external signature using `debsign`."""
+        if local_file is not None:
+            if local_file.suffix != ".changes":
+                self._fail(
+                    f"--local-file {str(local_file)!r} is not a .changes file."
+                )
+            if not local_file.exists():
+                self._fail(f"--local-file {str(local_file)!r} does not exist.")
         # Get a version of the work request with its dynamic task data
         # resolved.
         with self._api_call_or_fail():
@@ -739,8 +781,15 @@ class Cli:
                     or name.endswith(".dsc")
                     or name.endswith(".buildinfo")
                 ):
-                    with self._api_call_or_fail():
-                        debusine.download_artifact_file(unsigned, name, path)
+                    if local_file:
+                        self._fetch_local_file(
+                            local_file.parent / name, path, file_response
+                        )
+                    else:
+                        with self._api_call_or_fail():
+                            debusine.download_artifact_file(
+                                unsigned, name, path
+                            )
             # Upload artifacts are guaranteed to have exactly one .changes
             # file.
             [changes_path] = [
@@ -773,7 +822,11 @@ class Cli:
                 )
 
     def _provide_signature(
-        self, debusine: Debusine, work_request_id: int, extra_args: list[str]
+        self,
+        debusine: Debusine,
+        work_request_id: int,
+        local_file: Path | None,
+        extra_args: list[str],
     ) -> None:
         """Provide a work request with an external signature."""
         # Find out what kind of work request we're dealing with.
@@ -782,7 +835,7 @@ class Cli:
         match (work_request.task_type, work_request.task_name):
             case "Wait", "externaldebsign":
                 self._provide_signature_debsign(
-                    debusine, work_request, extra_args
+                    debusine, work_request, local_file, extra_args
                 )
             case _:
                 self._fail(

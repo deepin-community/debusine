@@ -8,7 +8,7 @@ The ``debusine`` command is a command line interface to the Debusine API.
 It is provided by the ``debusine-client`` package and contains many
 sub-commands.
 
-The command is documented in :ref:`debusine-cli-config`.
+The configuration file is documented in :ref:`debusine-cli-config`.
 
 Output of the ``debusine`` command
 ----------------------------------
@@ -61,6 +61,11 @@ Sub-commands
         create-workflow-template
                             Create a workflow template
 	[...]
+
+If you have multiple servers configured, then you may need to select which
+one to use.  You can do this using ``--server FQDN/SCOPE`` (for example,
+``--server debusine.debian.net/debian``), or using ``--server NAME`` (where
+the available names are shown by ``debusine setup``).
 
 Each sub-command is self-documented, use ``debusine sub-command
 --help``:

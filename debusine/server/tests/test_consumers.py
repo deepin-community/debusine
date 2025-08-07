@@ -243,7 +243,13 @@ class WorkerConsumerTransactionTests(WorkerConsumerMixin, TransactionTestCase):
         for message in expected_msgs:
             self.assertIn(message, received_messages)
 
-        await communicator.disconnect()
+        try:
+            await communicator.disconnect()
+        except asyncio.exceptions.CancelledError:  # pragma: no cover
+            # asgiref < 3.9.0 swallowed this exception; asgiref 3.9.0
+            # re-raises it.  See
+            # https://github.com/django/asgiref/issues/518.
+            pass
 
     async def test_connect_valid_token(self) -> None:
         """Connect succeeds and a request for dynamic metadata is received."""

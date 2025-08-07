@@ -172,6 +172,10 @@ extract-source:
   variables:
     SALSA_CI_GBP_BUILDPACKAGE_ARGS: "--git-export=WC"
 
+reprotest:
+  extends: .test-reprotest
+  allow_failure: true
+
 autopkgtest:
   extends: .test-autopkgtest
   parallel:

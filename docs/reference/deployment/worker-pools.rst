@@ -361,7 +361,7 @@ Hetzner Cloud Specification Fields
 ----------------------------------
 
 Many of the fields map closely to parameters to the Hetzner Cloud
-`server creation <https://docs.hetzner.cloud/#servers-create-a-server>`_
+`server creation <https://docs.hetzner.cloud/reference/cloud#servers-create-a-server>`_
 API call:
 
 * ``server_type`` (string):

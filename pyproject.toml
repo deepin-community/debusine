@@ -93,7 +93,8 @@ signing = [
 ]
 tests = [
   "cryptography",                   # deb: python3-cryptography
-  "lxml >= 4.9.23",                 # deb: python3-lxml
+  # https://salsa.debian.org/freexian-team/debusine/-/issues/953
+  "lxml >= 4.9.23, < 6.0.0",        # deb: python3-lxml
   "paramiko",                       # deb: python3-paramiko
   "pyftpdlib",                      # deb: python3-pyftpdlib
   "responses >= 0.18.0",            # deb: python3-responses (>= 0.18.0)

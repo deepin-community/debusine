@@ -6,6 +6,38 @@ Release history
 
 .. towncrier release notes start
 
+.. _release-0.11.3:
+
+0.11.3 (2025-07-08)
+-------------------
+
+Client
+~~~~~~
+
+Features
+^^^^^^^^
+
+- A local copy of the ``.changes`` file can be passed to ``provide-signature``
+  for signing and uploading. (`#816
+  <https://salsa.debian.org/freexian-team/debusine/-/issues/816>`__)
+
+
+.. _release-0.11.2:
+
+0.11.2 (2025-07-03)
+-------------------
+
+Client
+~~~~~~
+
+Features
+^^^^^^^^
+
+- Allow selecting a server using ``--server FQDN/SCOPE``, as an alternative to
+  needing to know the ``[server:...]`` section name in the configuration file.
+  (`#749 <https://salsa.debian.org/freexian-team/debusine/-/issues/749>`__)
+
+
 .. _release-0.11.1:
 
 0.11.1 (2025-05-04)

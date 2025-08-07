@@ -20,6 +20,7 @@ from debian.deb822 import Changes, Deb822
 
 from debusine.artifacts.playground import ArtifactPlayground
 from debusine.client.client_utils import (
+    copy_file,
     dget,
     download_file,
     get_debian_package,
@@ -104,6 +105,15 @@ class DgetDownloadTests(TestCase):
             self.r_mock.get(f"http://example.com/{filename}", body=body)
         self.set_dsc_response()
         self.set_changes_response()
+        self.expected_stats = {
+            "foo.deb": {
+                "sha256": "6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d239259"
+                "3af6a84118090",
+                "sha1": "6367c48dd193d56ea7b0baad25b19455e529f5ee",
+                "md5": "e99a18c428cb38d5f260853678922e03",
+                "size": 6,
+            },
+        }
 
     def _set_response(
         self,
@@ -170,6 +180,13 @@ class DgetDownloadTests(TestCase):
             ],
         )
 
+    def test_copy_file_stats(self) -> None:
+        src = self.workdir / "src.deb"
+        dest = self.workdir / "foo.deb"
+        src.write_bytes(self.bodies["foo.deb"])
+        stats = copy_file(src, dest)
+        self.assertEqual(self.expected_stats["foo.deb"], stats)
+
     def test_download_file_downloads(self) -> None:
         """Check `download_file` writes the expected file."""
         dest = self.workdir / "foo.deb"
@@ -181,16 +198,7 @@ class DgetDownloadTests(TestCase):
         """Check the return value of `download_file`."""
         dest = self.workdir / "foo.deb"
         stats = download_file("http://example.com/foo.deb", dest)
-        self.assertEqual(
-            {
-                "sha256": "6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d239259"
-                "3af6a84118090",
-                "sha1": "6367c48dd193d56ea7b0baad25b19455e529f5ee",
-                "md5": "e99a18c428cb38d5f260853678922e03",
-                "size": 6,
-            },
-            stats,
-        )
+        self.assertEqual(self.expected_stats["foo.deb"], stats)
 
     def test_download_file_logging(self) -> None:
         """Ensure `download_file` logs its requests."""

@@ -289,6 +289,46 @@ class CliTests(BaseCliTests):
         debusine = cli._build_debusine_object()
         self.assertEqual(debusine.scope, "altscope")
 
+    def test_no_server_found_by_fqdn_and_scope(self) -> None:
+        """Cli fails if no matching server is found by FQDN/scope."""
+        cli = self.create_cli(
+            [
+                "--server",
+                "nonexistent.example.org/scope",
+                "show-work-request",
+                "10",
+            ]
+        )
+        cli._parse_args()
+
+        stderr, stdout = self.capture_output(
+            cli._build_debusine_object, assert_system_exit_code=3
+        )
+
+        self.assertEqual(
+            stderr,
+            "No Debusine client configuration for "
+            "'nonexistent.example.org/scope'; "
+            "run 'debusine setup' to configure it\n",
+        )
+
+    def test_no_server_found_by_name(self) -> None:
+        """Cli fails if no matching server is found by name."""
+        cli = self.create_cli(
+            ["--server", "nonexistent", "show-work-request", "10"]
+        )
+        cli._parse_args()
+
+        stderr, stdout = self.capture_output(
+            cli._build_debusine_object, assert_system_exit_code=3
+        )
+
+        self.assertEqual(
+            stderr,
+            "No Debusine client configuration for 'nonexistent'; "
+            "run 'debusine setup' to configure it\n",
+        )
+
     def test_build_debusine_object_logging_warning(self) -> None:
         """Cli with --silent create and pass logger level WARNING."""
         cli = self.create_cli(["--silent", "show-work-request", "10"])
@@ -2236,8 +2276,12 @@ class CliProvideSignatureTests(BaseCliTests):
             yield patcher
 
     @responses.activate
-    def verify_provide_signature_scenario(self, extra_args: list[str]) -> None:
+    def verify_provide_signature_scenario(
+        self, local_changes: bool = False, extra_args: list[str] | None = None
+    ) -> None:
         """Test a provide-signature scenario."""
+        if extra_args is None:
+            extra_args = []
         directory = self.create_temporary_directory()
         (tar := directory / "foo_1.0.tar.xz").write_text("tar")
         (dsc := directory / "foo_1.0.dsc").write_text("dsc")
@@ -2268,6 +2312,8 @@ class CliProvideSignatureTests(BaseCliTests):
         )
         remote_signed_artifact = RemoteArtifact(id=3, workspace="Testing")
         args = ["provide-signature", "1"]
+        if local_changes:
+            args.extend(["--local-file", str(changes)])
         if extra_args:
             args.extend(["--", *extra_args])
         cli = self.create_cli(args)
@@ -2300,17 +2346,23 @@ class CliProvideSignatureTests(BaseCliTests):
         ):
             stderr, stdout = self.capture_output(cli.execute)
 
-            self.assertRegex(
-                stderr,
-                r"\A"
-                + "\n".join(
-                    [
-                        fr"Artifact file downloaded: .*/{re.escape(path.name)}"
-                        for path in (dsc, buildinfo, changes)
-                    ]
+            if local_changes:
+                self.assertEqual(stderr, "")
+            else:
+                self.assertRegex(
+                    stderr,
+                    r"\A"
+                    + "\n".join(
+                        [
+                            (
+                                fr"Artifact file downloaded: "
+                                fr".*/{re.escape(path.name)}"
+                            )
+                            for path in (dsc, buildinfo, changes)
+                        ]
+                    )
+                    + r"\n\Z",
                 )
-                + r"\n\Z",
-            )
             self.assertEqual(stdout, "")
 
             # Ensure that the CLI called debusine in the right sequence.
@@ -2343,14 +2395,22 @@ class CliProvideSignatureTests(BaseCliTests):
                 1,
                 WorkRequestExternalDebsignRequest(signed_artifact=3),
             )
+        if local_changes:
+            for path in (tar, dsc, buildinfo, changes):
+                url = f"https://example.com/{path.name}"
+                responses.assert_call_count(url, 0)
 
     def test_debsign(self) -> None:
         """provide-signature calls debsign and posts the output."""
-        self.verify_provide_signature_scenario([])
+        self.verify_provide_signature_scenario()
+
+    def test_debsign_local_changes(self) -> None:
+        """provide-signature uses local .changes."""
+        self.verify_provide_signature_scenario(local_changes=True)
 
     def test_debsign_with_args(self) -> None:
         """provide-signature calls debsign with args and posts the output."""
-        self.verify_provide_signature_scenario(["-kKEYID"])
+        self.verify_provide_signature_scenario(extra_args=["-kKEYID"])
 
     def test_wrong_work_request(self) -> None:
         """provide-signature only works for Wait/externaldebsign requests."""
@@ -2367,6 +2427,105 @@ class CliProvideSignatureTests(BaseCliTests):
         self.assertEqual(
             stderr,
             "Don't know how to provide signature for Wait/delay work request\n",
+        )
+
+    def verify_provide_signature_error_scenario(
+        self,
+        error_regex: str,
+        local_file: str | None = None,
+        expect_size: dict[str, int] | None = None,
+        expect_sha256: dict[str, str] | None = None,
+    ) -> None:
+        """Test a provide-signature failure scenario with local_file."""
+        if expect_size is None:
+            expect_size = {}
+        if expect_sha256 is None:
+            expect_sha256 = {}
+        directory = self.create_temporary_directory()
+        (tar := directory / "foo_1.0.tar.xz").write_text("tar")
+        (dsc := directory / "foo_1.0.dsc").write_text("dsc")
+        (buildinfo := directory / "foo_1.0_source.buildinfo").write_text(
+            "buildinfo"
+        )
+        changes = directory / "foo_1.0_source.changes"
+        self.write_changes_file(changes, [tar, dsc, buildinfo])
+        bare_work_request_response = create_work_request_response(
+            id=1, task_type="Wait", task_name="externaldebsign"
+        )
+        full_work_request_response = create_work_request_response(
+            id=1,
+            task_type="Wait",
+            task_name="externaldebsign",
+            dynamic_task_data={"unsigned_id": 2},
+        )
+        unsigned_artifact_response = create_artifact_response(
+            id=2,
+            files={
+                path.name: create_file_response(
+                    size=expect_size.get(path.name, path.stat().st_size),
+                    checksums={
+                        "sha256": expect_sha256.get(
+                            path.name, calculate_hash(path, "sha256").hex()
+                        )
+                    },
+                    url=f"https://example.com/{path.name}",
+                )
+                for path in (tar, dsc, buildinfo, changes)
+            },
+        )
+        if local_file is None:
+            local_file = str(changes)
+        args = ["provide-signature", "1", "--local-file", local_file]
+        cli = self.create_cli(args)
+
+        with (
+            self.patch_debusine_method(
+                "work_request_get", return_value=bare_work_request_response
+            ),
+            self.patch_debusine_method(
+                "work_request_external_debsign_get",
+                return_value=full_work_request_response,
+            ),
+            self.patch_debusine_method(
+                "artifact_get", return_value=unsigned_artifact_response
+            ),
+            mock.patch("subprocess.run"),
+        ):
+            stderr, stdout = self.capture_output(
+                cli.execute, assert_system_exit_code=3
+            )
+
+        self.assertRegex(stderr, error_regex)
+
+    def test_missing_local_changes(self) -> None:
+        """provide-signature raises an error for missing --local-file."""
+        self.verify_provide_signature_error_scenario(
+            r"^--local-file 'nonexistent\.changes' does not exist\.$",
+            local_file="nonexistent.changes",
+        )
+
+    def test_local_dsc(self) -> None:
+        """provide-signature raises an error for the wrong kind of file."""
+        self.verify_provide_signature_error_scenario(
+            r"^--local-file 'foo\.dsc' is not a \.changes file.$",
+            local_file="foo.dsc",
+        )
+
+    def test_size_mismatch(self) -> None:
+        """provide-signature verifies the size of local files."""
+        self.verify_provide_signature_error_scenario(
+            r'^"[^"]+/foo_1\.0\.dsc" size mismatch \(expected 999 bytes\)$',
+            expect_size={"foo_1.0.dsc": 999},
+        )
+
+    def test_hash_mismatch(self) -> None:
+        """provide-signature verifies the hashes of local files."""
+        self.verify_provide_signature_error_scenario(
+            (
+                r'^"[^"]+/foo_1\.0\.dsc" hash mismatch '
+                r'\(expected sha256 = abc123\)$'
+            ),
+            expect_sha256={"foo_1.0.dsc": "abc123"},
         )
 
 
