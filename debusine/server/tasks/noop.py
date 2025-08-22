@@ -11,11 +11,14 @@
 
 from debusine.server.tasks import BaseServerTask
 from debusine.server.tasks.models import ServerNoopData
+from debusine.tasks import DefaultDynamicData
 from debusine.tasks.models import BaseDynamicTaskData
-from debusine.tasks.server import TaskDatabaseInterface
 
 
-class ServerNoop(BaseServerTask[ServerNoopData, BaseDynamicTaskData]):
+class ServerNoop(
+    BaseServerTask[ServerNoopData, BaseDynamicTaskData],
+    DefaultDynamicData[ServerNoopData],
+):
     """Task that runs on server-side Celery workers and returns a boolean."""
 
     TASK_VERSION = 1
@@ -29,10 +32,3 @@ class ServerNoop(BaseServerTask[ServerNoopData, BaseDynamicTaskData]):
     def get_label(self) -> str:
         """Return the task label."""
         return "noop"
-
-    def build_dynamic_data(
-        self,
-        task_database: TaskDatabaseInterface,  # noqa: U100
-    ) -> BaseDynamicTaskData:
-        """Resolve artifact lookups for this task."""
-        return BaseDynamicTaskData()

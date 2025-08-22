@@ -203,7 +203,7 @@ class CanDisplayFilterBackend(BaseFilterBackend):
     ) -> QuerySet[_M]:
         """Keep only objects that can be displayed."""
         assert isinstance(queryset, SupportsCanDisplay)
-        return queryset.can_display(context.require_user())
+        return queryset.can_display(context.user)
 
 
 class Whoami(BaseAPIView):

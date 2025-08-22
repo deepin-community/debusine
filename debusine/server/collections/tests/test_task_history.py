@@ -22,6 +22,7 @@ from debusine.artifacts.models import (
     CollectionCategory,
     DebusineHistoricalTaskRun,
     RuntimeStatistics,
+    TaskTypes,
 )
 from debusine.client.models import (
     LookupChildType,
@@ -32,7 +33,7 @@ from debusine.db.playground import scenarios
 from debusine.server.collections.base import ItemAdditionError
 from debusine.server.collections.lookup import LookupResult, lookup_multiple
 from debusine.server.collections.task_history import TaskHistoryManager
-from debusine.tasks.models import LookupMultiple, TaskTypes
+from debusine.tasks.models import LookupMultiple
 from debusine.test.django import TestCase
 
 
@@ -42,6 +43,7 @@ class TaskHistoryManagerTests(TestCase):
     scenario = scenarios.DefaultContext()
     workflow: WorkRequest
     collection: Collection
+    collection_lookup: str
     manager: TaskHistoryManager
 
     @classmethod
@@ -52,6 +54,7 @@ class TaskHistoryManagerTests(TestCase):
         cls.collection = cls.scenario.workspace.get_singleton_collection(
             user=cls.scenario.user, category=CollectionCategory.TASK_HISTORY
         )
+        cls.collection_lookup = f"_@{CollectionCategory.TASK_HISTORY}"
         cls.manager = TaskHistoryManager(collection=cls.collection)
 
     def create_historical_task_run(
@@ -342,9 +345,9 @@ class TaskHistoryManagerTests(TestCase):
         # Matching items are pruned, but the most recent success is kept
         # despite not being within the window of old items to keep.
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
-                parent_collection=self.collection
-            ).order_by("id"),
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.collection)
+            .order_by("id"),
             [items[0], *items[2:]],
         )
 
@@ -394,9 +397,9 @@ class TaskHistoryManagerTests(TestCase):
         # Matching items are pruned, but the most recent failure is kept
         # despite not being within the window of old items to keep.
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
-                parent_collection=self.collection
-            ).order_by("id"),
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.collection)
+            .order_by("id"),
             [items[0], *items[2:]],
         )
 
@@ -429,23 +432,22 @@ class TaskHistoryManagerTests(TestCase):
         )
 
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
-                parent_collection=self.collection
-            ).order_by("id"),
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.collection)
+            .order_by("id"),
             items[3:],
         )
 
-    def test_remove_bare_data(self) -> None:
-        """`remove_bare_data` removes the item."""
+    def test_remove_item_bare_data(self) -> None:
+        """`remove_item` removes a bare data item."""
         item = self.create_historical_task_run(
             TaskTypes.WORKER, "sbuild", "base-files", "sid/amd64", 1
         )
 
-        self.manager.remove_bare_data(
-            item.name, user=self.scenario.user, workflow=self.workflow
+        self.manager.remove_item(
+            item, user=self.scenario.user, workflow=self.workflow
         )
 
-        item.refresh_from_db()
         self.assertEqual(item.removed_by_user, self.scenario.user)
         self.assertEqual(item.removed_by_workflow, self.workflow)
         self.assertIsNotNone(item.removed_at)
@@ -641,16 +643,16 @@ class TaskHistoryManagerTests(TestCase):
             ),
         )
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
-                parent_collection=self.collection
-            ).filter(condition),
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.collection)
+            .filter(condition),
             [items[0]],
         )
         self.assertCountEqual(
             lookup_multiple(
                 LookupMultiple.parse_obj(
                     {
-                        "collection": self.collection.id,
+                        "collection": self.collection_lookup,
                         "child_type": LookupChildType.BARE,
                         "lookup__same_work_request": subordinate_lookup,
                     }
@@ -662,6 +664,7 @@ class TaskHistoryManagerTests(TestCase):
             [
                 LookupResult(
                     result_type=CollectionItem.Types.BARE,
+                    parent_collection_lookup=self.collection_lookup,
                     collection_item=items[0],
                 )
             ],
@@ -704,9 +707,9 @@ class TaskHistoryManagerTests(TestCase):
             ),
         )
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
-                parent_collection=self.collection
-            ).filter(condition),
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.collection)
+            .filter(condition),
             items[:2],
             ordered=False,
         )
@@ -714,7 +717,7 @@ class TaskHistoryManagerTests(TestCase):
             lookup_multiple(
                 LookupMultiple.parse_obj(
                     {
-                        "collection": self.collection.id,
+                        "collection": self.collection_lookup,
                         "child_type": LookupChildType.BARE,
                         "lookup__same_work_request": subordinate_lookup,
                     }
@@ -725,7 +728,9 @@ class TaskHistoryManagerTests(TestCase):
             ),
             [
                 LookupResult(
-                    result_type=CollectionItem.Types.BARE, collection_item=item
+                    result_type=CollectionItem.Types.BARE,
+                    parent_collection_lookup=self.collection_lookup,
+                    collection_item=item,
                 )
                 for item in items[:2]
             ],
@@ -755,9 +760,9 @@ class TaskHistoryManagerTests(TestCase):
         # Ideally we'd check the query itself, but digging into the
         # WorkRequest subquery is hard, so we just check the results.
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
-                parent_collection=self.collection
-            ).filter(condition),
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.collection)
+            .filter(condition),
             items[:2],
             ordered=False,
         )
@@ -765,7 +770,7 @@ class TaskHistoryManagerTests(TestCase):
             lookup_multiple(
                 LookupMultiple.parse_obj(
                     {
-                        "collection": self.collection.id,
+                        "collection": self.collection_lookup,
                         "child_type": LookupChildType.BARE,
                         "lookup__same_workflow": subordinate_lookup,
                     }
@@ -777,6 +782,7 @@ class TaskHistoryManagerTests(TestCase):
             [
                 LookupResult(
                     result_type=CollectionItem.Types.BARE,
+                    parent_collection_lookup=self.collection_lookup,
                     collection_item=item,
                 )
                 for item in items[:2]
@@ -816,9 +822,9 @@ class TaskHistoryManagerTests(TestCase):
         # Ideally we'd check the query itself, but digging into the
         # WorkRequest subquery is hard, so we just check the results.
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
-                parent_collection=self.collection
-            ).filter(condition),
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.collection)
+            .filter(condition),
             items[:4],
             ordered=False,
         )
@@ -826,7 +832,7 @@ class TaskHistoryManagerTests(TestCase):
             lookup_multiple(
                 LookupMultiple.parse_obj(
                     {
-                        "collection": self.collection.id,
+                        "collection": self.collection_lookup,
                         "child_type": LookupChildType.BARE,
                         "lookup__same_workflow": subordinate_lookup,
                     }
@@ -838,6 +844,7 @@ class TaskHistoryManagerTests(TestCase):
             [
                 LookupResult(
                     result_type=CollectionItem.Types.BARE,
+                    parent_collection_lookup=self.collection_lookup,
                     collection_item=item,
                 )
                 for item in items[:4]

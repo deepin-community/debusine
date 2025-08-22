@@ -30,11 +30,12 @@ from debusine.tasks.tests.helper_mixin import ExternalTaskHelperMixin
 from debusine.test import TestCase
 
 
-class ImageCacheTestMixin(ExternalTaskHelperMixin[Noop]):
+class ImageCacheTest(ExternalTaskHelperMixin[Noop], TestCase):
     """Common setup for unit tests of ImageCache class."""
 
     def setUp(self) -> None:
         """Mock the Debusine API for tests."""
+        super().setUp()
         self.debusine_api = create_autospec(Debusine)
         self.image_cache = ImageCache(
             self.debusine_api, ExecutorImageCategory.TARBALL
@@ -43,7 +44,7 @@ class ImageCacheTestMixin(ExternalTaskHelperMixin[Noop]):
         self.debusine_api.artifact_get.return_value = self.artifact
 
 
-class ImageCacheMetadataTests(ImageCacheTestMixin, TestCase):
+class ImageCacheMetadataTests(ImageCacheTest):
     """Unit tests for ImageCache class that don't work with images."""
 
     def test_cache_artifact_path(self) -> None:
@@ -91,7 +92,7 @@ class ImageCacheMetadataTests(ImageCacheTestMixin, TestCase):
             self.image_cache.image_artifact(42)
 
 
-class ImageCacheTests(ImageCacheTestMixin, TestCase):
+class ImageCacheTests(ImageCacheTest):
     """Unit tests for ImageCache class that work with images."""
 
     def setUp(self) -> None:

@@ -16,7 +16,6 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
-from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
     ArtifactRelation,
@@ -28,9 +27,7 @@ from debusine.db.models import (
 )
 from debusine.server.collections import (
     DebianSuiteLintianManager,
-    DebianSuiteManager,
     ItemAdditionError,
-    ItemRemovalError,
 )
 from debusine.test.django import TestCase
 
@@ -148,7 +145,6 @@ class DebianSuiteLintianManagerTests(TestCase):
         with self.assertRaisesRegex(ValueError, msg):
             DebianSuiteLintianManager(collection)
 
-    @context.disable_permission_checks()
     def test_get_related_source_package_direct(self) -> None:
         """Analysis relates directly to a source package."""
         source_package_artifact = self.create_source_package("hello", "1.0")
@@ -157,7 +153,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0.dsc"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, source_package_artifact
@@ -168,7 +165,6 @@ class DebianSuiteLintianManagerTests(TestCase):
             source_package_artifact,
         )
 
-    @context.disable_permission_checks()
     def test_get_related_source_package_via_binary_package(self) -> None:
         """Analysis relates to a source package via `debian:binary-package`."""
         source_package_artifact = self.create_source_package("hello", "1.0")
@@ -183,7 +179,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0_amd64.deb"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "amd64", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, binary_package_artifact
@@ -194,7 +191,6 @@ class DebianSuiteLintianManagerTests(TestCase):
             source_package_artifact,
         )
 
-    @context.disable_permission_checks()
     def test_get_related_source_package_via_binary_packages(self) -> None:
         """Analysis relates to a source package via `debian:binary-packages`."""
         source_package_artifact = self.create_source_package("hello", "1.0")
@@ -211,7 +207,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0_amd64.deb"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "amd64", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, binary_packages_artifact
@@ -222,7 +219,6 @@ class DebianSuiteLintianManagerTests(TestCase):
             source_package_artifact,
         )
 
-    @context.disable_permission_checks()
     def test_get_related_source_package_via_upload(self) -> None:
         """Analysis relates to a source package via `debian:upload`."""
         source_package_artifact = self.create_source_package("hello", "1.0")
@@ -245,7 +241,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0_amd64.deb"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "amd64", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, upload_artifact
@@ -316,7 +313,6 @@ class DebianSuiteLintianManagerTests(TestCase):
                 }
             )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact(self) -> None:
         """`do_add_artifact` adds the artifact."""
         source_package_artifact = self.create_source_package("hello", "1.0")
@@ -325,7 +321,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0.dsc"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, source_package_artifact
@@ -343,7 +340,6 @@ class DebianSuiteLintianManagerTests(TestCase):
             {"package": "hello", "version": "1.0", "architecture": "source"},
         )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_raise_item_addition_error(self) -> None:
         """`do_add_artifact` raises error: duplicated CollectionItem data."""
         source_package_artifact = self.create_source_package("hello", "1.0")
@@ -352,13 +348,15 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0.dsc"},
         }
         lintian_artifact_1, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact_1, source_package_artifact
         )
         lintian_artifact_2, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact_2, source_package_artifact
@@ -371,7 +369,6 @@ class DebianSuiteLintianManagerTests(TestCase):
         ):
             self.manager.add_artifact(lintian_artifact_2, user=self.user)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_no_related_source_package(self) -> None:
         """`do_add_artifact` raises error: no related source package."""
         summary = {
@@ -379,7 +376,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0.dsc"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
 
         with self.assertRaisesRegex(
@@ -387,7 +385,6 @@ class DebianSuiteLintianManagerTests(TestCase):
         ):
             self.manager.add_artifact(lintian_artifact, user=self.user)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_multiple_related_source_packages(self) -> None:
         """`do_add_artifact` raises error: multiple related source packages."""
         source_package_artifact_1 = self.create_source_package("hello", "1.0")
@@ -403,7 +400,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0.dsc"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, source_package_artifact_1
@@ -417,7 +415,6 @@ class DebianSuiteLintianManagerTests(TestCase):
         ):
             self.manager.add_artifact(lintian_artifact, user=self.user)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_derived_from(self) -> None:
         """`do_add_artifact` stores derived-from information if given."""
         source_package_artifact = self.create_source_package("hello", "1.0")
@@ -426,19 +423,18 @@ class DebianSuiteLintianManagerTests(TestCase):
             category=CollectionCategory.SUITE,
             workspace=self.workspace,
         )
-        suite_manager = DebianSuiteManager(collection=suite_collection)
-        source_package_item = suite_manager.add_source_package(
+        source_package_item = suite_collection.manager.add_artifact(
             source_package_artifact,
             user=self.user,
-            component="main",
-            section="devel",
+            variables={"component": "main", "section": "devel"},
         )
         summary = {
             **self.basic_summary,
             "package_filename": {"hello": "hello_1.0.dsc"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, source_package_artifact
@@ -454,7 +450,6 @@ class DebianSuiteLintianManagerTests(TestCase):
             collection_item.data["derived_from"], [source_package_item.id]
         )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace(self) -> None:
         """`do_add_artifact` can replace an existing artifact."""
         source_package_artifact = self.create_source_package("hello", "1.0")
@@ -463,7 +458,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0.dsc"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, source_package_artifact
@@ -472,7 +468,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             lintian_artifact, user=self.user
         )
         lintian_artifact2, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact2, source_package_artifact
@@ -490,7 +487,6 @@ class DebianSuiteLintianManagerTests(TestCase):
         self.assertEqual(collection_item2.artifact, lintian_artifact2)
         self.assertIsNone(collection_item2.removed_at)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace_nonexistent(self) -> None:
         """Replacing a nonexistent artifact is allowed."""
         source_package_artifact = self.create_source_package("hello", "1.0")
@@ -499,7 +495,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {"hello": "hello_1.0.dsc"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, source_package_artifact
@@ -511,36 +508,6 @@ class DebianSuiteLintianManagerTests(TestCase):
 
         self.assertEqual(collection_item.name, "hello_1.0_source")
         self.assertEqual(collection_item.artifact, lintian_artifact)
-
-    @context.disable_permission_checks()
-    def test_do_remove_artifact(self) -> None:
-        """`do_remove_artifact` removes the artifact."""
-        source_package_artifact = self.create_source_package("hello", "1.0")
-        summary = {
-            **self.basic_summary,
-            "package_filename": {"hello": "hello_1.0.dsc"},
-        }
-        lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
-        )
-        self.playground.create_artifact_relation(
-            lintian_artifact, source_package_artifact
-        )
-
-        collection_item = self.manager.add_artifact(
-            lintian_artifact, user=self.user
-        )
-
-        # Test removing the artifact from the collection
-        self.manager.remove_artifact(lintian_artifact, user=self.user)
-
-        collection_item.refresh_from_db()
-
-        # The artifact is not removed yet (retention period applies)
-        self.assertEqual(collection_item.artifact, lintian_artifact)
-
-        self.assertEqual(collection_item.removed_by_user, self.user)
-        self.assertIsInstance(collection_item.removed_at, datetime)
 
     def test_do_add_collection_raise_item_addition_error(self) -> None:
         """
@@ -561,25 +528,33 @@ class DebianSuiteLintianManagerTests(TestCase):
         with self.assertRaisesRegex(ItemAdditionError, msg):
             self.manager.do_add_collection(collection, user=self.user)
 
-    def test_do_remove_collection_raise_item_removal_error(self) -> None:
-        """
-        `do_remove_collection` raises `ItemRemovalError`.
-
-        No Collections can be removed from the debian:suite-lintian
-        collection.
-        """
-        msg = (
-            f'^Cannot remove collections from '
-            f'"{self.manager.COLLECTION_CATEGORY}"$'
+    def test_do_remove_item_artifact(self) -> None:
+        """`do_remove_item` removes an artifact item."""
+        source_package_artifact = self.create_source_package("hello", "1.0")
+        summary = {
+            **self.basic_summary,
+            "package_filename": {"hello": "hello_1.0.dsc"},
+        }
+        lintian_artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
-        collection = Collection.objects.create(
-            name="Some-collection",
-            category="Some category",
-            workspace=self.workspace,
+        self.playground.create_artifact_relation(
+            lintian_artifact, source_package_artifact
         )
 
-        with self.assertRaisesRegex(ItemRemovalError, msg):
-            self.manager.do_remove_collection(collection, user=self.user)
+        collection_item = self.manager.add_artifact(
+            lintian_artifact, user=self.user
+        )
+
+        # Test removing the artifact from the collection
+        self.manager.remove_item(collection_item, user=self.user)
+
+        # The artifact is not removed yet (retention period applies)
+        self.assertEqual(collection_item.artifact, lintian_artifact)
+
+        self.assertEqual(collection_item.removed_by_user, self.user)
+        self.assertIsInstance(collection_item.removed_at, datetime)
 
     def test_lookup_unexpected_format_raise_lookup_error(self) -> None:
         """`lookup` raises `LookupError`: invalid format."""
@@ -592,7 +567,6 @@ class DebianSuiteLintianManagerTests(TestCase):
         """`lookup` returns None if there are no matches."""
         self.assertIsNone(self.manager.lookup("latest:hello_source"))
 
-    @context.disable_permission_checks()
     def test_lookup_return_matching_collection_item(self) -> None:
         """`lookup` returns a matching collection item."""
         items: list[CollectionItem] = []
@@ -626,7 +600,8 @@ class DebianSuiteLintianManagerTests(TestCase):
                 },
             }
             lintian_artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.LINTIAN, data={"summary": summary}
+                category=ArtifactCategory.LINTIAN,
+                data={"architecture": architecture, "summary": summary},
             )
             self.playground.create_artifact_relation(
                 lintian_artifact, lintian_target
@@ -641,7 +616,8 @@ class DebianSuiteLintianManagerTests(TestCase):
             "package_filename": {name: f"{name}_{version}.dsc"},
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, source_package_artifact

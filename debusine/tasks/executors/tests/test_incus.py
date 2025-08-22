@@ -16,7 +16,7 @@ from shutil import rmtree
 from subprocess import CalledProcessError, CompletedProcess, DEVNULL, PIPE
 from tempfile import NamedTemporaryFile, mkdtemp
 from textwrap import dedent
-from typing import Any, cast
+from typing import Any, Literal, cast
 from unittest.mock import ANY, MagicMock, call, create_autospec, patch
 
 import yaml
@@ -118,9 +118,11 @@ class IncusImageCacheCommonTests(ExternalTaskHelperMixin[Noop], TestCase):
             )
             cast(TestCase, self).addCleanup(path.unlink)
 
-        mode = "w"
+        mode: Literal["w", "w:xz"]
         if path.suffix == ".xz":
-            mode += ":xz"
+            mode = "w:xz"
+        else:
+            mode = "w"
 
         with tarfile.open(name=path, mode=mode) as tar:
             for dir_ in dirs:
@@ -838,6 +840,7 @@ class IncusInstanceTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.instance = IncusInstance("image-name")
 
         run_incus_cmd_patcher = patch(

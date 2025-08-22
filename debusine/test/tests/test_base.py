@@ -277,16 +277,10 @@ class TestCaseTests(TestCase):
         """Test warnings on invalid HTML."""
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
-            content = b"<!DOCTYPE html><html><does-not-exist></html>"
-            with self.assertRaisesRegex(
-                AssertionError, r"1:HTML_UNKNOWN_TAG:Tag does-not-exist invalid"
-            ):
-                self.assertHTMLValid(content)
-
-            content = b"<!DOCTYPE html><html"
+            content = b"<!DOCTYPE html><html></nothtml>"
             with self.assertRaisesRegex(
                 AssertionError,
-                r"1:ERR_GT_REQUIRED:Couldn't find end of Start Tag html",
+                r"1:ERR_TAG_NAME_MISMATCH:Unexpected end tag : nothtml",
             ):
                 self.assertHTMLValid(content)
 
@@ -294,21 +288,22 @@ class TestCaseTests(TestCase):
 
     def test_invalid_html_dump_on_error(self) -> None:
         """Test warnings on invalid HTML with dump_on_error."""
-        content = b"<!DOCTYPE html><html>\n<does-not-exist>\n</html>"
+        content = b"<!DOCTYPE html><html>\n</nothtml>"
 
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             with self.assertRaisesRegex(
-                AssertionError, r"2:HTML_UNKNOWN_TAG:Tag does-not-exist invalid"
+                AssertionError,
+                r"2:ERR_TAG_NAME_MISMATCH:Unexpected end tag : nothtml",
             ):
                 self.assertHTMLValid(content, dump_on_error=True)
 
         lines = stdout.getvalue().splitlines()
         self.assertEqual(lines[1], "    HTML parser errors")
         self.assertEqual(lines[3], "001 <!DOCTYPE html><html>")
-        self.assertEqual(lines[4], "002 <does-not-exist>")
+        self.assertEqual(lines[4], "002 </nothtml>")
         self.assertEqual(
-            lines[5], "  → HTML_UNKNOWN_TAG:Tag does-not-exist invalid"
+            lines[5], "  → ERR_TAG_NAME_MISMATCH:Unexpected end tag : nothtml"
         )
 
     def test_assert_has_element(self) -> None:
@@ -390,6 +385,19 @@ class TestCaseTests(TestCase):
                         AssertionError, re.escape(message)
                     ):
                         self.assertElementHasNoClass(el, "foo")
+
+    def test_assertTextContentEqual_dump_on_error(self) -> None:
+        """Test assertTextContentEqual with dump_on_error."""
+        tree = lxml.objectify.fromstring("<p><b>this</b> is a <b>test</b></p>")
+
+        with mock.patch("debusine.test.base.TestCase.dump_element") as dump:
+            with self.assertRaisesRegex(
+                AssertionError, r"'this is a test' != 'mismatch'"
+            ):
+                self.assertTextContentEqual(
+                    tree, "mismatch", dump_on_error=True
+                )
+        dump.assert_called_with(tree, title="Text content mismatch")
 
     def test_assertDatetimeContentEqual(self) -> None:
         """Test :py:meth:`assertDatetimeContentEqual`."""

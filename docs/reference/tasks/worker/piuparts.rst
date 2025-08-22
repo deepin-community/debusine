@@ -1,4 +1,4 @@
-.. _task-piuparts:
+.. task:: Piuparts
 
 Piuparts task
 -------------
@@ -18,28 +18,31 @@ The ``task_data`` associated to this task can contain the following keys:
 * ``input`` (required): a dictionary describing the input data
 
   * ``binary_artifacts`` (:ref:`lookup-multiple`, required): a list of
-    ``debian:binary-packages`` or ``debian:upload`` artifacts representing
-    the binary packages to be tested. Multiple artifacts can be provided so
-    as to support e.g. testing binary packages from split indep/arch builds.
+    :artifact:`debian:binary-package`, :artifact:`debian:binary-packages`,
+    or :artifact:`debian:upload` artifacts representing the binary packages
+    to be tested. Multiple artifacts can be provided so as to support e.g.
+    testing binary packages from split indep/arch builds.
 
 * ``backend`` (optional, defaults to ``unshare``).
   If ``auto``, the task uses the default.
   Supported backends: ``incus-lxc``, ``incus-vm``, and ``unshare``.
 * ``environment`` (:ref:`lookup-single` with default category
-  ``debian:environments``, required): artifact of category
-  ``debian:system-tarball`` that will be used to run piuparts itself.
+  :collection:`debian:environments`, required):
+  :artifact:`debian:system-tarball` artifact that will be used to run
+  piuparts itself.
 * ``base_tgz`` (:ref:`lookup-single` with default category
-  ``debian:environments``, required): artifact of category
-  ``debian:system-tarball`` that will be used to run piuparts tests, through
-  ``piuparts --base-tgz``. If the artifact's data has ``with_dev: True``,
-  the task will remove the files ``/dev/*`` before using it.
+  :collection:`debian:environments`, required):
+  :artifact:`debian:system-tarball` artifact that will be used to run
+  piuparts tests, through ``piuparts --base-tgz``. If the artifact's data
+  has ``with_dev: True``, the task will remove the files ``/dev/*`` before
+  using it.
 
 * ``host_architecture`` (required): the architecture that we want to
   test on.
 
 * ``extra_repositories`` (optional): a list of extra repositories to enable.
   Each repository is described by the same dictionary as the
-  ``extra_repositories`` option in the :ref:`package-build-task`.
+  ``extra_repositories`` option in the :task:`PackageBuild` interface.
 
 The task computes dynamic metadata as:
 

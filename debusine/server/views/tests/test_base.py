@@ -43,6 +43,7 @@ class IsTokenAuthenticatedTests(TestCase):
 
     def setUp(self) -> None:
         """Set up common objects."""
+        super().setUp()
         self.is_token_authenticated = IsTokenAuthenticated()
         self.request = Request(HttpRequest())
 
@@ -77,6 +78,7 @@ class IsTokenUserAuthenticatedTests(TestCase):
 
     def setUp(self) -> None:
         """Set up test."""
+        super().setUp()
         self.is_token_user_authenticated = IsTokenUserAuthenticated()
         self.request = Request(HttpRequest())
 
@@ -123,6 +125,7 @@ class IsWorkerAuthenticatedTests(TestCase):
 
     def setUp(self) -> None:
         """Set up common objects."""
+        super().setUp()
         self.is_worker_authenticated = IsWorkerAuthenticated()
         self.request = Request(HttpRequest())
 
@@ -159,6 +162,7 @@ class IsGetTests(TestCase):
 
     def setUp(self) -> None:
         """Set up tests."""
+        super().setUp()
         self.is_get = IsGet()
         self.http_request = Request(HttpRequest())
 
@@ -208,9 +212,8 @@ class TestBaseAPIView(TestCase):
         """Test the set_current_workspace method."""
         workspace: Workspace | str
         error: str | None
-        with context.disable_permission_checks():
-            workspace = self.playground.get_default_workspace()
-            private_workspace = self.playground.create_workspace(name="private")
+        workspace = self.playground.get_default_workspace()
+        private_workspace = self.playground.create_workspace(name="private")
         scope = self.playground.get_default_scope()
         user = self.playground.get_default_user()
         context.set_scope(scope)

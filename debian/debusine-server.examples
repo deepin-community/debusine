@@ -1,1 +1,2 @@
 examples/nginx/nginx-vhost.conf
+examples/nginx/nginx-vhost-deb.conf

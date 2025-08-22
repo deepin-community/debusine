@@ -15,7 +15,6 @@ import lxml
 from django.urls import reverse
 from rest_framework import status
 
-from debusine.db.context import context
 from debusine.db.models import Scope, Workspace
 from debusine.db.playground import scenarios
 from debusine.server.scopes import urlconf_scope
@@ -46,7 +45,6 @@ class ScopeDetailViewTests(ViewTestMixin, TestCase):
     scope_workspace: ClassVar[Workspace]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up test fixture."""
         super().setUpTestData()

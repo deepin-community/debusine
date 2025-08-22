@@ -14,11 +14,12 @@ Development blueprints
     build-instructions
     scoped-urls
     debian-pipeline
+    regression-tracking
     url-redesign
     url-user-redesign
     dynamic-compute
     experiment-workspaces
     roles-permissions-on-groups
-    workflow-debdiff
     page-title-refactoring
-    generate-repository-indexes
+    more-flexible-workflow-templates
+    sign-repository-indexes

@@ -144,6 +144,12 @@ class TestSidebar(TestCase):
             el.value, '<span class="badge text-bg-secondary">Pending</span>'
         )
 
+        wr = WorkRequest(status=WorkRequest.Statuses.BLOCKED)
+        el = sidebar.create_work_request_status(wr)
+        self.assertEqual(
+            el.value, '<span class="badge text-bg-dark">Blocked</span>'
+        )
+
         wr.status, wr.result = (
             WorkRequest.Statuses.COMPLETED,
             WorkRequest.Results.FAILURE,
@@ -153,6 +159,17 @@ class TestSidebar(TestCase):
             el.value,
             '<span class="badge text-bg-primary">Completed</span>'
             ' <span class="badge text-bg-warning">Failure</span>',
+        )
+
+        wr.status, wr.result = (
+            WorkRequest.Statuses.COMPLETED,
+            WorkRequest.Results.SKIPPED,
+        )
+        el = sidebar.create_work_request_status(wr)
+        self.assertEqual(
+            el.value,
+            '<span class="badge text-bg-primary">Completed</span>'
+            ' <span class="badge text-bg-light">Skipped</span>',
         )
 
         # This case does not make sense but it must be rendered somewhat

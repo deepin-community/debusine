@@ -19,6 +19,7 @@ from django.contrib.auth import get_user_model
 from django.template.response import SimpleTemplateResponse
 from django.test import override_settings
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 
 from debusine.db.context import context
@@ -111,11 +112,17 @@ class UserDetailViewTests(ViewTestMixin, TestCase):
 
     scenario = scenarios.DefaultScopeUser()
 
-    def test_get_title(self) -> None:
-        """Test get_title method."""
+    def test_get_title_full_name(self) -> None:
+        """Test get_title() returns full name."""
         view = UserDetailView()
         view.object = self.scenario.user
         self.assertEqual(view.get_title(), self.scenario.user.get_full_name())
+
+    def test_get_title_username(self) -> None:
+        """Test get_title() returns username (full_name is not set)"""
+        view = UserDetailView()
+        view.object = self.playground.create_user(username="John")
+        self.assertEqual(view.get_title(), "John")
 
     def test_anonymous(self) -> None:
         """Test accessing as anonymous user."""
@@ -138,6 +145,13 @@ class UserDetailViewTests(ViewTestMixin, TestCase):
         self.assertTextContentEqual(dl.dd[1], self.scenario.user.username)
         self.assertTextContentEqual(
             dl.dd[2], str(self.scenario.user.token_set.count())
+        )
+        self.assertEqual(
+            dl.dd[2].a.attrib["href"],
+            reverse(
+                "user:token-list",
+                kwargs={"username": self.scenario.user.username},
+            ),
         )
 
         self.assertFalse(tree.xpath("//table[@id='person-groups']"))
@@ -346,10 +360,16 @@ class UserTokenListViewTests(ViewTestMixin, TestCase):
             kwargs={"pk": token.pk, "username": self.scenario.user.username},
         )
 
+        if token.last_seen_at is not None:
+            last_seen_at = date_format(token.last_seen_at)
+        else:
+            last_seen_at = "Never"
+
         return (
             "<tr>"
             f"<td>{html_check_icon(token.enabled)}</td>"
             f"<td>{date_format(token.created_at)}</td>"
+            f"<td>{last_seen_at}</td>"
             f"<td>{token.comment}</td>"
             f'<td><a href="{delete_url}">Delete</a>&nbsp;|&nbsp;'
             f'<a href="{edit_url}">Edit</a></td>'
@@ -363,7 +383,9 @@ class UserTokenListViewTests(ViewTestMixin, TestCase):
         Assert tokens are ordered by created_at.
         """
         token1 = Token.objects.create(
-            user=self.scenario.user, comment="Token 1"
+            user=self.scenario.user,
+            comment="Token 1",
+            last_seen_at=timezone.now(),
         )
         token2 = Token.objects.create(
             user=self.scenario.user, comment="Token 2"
@@ -618,6 +640,7 @@ class UserTokenUpdateViewTests(TestCase):
             html=True,
         )
         assert isinstance(response, SimpleTemplateResponse)
+        assert response.context_data is not None
         self.assertEqual(
             response.context_data["form"]["comment"].initial,
             token.comment,
@@ -632,6 +655,8 @@ class UserTokenDeleteViewTests(TestCase):
     def test_get_delete_token_authenticated_user(self) -> None:
         """Get request to delete a token. Token information is returned."""
         token = self.scenario.user_token
+        token.last_seen_at = timezone.now()
+        token.save()
         self.client.force_login(self.scenario.user)
 
         response = self.client.get(
@@ -649,6 +674,7 @@ class UserTokenDeleteViewTests(TestCase):
             f"<li>Comment: {token.comment}</li>"
             f"<li>Enabled: {html_check_icon(token.enabled)}</li>"
             f"<li>Created at: {date_format(token.created_at)}</li>"
+            f"<li>Last seen at: {date_format(token.last_seen_at)}</li>"
             "</ul>"
         )
 

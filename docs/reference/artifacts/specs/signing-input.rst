@@ -1,11 +1,10 @@
-.. _artifact-signing-input:
+.. artifact:: debusine:signing-input
 
 Category ``debusine:signing-input``
 ===================================
 
-This artifact provides input to a :ref:`Sign task <task-sign>`.  It will
-typically be created by the :ref:`ExtractForSigning task
-<task-extract-for-signing>` or the :ref:`Sbuild task <task-sbuild>`.
+This artifact provides input to a :task:`Sign` task.  It will typically be
+created by the :task:`ExtractForSigning` task or the :task:`Sbuild` task.
 
 * Data:
 

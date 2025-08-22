@@ -23,7 +23,6 @@ from debusine.artifacts.models import (
     DebusinePromise,
 )
 from debusine.client.models import LookupChildType
-from debusine.db.context import context
 from debusine.db.models import ArtifactRelation, CollectionItem
 from debusine.server.collections.lookup import LookupResult
 from debusine.server.workflows import (
@@ -240,10 +239,9 @@ class WorkflowUtilsTests(TestCase):
 
     def test_lookup_result_architecture_binary_packages_artifact(self) -> None:
         """lookup_result_architecture with a binary-packages artifact."""
-        with context.disable_permission_checks():
-            artifact = self.playground.create_minimal_binary_packages_artifact(
-                "hello", "1.0-1", "1.0-1", "i386"
-            )
+        artifact = self.playground.create_minimal_binary_packages_artifact(
+            "hello", "1.0-1", "1.0-1", "i386"
+        )
         result = LookupResult(
             result_type=CollectionItem.Types.ARTIFACT, artifact=artifact
         )
@@ -281,16 +279,15 @@ class WorkflowUtilsTests(TestCase):
 
     def test_lookup_result_architecture_debian_binary_package(self) -> None:
         """lookup_result_architecture return arch from a binary package."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.BINARY_PACKAGE,
-                data={
-                    "srcpkg_name": "hello",
-                    "srcpkg_version": "1.0.0",
-                    "deb_fields": {"Architecture": "amd64"},
-                    "deb_control_files": [],
-                },
-            )
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.BINARY_PACKAGE,
+            data={
+                "srcpkg_name": "hello",
+                "srcpkg_version": "1.0.0",
+                "deb_fields": {"Architecture": "amd64"},
+                "deb_control_files": [],
+            },
+        )
 
         result = LookupResult(
             result_type=CollectionItem.Types.ARTIFACT, artifact=artifact
@@ -337,17 +334,37 @@ class WorkflowUtilsTests(TestCase):
 
     def test_lookup_result_architecture_debian_upload(self) -> None:
         """lookup_result_architecture return arch from an upload artifact."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.UPLOAD,
-                data={
-                    "type": "dpkg",
-                    "changes_fields": {
-                        "Architecture": "amd64",
-                        "Files": [{"name": "test.deb"}],
-                    },
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.UPLOAD,
+            data={
+                "type": "dpkg",
+                "changes_fields": {
+                    "Architecture": "amd64",
+                    "Files": [{"name": "test.deb"}],
                 },
-            )
+            },
+        )
+
+        result = LookupResult(
+            result_type=CollectionItem.Types.ARTIFACT, artifact=artifact
+        )
+
+        self.assertEqual(
+            workflow_utils.lookup_result_architecture(result),
+            "amd64",
+        )
+
+    def test_lookup_result_architecture_debian_package_build_log(self) -> None:
+        """lookup_result_architecture return arch from a build log."""
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.PACKAGE_BUILD_LOG,
+            data={
+                "source": "hello",
+                "version": "1.0.0-1",
+                "architecture": "amd64",
+                "filename": "hello.build",
+            },
+        )
 
         result = LookupResult(
             result_type=CollectionItem.Types.ARTIFACT, artifact=artifact
@@ -393,16 +410,15 @@ class WorkflowUtilsTests(TestCase):
 
     def test_lookup_result_architecture_other_artifacts(self) -> None:
         """lookup_result_architecture with source package artifact."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={
-                    "name": "hello",
-                    "version": "1.0-1",
-                    "type": "dpkg",
-                    "dsc_fields": {"Architecture": "any"},
-                },
-            )
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={
+                "name": "hello",
+                "version": "1.0-1",
+                "type": "dpkg",
+                "dsc_fields": {"Architecture": "any"},
+            },
+        )
         result = LookupResult(
             result_type=CollectionItem.Types.ARTIFACT, artifact=artifact
         )
@@ -519,16 +535,15 @@ class WorkflowUtilsTests(TestCase):
         self,
     ) -> None:
         """lookup_result_binary_package_name return BPN from a binary."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.BINARY_PACKAGE,
-                data={
-                    "srcpkg_name": "hello",
-                    "srcpkg_version": "1.0.0",
-                    "deb_fields": {"Package": "hello-bin"},
-                    "deb_control_files": [],
-                },
-            )
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.BINARY_PACKAGE,
+            data={
+                "srcpkg_name": "hello",
+                "srcpkg_version": "1.0.0",
+                "deb_fields": {"Package": "hello-bin"},
+                "deb_control_files": [],
+            },
+        )
 
         result = LookupResult(
             result_type=CollectionItem.Types.ARTIFACT, artifact=artifact
@@ -575,16 +590,15 @@ class WorkflowUtilsTests(TestCase):
 
     def test_lookup_result_binary_package_name_other_artifacts(self) -> None:
         """lookup_result_binary_package_name with source package artifact."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={
-                    "name": "hello",
-                    "version": "1.0-1",
-                    "type": "dpkg",
-                    "dsc_fields": {"Package": "hello-bin"},
-                },
-            )
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={
+                "name": "hello",
+                "version": "1.0-1",
+                "type": "dpkg",
+                "dsc_fields": {"Package": "hello-bin"},
+            },
+        )
         result = LookupResult(
             result_type=CollectionItem.Types.ARTIFACT, artifact=artifact
         )
@@ -1014,7 +1028,10 @@ class WorkflowUtilsTests(TestCase):
         work_request = self.playground.create_workflow()
         workflow = NoopWorkflow(work_request)
         self.playground.create_debian_environment(
-            codename="sid", mirror="http://ftp.uk.debian.org/debian"
+            codename="sid",
+            variant="sbuild",
+            mirror="http://ftp.uk.debian.org/debian",
+            components=["main", "contrib"],
         )
         extra_repositories: list[ExtraRepository] | None
         for extra_repositories in (None, []):
@@ -1027,6 +1044,7 @@ class WorkflowUtilsTests(TestCase):
                     environment="debian/match:codename=sid",
                     backend=BackendType.UNSHARE,
                     architecture="amd64",
+                    try_variant="sbuild",
                 )
                 self.assertEqual(
                     result,
@@ -1066,6 +1084,7 @@ class WorkflowUtilsTests(TestCase):
                         environment=f"debian/match:codename={codename}",
                         backend=BackendType.UNSHARE,
                         architecture="amd64",
+                        try_variant="autopkgtest",
                     ),
                     extra_repositories,
                 )

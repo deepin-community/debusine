@@ -1,6 +1,9 @@
 # Debusine
 
-Debusine is a modern cloud-powered Continuous Integration (CI)
+Debusine's goal is to be an integrated solution to build, distribute and
+maintain a Debian-based distribution.
+
+Debusine is already a modern cloud-powered Continuous Integration (CI)
 platform to run many packaging and distribution related workflows
 for the Debian ecosystem. It can be used to automate everything from the
 package build up to the generation of installer/disk/cloud/container
@@ -17,15 +20,10 @@ If you are new to Debusine, you will want to read
 Debusine](https://freexian-team.pages.debian.net/debusine/explanation/introduction.html)
 first.
 
-## Why this project?
-
-Have a look at [the dedicated page in the
-documentation](https://freexian-team.pages.debian.net/debusine/explanation/why.html).
-
 ## Documentation
 
 The [documentation](https://freexian-team.pages.debian.net/debusine/) always
-matches what's in the git repository's master branch.
+matches what's in the git repository's devel branch.
 
 Otherwise you can generate the documentation yourself by doing `make html`
 in the docs subdirectory of the debusine git repository.

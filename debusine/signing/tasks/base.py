@@ -14,8 +14,9 @@ from typing import TypeVar
 
 from django.db import close_old_connections, transaction
 
+from debusine.artifacts.models import TaskTypes
 from debusine.tasks import BaseExternalTask
-from debusine.tasks.models import BaseDynamicTaskData, BaseTaskData, TaskTypes
+from debusine.tasks.models import BaseDynamicTaskData, BaseTaskData
 
 TD = TypeVar("TD", bound=BaseTaskData)
 DTD = TypeVar("DTD", bound=BaseDynamicTaskData)

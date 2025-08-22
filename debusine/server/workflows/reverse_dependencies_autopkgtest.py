@@ -36,27 +36,26 @@ from debusine.artifacts.models import (
     DebianBinaryPackages,
     DebianSourcePackage,
     DebianUpload,
+    TaskTypes,
 )
 from debusine.client.models import LookupChildType
 from debusine.db.models import Collection, CollectionItem, WorkRequest
 from debusine.server.collections.lookup import lookup_multiple, lookup_single
 from debusine.server.workflows import workflow_utils
-from debusine.server.workflows.base import (
-    Workflow,
-    WorkflowValidationError,
-    orchestrate_workflow,
-)
+from debusine.server.workflows.base import orchestrate_workflow
 from debusine.server.workflows.models import (
     AutopkgtestWorkflowData,
     ReverseDependenciesAutopkgtestWorkflowData,
     WorkRequestWorkflowData,
+)
+from debusine.server.workflows.regression_tracking import (
+    RegressionTrackingWorkflow,
 )
 from debusine.tasks.models import (
     BackendType,
     BaseDynamicTaskData,
     LookupMultiple,
     LookupSingle,
-    TaskTypes,
 )
 from debusine.tasks.server import TaskDatabaseInterface
 
@@ -85,29 +84,25 @@ class JSONBPathExists(Func):
 class _SourcePackage:
     """A representation of a source package."""
 
-    suite_collection: LookupSingle
+    qa_suite: LookupSingle
     name: str
     version: str
 
     @classmethod
     def from_artifact_data(
-        cls, suite_collection: LookupSingle, artifact_data: dict[str, Any]
+        cls, qa_suite: LookupSingle, artifact_data: dict[str, Any]
     ) -> Self:
         """Construct a representation of a source package."""
         data = DebianSourcePackage(**artifact_data)
-        return cls(
-            suite_collection=suite_collection,
-            name=data.name,
-            version=data.version,
-        )
+        return cls(qa_suite=qa_suite, name=data.name, version=data.version)
 
     def to_lookup(self) -> str:
         """Return a lookup for this source package."""
         # We could just use artifact IDs, but this is more informative.
         collection = (
-            f"{self.suite_collection}@collections"
-            if isinstance(self.suite_collection, int)
-            else self.suite_collection
+            f"{self.qa_suite}@collections"
+            if isinstance(self.qa_suite, int)
+            else self.qa_suite
         )
         return f"{collection}/source-version:{self.name}_{self.version}"
 
@@ -116,19 +111,19 @@ class _SourcePackage:
 class _BinaryPackage:
     """A representation of a binary package."""
 
-    suite_collection: LookupSingle
+    qa_suite: LookupSingle
     name: str
     version: str
     architecture: str
 
     @classmethod
     def from_artifact_data(
-        cls, suite_collection: LookupSingle, artifact_data: dict[str, Any]
+        cls, qa_suite: LookupSingle, artifact_data: dict[str, Any]
     ) -> Self:
         """Construct a representation of a binary package."""
         data = DebianBinaryPackage(**artifact_data)
         return cls(
-            suite_collection=suite_collection,
+            qa_suite=qa_suite,
             name=data.deb_fields["Package"],
             version=data.deb_fields["Version"],
             architecture=data.deb_fields["Architecture"],
@@ -138,9 +133,9 @@ class _BinaryPackage:
         """Return a lookup for this binary package."""
         # We could just use artifact IDs, but this is more informative.
         collection = (
-            f"{self.suite_collection}@collections"
-            if isinstance(self.suite_collection, int)
-            else self.suite_collection
+            f"{self.qa_suite}@collections"
+            if isinstance(self.qa_suite, int)
+            else self.qa_suite
         )
         return (
             f"{collection}/"
@@ -161,7 +156,9 @@ def _lookup_multiple_to_list(
 
 
 class ReverseDependenciesAutopkgtestWorkflow(
-    Workflow[ReverseDependenciesAutopkgtestWorkflowData, BaseDynamicTaskData]
+    RegressionTrackingWorkflow[
+        ReverseDependenciesAutopkgtestWorkflowData, BaseDynamicTaskData
+    ]
 ):
     """Run autopkgtest for all the reverse-deps of a package in a suite."""
 
@@ -174,23 +171,13 @@ class ReverseDependenciesAutopkgtestWorkflow(
             self.data.backend = BackendType.UNSHARE
 
     @cached_property
-    def suite_collection(self) -> Collection:
+    def qa_suite(self) -> Collection:
         """The collection to search for reverse-dependencies."""
-        return lookup_single(
-            self.data.suite_collection,
-            self.workspace,
-            user=self.work_request.created_by,
-            workflow_root=self.work_request.get_workflow_root(),
-            expect_type=LookupChildType.COLLECTION,
-        ).collection
-
-    def validate_input(self) -> None:
-        """Thorough validation of input data."""
-        # Validate that we can look up self.data.suite_collection.
-        try:
-            self.suite_collection
-        except LookupError as e:
-            raise WorkflowValidationError(str(e)) from e
+        qa_suite = super().qa_suite
+        # This is optional for regression-tracking workflows in general, but
+        # the data model for this workflow declares it as required.
+        assert qa_suite is not None
+        return qa_suite
 
     def get_binary_names(self) -> set[str]:
         """Return names of binary artifacts whose rdeps we want to test."""
@@ -225,7 +212,7 @@ class ReverseDependenciesAutopkgtestWorkflow(
 
     def get_reverse_dependencies(
         self,
-    ) -> frozenset[tuple[_SourcePackage, frozenset[_BinaryPackage]]]:
+    ) -> list[tuple[_SourcePackage, list[_BinaryPackage]]]:
         """
         Find source/binary packages that depend on the given package.
 
@@ -246,8 +233,8 @@ class ReverseDependenciesAutopkgtestWorkflow(
         assert isinstance(source_artifact_data, DebianSourcePackage)
 
         suite_artifacts = partial(
-            CollectionItem.active_objects.all().artifacts_in_collection,
-            parent_collection=self.suite_collection,
+            CollectionItem.objects.active().artifacts_in_collection,
+            parent_collection=self.qa_suite,
         )
 
         binary_names = self.get_binary_names()
@@ -281,12 +268,16 @@ class ReverseDependenciesAutopkgtestWorkflow(
                     .annotate(
                         source_name=KT("data__srcpkg_name"),
                         source_version=KT("data__srcpkg_version"),
+                        binary_name=KT("data__package"),
+                        binary_version=KT("data__version"),
+                        architecture=KT("data__architecture"),
                     )
                     .filter(
                         source_name=OuterRef("package"),
                         source_version=OuterRef("version"),
                     )
                     .values("artifact__data")
+                    .order_by("binary_name", "binary_version", "architecture")
                 ),
             ),
             testsuite=KT("source_data__dsc_fields__Testsuite"),
@@ -335,8 +326,9 @@ class ReverseDependenciesAutopkgtestWorkflow(
             # double-check it in Python.
             testsuite__contains="autopkgtest"
         )
+        candidates = candidates.order_by("package", "version")
 
-        revdeps: set[tuple[_SourcePackage, frozenset[_BinaryPackage]]] = set()
+        revdeps: list[tuple[_SourcePackage, list[_BinaryPackage]]] = []
         for source_data, binaries_data in candidates.values_list(
             "source_data", "binary_data"
         ).iterator():
@@ -383,17 +375,17 @@ class ReverseDependenciesAutopkgtestWorkflow(
                 continue
 
             source = _SourcePackage.from_artifact_data(
-                self.data.suite_collection, source_data
+                self.data.qa_suite, source_data
             )
-            binaries = frozenset(
+            binaries = [
                 _BinaryPackage.from_artifact_data(
-                    self.data.suite_collection, binary_data
+                    self.data.qa_suite, binary_data
                 )
                 for binary_data in binaries_data
-            )
-            revdeps.add((source, binaries))
+            ]
+            revdeps.append((source, binaries))
 
-        return frozenset(revdeps)
+        return revdeps
 
     def _populate_single(
         self, source: _SourcePackage, binaries: Iterable[_BinaryPackage]
@@ -410,12 +402,15 @@ class ReverseDependenciesAutopkgtestWorkflow(
             task_type=TaskTypes.WORKFLOW,
             task_name="autopkgtest",
             task_data=AutopkgtestWorkflowData(
-                prefix=f"{source.name}_{source.version}|",
+                prefix=f"{self.data.prefix}{source.name}_{source.version}|",
                 source_artifact=source.to_lookup(),
                 binary_artifacts=LookupMultiple.parse_obj(
                     sorted([binary.to_lookup() for binary in binaries])
                 ),
                 context_artifacts=context_lookup,
+                qa_suite=self.data.qa_suite,
+                reference_qa_results=self.data.reference_qa_results,
+                update_qa_results=self.data.update_qa_results,
                 vendor=self.data.vendor,
                 codename=self.data.codename,
                 backend=self.data.backend,
@@ -428,6 +423,9 @@ class ReverseDependenciesAutopkgtestWorkflow(
                 display_name=f"autopkgtests for {source.name}/{source.version}",
                 step=f"autopkgtests-{source.name}/{source.version}",
             ),
+            # TODO: Hardcoded for now; see
+            # https://salsa.debian.org/freexian-team/debusine/-/issues/973.
+            relative_priority=-5,
         )
         # The sub-workflow adds appropriate dependencies, and provides
         # results in the internal collection.

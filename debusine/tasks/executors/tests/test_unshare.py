@@ -39,6 +39,7 @@ class UnshareExecutorTests(ExternalTaskHelperMixin[Noop], TestCase):
 
     def setUp(self) -> None:
         """Mock the Debusine API for tests."""
+        super().setUp()
         self.debusine_api = MagicMock(spec=Debusine)
         self.image_artifact = self.mock_image_download(self.debusine_api)
 
@@ -175,6 +176,7 @@ class UnshareInstanceTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.image_file = self.create_temporary_file()
 
         self.instance = UnshareInstance(self.image_file)
@@ -188,6 +190,7 @@ class UnshareInstanceTests(TestCase):
         """Remove any unpacked instances during tests."""
         if self.instance._extracted:
             rmtree(self.instance._extracted)
+        super().tearDown()
 
     def patch_run_unshare_command(self) -> tuple[Any, MagicMock]:
         """Patch _run_share_cmd() and return its patcher and mock."""

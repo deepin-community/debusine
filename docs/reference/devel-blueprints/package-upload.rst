@@ -5,9 +5,9 @@ Uploading packages
 Pipeline considerations
 =======================
 
-The :ref:`package_upload workflow <workflow-package-upload>` will typically
-be used as a sub-workflow of a smart "pipeline" workflow.  There are three
-main use cases:
+The :workflow:`package_upload` workflow will typically be used as a
+sub-workflow of a smart "pipeline" workflow.  There are three main use
+cases:
 
 * Upload a source package to Debusine, have it tested, and then have
   Debusine pass on that upload to an external upload queue.

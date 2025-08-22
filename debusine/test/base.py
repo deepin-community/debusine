@@ -11,6 +11,7 @@
 
 import contextlib
 import hashlib
+import inspect
 import io
 import os
 import re
@@ -23,7 +24,7 @@ from collections.abc import Generator
 from configparser import ConfigParser
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, cast
+from typing import Any, ClassVar, TYPE_CHECKING, cast
 from unittest import mock
 from unittest.util import safe_repr
 
@@ -52,6 +53,56 @@ class TestCase(unittest.TestCase):
     This is intended to be used as the TestCase for tests that do not depend on
     Django code.
     """
+
+    _initial_cls_precious_globals: ClassVar[dict[str, Any]]
+    _initial_self_precious_globals: dict[str, Any]
+
+    # The unittest defaults mostly just get in the way of debugging.
+    maxDiff = None
+
+    @classmethod
+    def get_precious_globals(cls) -> dict[str, Any]:
+        """Collect global values that tests should not change."""
+        return {"cwd": os.getcwd()}
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Save the values of globals that should not be changed by tests."""
+        cls._initial_cls_precious_globals = cls.get_precious_globals()
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Check that saved globals haven't been changed by tests."""
+        super().tearDownClass()
+        if not hasattr(cls, "_initial_cls_precious_globals"):
+            raise AssertionError(
+                f"{inspect.getfile(cls)}:"
+                f"{cls.__qualname__}.setUpClass"
+                " did not call super().setUpClass"
+            )
+        if cls._initial_cls_precious_globals != cls.get_precious_globals():
+            raise AssertionError(
+                f"{inspect.getfile(cls)}:"
+                f"{cls.__qualname__}:"
+                f" {cls._initial_cls_precious_globals}"
+                f" != {cls.get_precious_globals()}"
+            )
+
+    def setUp(self) -> None:
+        """Save the values of globals that should not be changed by tests."""
+        self._initial_self_precious_globals = self.get_precious_globals()
+        super().setUp()
+
+    def tearDown(self) -> None:
+        """Check that saved globals haven't been changed by tests."""
+        super().tearDown()
+        initial = getattr(self, "_initial_self_precious_globals", None)
+        self.assertIsNotNone(initial, "setUp did not call super().setUp")
+        self.assertEqual(
+            self._initial_self_precious_globals,
+            self.get_precious_globals(),
+        )
 
     def create_temp_config_directory(self, config: dict[str, Any]) -> str:
         """
@@ -421,7 +472,7 @@ class TestCase(unittest.TestCase):
 
     # LXML does not seem to know about HTML5 structural tags
     re_lxml_false_positive_tags = re.compile(
-        r"Tag (?:nav|footer|header|article) invalid"
+        r"Tag (?:nav|footer|header|article|details|summary) invalid"
     )
 
     def _filter_parser_error_log(
@@ -435,12 +486,12 @@ class TestCase(unittest.TestCase):
         errors: list[str] = []
         for error in error_log:
             match (error.domain, error.type_name):
-                case Domains.HTML, "HTML_UNKNOWN_TAG":
+                # Nice to have if available, but libxml2 >= 2.14.0 no longer
+                # provides unknown-tag checks at all so we can't reliably
+                # cover this.
+                case Domains.HTML, "HTML_UNKNOWN_TAG":  # pragma: no cover
                     if self.re_lxml_false_positive_tags.match(error.message):
                         continue
-                    # Without this pass, python coverage is currently unable to
-                    # detect that code does flow through here
-                    pass
 
             errors.append(f"{error.line}:{error.type_name}:{error.message}")
         return errors
@@ -516,6 +567,7 @@ class TestCase(unittest.TestCase):
         self,
         content: str | bytes,
         dump_on_error: bool = False,
+        check_widget_errors: bool = True,
     ) -> lxml.objectify.ObjectifiedElement:
         """
         Parse the response contents as HTML and checks contents.
@@ -548,11 +600,12 @@ class TestCase(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
-        # Assert that no "debusine-widget-error" is displayed. It appears
-        # if a widget has an error
-        self.assertEqual(
-            tree.xpath('//*[@data-role="debusine-widget-error"]'), []
-        )
+        if check_widget_errors:
+            # Assert that no "debusine-widget-error" is displayed. It appears
+            # if a widget has an error
+            self.assertEqual(
+                tree.xpath('//*[@data-role="debusine-widget-error"]'), []
+            )
 
         return cast(lxml.objectify.ObjectifiedElement, tree.getroot())
 
@@ -613,6 +666,7 @@ class TestCase(unittest.TestCase):
         self,
         node: lxml.objectify.ObjectifiedElement,
         text: str,
+        dump_on_error: bool = False,
     ) -> None:
         """
         Ensure that node.text matches the given text.
@@ -623,6 +677,8 @@ class TestCase(unittest.TestCase):
         """
         sample = self.get_node_text_normalized(node)
         text = " ".join(text.strip().split())
+        if dump_on_error and sample != text:
+            self.dump_element(node, title="Text content mismatch")
         self.assertEqual(sample, text)
 
     def assertDatetimeContentEqual(

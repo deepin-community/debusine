@@ -11,8 +11,8 @@
 
 from unittest import mock
 
+from debusine.artifacts.models import TaskTypes
 from debusine.server.tasks import CloudProvisioning
-from debusine.tasks.models import TaskTypes
 from debusine.test.django import TestCase
 
 

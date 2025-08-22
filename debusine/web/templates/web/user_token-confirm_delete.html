@@ -10,6 +10,7 @@
                 {% include "web/_check_icon.html" with value=token.enabled only %}
             </li>
             <li>Created at: {{ token.created_at }}</li>
+            <li>Last seen at: {{ token.last_seen_at|default:"Never" }}</li>
         </ul>
         <p>Are you sure you want to delete this token?</p>
         <button class="btn btn-danger btn-primary btn-sm" type="submit">Delete</button>

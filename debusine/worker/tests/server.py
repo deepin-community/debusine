@@ -20,10 +20,8 @@ from aiohttp.test_utils import AioHTTPTestCase
 from aiohttp.web_exceptions import HTTPCreated, HTTPNoContent
 from multidict import MultiMapping
 
-from debusine.client.models import (
-    WorkRequestResponse,
-    model_to_json_serializable_dict,
-)
+from debusine.client.models import model_to_json_serializable_dict
+from debusine.test.test_utils import create_work_request_response
 
 
 @dataclass
@@ -180,7 +178,7 @@ class DebusineAioHTTPTestCase(AioHTTPTestCase):
                 ],
             }
 
-            next_work_request = WorkRequestResponse(
+            next_work_request = create_work_request_response(
                 id=52,
                 task_type="Worker",
                 task_name="sbuild",

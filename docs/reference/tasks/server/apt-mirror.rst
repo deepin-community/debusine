@@ -1,17 +1,19 @@
-.. _task-apt-mirror:
+.. task:: APTMirror
 
 APTMirror task
 --------------
 
 This is a :ref:`server-side task <explanation-tasks>` that updates an
-existing :ref:`debian:suite collection <collection-suite>` to reflect the
-state of an external APT suite. It creates source and binary package
-artifacts as required.
+existing :collection:`debian:suite` collection to reflect the state of an
+external APT suite.  It creates :artifact:`source <debian:source-package>`
+and :artifact:`binary <debian:binary-package>` package artifacts as
+required, as well as :artifact:`repository indexes
+<debian:repository-index>`.
 
 The ``task_data`` for this task may contain the following keys:
 
-* ``collection`` (required): the name of the ``debian:suite`` collection to
-  update
+* ``collection`` (required): the name of the :collection:`debian:suite`
+  collection to update
 * ``url`` (required): the base URL of the external repository
 * ``suite`` (required): the name of the suite in the external repository; if
   this ends with ``/``, then this is a `flat repository
@@ -49,5 +51,4 @@ that point in time.
    general: tasks need to see a coherent state, and simple updates to
    collections can be done in a database transaction, but some longer update
    tasks where using a single database transaction is impractical may need
-   more careful handling.  See discussion in `!517
-   <https://salsa.debian.org/freexian-team/debusine/-/merge_requests/517>`_.
+   more careful handling.  See discussion in :mr:`517`.

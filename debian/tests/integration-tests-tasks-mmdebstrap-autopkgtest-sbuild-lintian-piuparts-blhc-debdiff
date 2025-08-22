@@ -19,6 +19,8 @@ if ! grep -qs ^debusine-worker: /etc/subuid; then
 	exit 77  # tell autopkgtest to skip test
 fi
 
+debian/tests/utils/check-namespace-support
+
 source debian/tests/utils/add-debusine-log-files-to-artifacts.sh
 
 adduser debusine-worker sbuild
@@ -32,19 +34,13 @@ mkdir /lib/systemd/system/debusine-worker.service.d/
 systemctl daemon-reload
 systemctl restart debusine-worker
 
-debian/tests/integration-tests-task-mmdebstrap.py -v
-
-# The remaining tests depend on the mmdebstrap tests having run first to
-# create their environments.
-
-debian/tests/integration-tests-task-autopkgtest.py -v
-
-debian/tests/integration-tests-task-sbuild.py -v
-
-debian/tests/integration-tests-task-lintian.py -v
-
-debian/tests/integration-tests-task-piuparts.py -v
-
-debian/tests/integration-tests-task-blhc.py -v
-
-debian/tests/integration-tests-task-debdiff.py -v
+# The mmdebstrap test must run first to create environments used by the
+# other tests.
+pytest --rootdir=. -c /dev/null --durations=0 -v \
+	debian/tests/integration-tests-task-mmdebstrap.py \
+	debian/tests/integration-tests-task-autopkgtest.py \
+	debian/tests/integration-tests-task-sbuild.py \
+	debian/tests/integration-tests-task-lintian.py \
+	debian/tests/integration-tests-task-piuparts.py \
+	debian/tests/integration-tests-task-blhc.py \
+	debian/tests/integration-tests-task-debdiff.py

@@ -15,11 +15,9 @@ from django.conf import settings
 from django.http.response import HttpResponseBase
 from django.urls import reverse
 from rest_framework import status
-from rest_framework.response import Response
 from rest_framework.test import APIClient
 
-from debusine.artifacts.models import ArtifactCategory
-from debusine.db.context import context
+from debusine.artifacts.models import ArtifactCategory, TaskTypes
 from debusine.db.models import (
     WorkRequest,
     WorkflowTemplate,
@@ -27,13 +25,9 @@ from debusine.db.models import (
     default_workspace,
 )
 from debusine.db.playground import scenarios
+from debusine.server.scopes import urlconf_scope
 from debusine.server.serializers import WorkRequestSerializer
-from debusine.tasks.models import TaskTypes
-from debusine.test.django import (
-    JSONResponseProtocol,
-    TestCase,
-    TestResponseType,
-)
+from debusine.test.django import TestCase, TestResponseType
 
 
 class WorkflowTemplateViewTests(TestCase):
@@ -153,13 +147,14 @@ class WorkflowTemplateViewTests(TestCase):
 
         response = self.get_workflow_template(template.id)
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        assert isinstance(response, JSONResponseProtocol)
+        data = self.assertAPIResponseOk(response)
         self.assertEqual(
-            response.json(),
+            data,
             {
                 "id": template.id,
+                "url": template.get_absolute_url(),
                 "name": template.name,
+                "scope": template.workspace.scope.name,
                 "workspace": template.workspace.name,
                 "task_name": template.task_name,
                 "task_data": template.task_data,
@@ -184,9 +179,8 @@ class WorkflowTemplateViewTests(TestCase):
         response = self.get_workflow_template(
             template.id, scope=template.workspace.scope.name
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        assert isinstance(response, JSONResponseProtocol)
-        self.assertEqual(response.json()["workspace"], template.workspace.name)
+        data = self.assertAPIResponseOk(response)
+        self.assertEqual(data["workspace"], template.workspace.name)
 
         response = self.get_workflow_template(template.id, scope=scope2.name)
 
@@ -234,9 +228,8 @@ class WorkflowTemplateViewTests(TestCase):
         response = self.get_workflow_template(
             template.id, scope=private_workspace.scope.name
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        assert isinstance(response, JSONResponseProtocol)
-        self.assertEqual(response.json()["workspace"], template.workspace.name)
+        data = self.assertAPIResponseOk(response)
+        self.assertEqual(data["workspace"], template.workspace.name)
 
     def test_post_without_model_permissions(self) -> None:
         """Only privileged users may create workflow templates."""
@@ -277,7 +270,7 @@ class WorkflowTemplateViewTests(TestCase):
             }
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
         template = WorkflowTemplate.objects.get(
             name="test", workspace=default_workspace()
         )
@@ -286,10 +279,9 @@ class WorkflowTemplateViewTests(TestCase):
 
     def test_post_different_workspace(self) -> None:
         """Create a new workflow template in a non-default workspace."""
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace(
-                name="test-workspace", public=True
-            )
+        workspace = self.playground.create_workspace(
+            name="test-workspace", public=True
+        )
         self.playground.create_group_role(
             workspace, Workspace.Roles.OWNER, users=[self.scenario.user]
         )
@@ -305,7 +297,7 @@ class WorkflowTemplateViewTests(TestCase):
             }
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
         template = WorkflowTemplate.objects.get(
             name="test", workspace=workspace
         )
@@ -339,9 +331,8 @@ class WorkflowTemplateViewTests(TestCase):
                 scope=workspace.scope.name,
             )
 
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-            assert isinstance(response, Response)
-            template = WorkflowTemplate.objects.get(id=response.data["id"])
+            data = self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
+            template = WorkflowTemplate.objects.get(id=data["id"])
             self.assertEqual(template.workspace, workspace)
 
         response = self.post_workflow_template(
@@ -418,9 +409,8 @@ class WorkflowTemplateViewTests(TestCase):
             scope=private_workspace.scope.name,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        assert isinstance(response, Response)
-        template = WorkflowTemplate.objects.get(id=response.data["id"])
+        data = self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
+        template = WorkflowTemplate.objects.get(id=data["id"])
         self.assertEqual(template.workspace, private_workspace)
 
     def test_post_positive_priority_without_permissions(self) -> None:
@@ -467,7 +457,7 @@ class WorkflowTemplateViewTests(TestCase):
             }
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
         template = WorkflowTemplate.objects.get(
             name="test", workspace=default_workspace()
         )
@@ -512,7 +502,7 @@ class WorkflowTemplateViewTests(TestCase):
             template.id, {"task_data": task_data}
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertAPIResponseOk(response)
         template.refresh_from_db()
         self.assertEqual(template.task_data, task_data)
 
@@ -552,7 +542,7 @@ class WorkflowTemplateViewTests(TestCase):
 
         response = self.patch_workflow_template(template.id, {"priority": 1})
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertAPIResponseOk(response)
         template.refresh_from_db()
         self.assertEqual(template.priority, 1)
 
@@ -579,7 +569,7 @@ class WorkflowTemplateViewTests(TestCase):
             {"task_data": task_data},
             scope=template.workspace.scope.name,
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertAPIResponseOk(response)
         template.refresh_from_db()
         self.assertEqual(template.task_data, task_data)
 
@@ -637,7 +627,7 @@ class WorkflowTemplateViewTests(TestCase):
             {"task_data": task_data},
             scope=private_workspace.scope.name,
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertAPIResponseOk(response)
         template.refresh_from_db()
         self.assertEqual(template.task_data, task_data)
 
@@ -805,11 +795,11 @@ class WorkflowViewTests(TestCase):
             }
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        data = self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
         workflow = WorkRequest.objects.latest("created_at")
-        self.assertEqual(response.json(), WorkRequestSerializer(workflow).data)
+        self.assertEqual(data, WorkRequestSerializer(workflow).data)
         self.assertDictContainsAll(
-            response.json(),
+            data,
             {
                 "workspace": settings.DEBUSINE_DEFAULT_WORKSPACE,
                 "created_by": self.token.user_id,
@@ -859,9 +849,9 @@ class WorkflowViewTests(TestCase):
             }
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        data = self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
         workflow = WorkRequest.objects.latest("created_at")
-        self.assertEqual(response.json(), WorkRequestSerializer(workflow).data)
+        self.assertEqual(data, WorkRequestSerializer(workflow).data)
         self.assertEqual(workflow.workspace, workspace)
 
     def test_create_workflow_nonexistent_template(self) -> None:
@@ -987,11 +977,10 @@ class WorkflowViewTests(TestCase):
                 scope=workspace.scope.name,
             )
 
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+            data = self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
             workflow = WorkRequest.objects.latest("created_at")
-            self.assertEqual(
-                response.json(), WorkRequestSerializer(workflow).data
-            )
+            with urlconf_scope(workflow.workspace.scope.name):
+                self.assertEqual(data, WorkRequestSerializer(workflow).data)
             self.assertEqual(workflow.workspace, workspace)
             self.assertEqual(workflow.task_data["architectures"], architectures)
 
@@ -1066,7 +1055,7 @@ class WorkflowViewTests(TestCase):
             scope=private_workspace.scope.name,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        data = self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
         workflow = WorkRequest.objects.latest("created_at")
-        self.assertEqual(response.json(), WorkRequestSerializer(workflow).data)
+        self.assertEqual(data, WorkRequestSerializer(workflow).data)
         self.assertEqual(workflow.workspace, private_workspace)

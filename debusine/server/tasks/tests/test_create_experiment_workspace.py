@@ -14,7 +14,6 @@ from typing import Any, ClassVar
 
 from django.utils import timezone
 
-from debusine.db.context import context
 from debusine.db.models import Group, WorkflowTemplate, Workspace
 from debusine.db.playground import scenarios
 from debusine.server.tasks import (
@@ -39,7 +38,6 @@ class CreateExperimentWorkspaceTests(TestCase):
     workflow_template_2: ClassVar[WorkflowTemplate]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()

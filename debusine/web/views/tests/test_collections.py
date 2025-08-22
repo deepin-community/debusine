@@ -9,6 +9,7 @@
 
 """Tests for the collections views."""
 
+from datetime import timedelta
 from typing import ClassVar
 from unittest import mock
 
@@ -23,10 +24,6 @@ from debusine.artifacts.models import (
 )
 from debusine.db.models import Collection, CollectionItem
 from debusine.db.playground import scenarios
-from debusine.server.collections import (
-    DebianPackageBuildLogsManager,
-    DebianSuiteManager,
-)
 from debusine.test.django import TestCase
 from debusine.web.templatetags.debusine import (
     ui_shortcuts as template_ui_shortcuts,
@@ -223,6 +220,56 @@ class CollectionDetailViewTests(CollectionViewsTestsBase):
 
         self.assertFalse(tree.xpath("//div[@id='metadata']"))
 
+    def test_detail_disable_data_retention(self) -> None:
+        self.trixie.full_history_retention_period = timedelta(0)
+        self.trixie.metadata_only_retention_period = timedelta(0)
+        self.trixie.save()
+
+        response = self.client.get(self.trixie.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+        table = self.assertHasElement(
+            tree, "//table[@id='collection-details-table']"
+        )
+
+        element = self.assertHasElement(table, '//tbody/tr[1]/th[1]')
+        self.assertTextContentEqual(
+            element, "Full history retention period (days)"
+        )
+        element = self.assertHasElement(table, '//tbody/tr[1]/td[1]')
+        self.assertTextContentEqual(element, "0")
+
+        element = self.assertHasElement(table, '//tbody/tr[2]/th[1]')
+        self.assertTextContentEqual(
+            element, "Metadata only retention period (days)"
+        )
+        element = self.assertHasElement(table, '//tbody/tr[2]/td[1]')
+        self.assertTextContentEqual(element, "0")
+
+    def test_detail_fixed_data_retention(self) -> None:
+        self.trixie.full_history_retention_period = timedelta(days=1)
+        self.trixie.metadata_only_retention_period = timedelta(days=7)
+        self.trixie.save()
+
+        response = self.client.get(self.trixie.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+        table = self.assertHasElement(
+            tree, "//table[@id='collection-details-table']"
+        )
+
+        element = self.assertHasElement(table, '//tbody/tr[1]/th[1]')
+        self.assertTextContentEqual(
+            element, "Full history retention period (days)"
+        )
+        element = self.assertHasElement(table, '//tbody/tr[1]/td[1]')
+        self.assertTextContentEqual(element, "1")
+
+        element = self.assertHasElement(table, '//tbody/tr[2]/th[1]')
+        self.assertTextContentEqual(
+            element, "Metadata only retention period (days)"
+        )
+        element = self.assertHasElement(table, '//tbody/tr[2]/td[1]')
+        self.assertTextContentEqual(element, "7")
+
     def test_metadata(self) -> None:
         """Test collection metadata view."""
         self.trixie.data = {"test": True}
@@ -257,17 +304,15 @@ class CollectionSearchViewTests(CollectionViewsTestsBase):
         """Set up a database layout for views."""
         super().setUpTestData()
         cls.items = {}
-        manager = DebianSuiteManager(collection=cls.trixie)
         for name in ("foo", "bar"):
             for ver in range(2):
                 source = cls.playground.create_source_artifact(
                     name=f"lib{name}{ver}"
                 )
-                cls.items[f"lib{name}{ver}"] = manager.add_source_package(
+                cls.items[f"lib{name}{ver}"] = cls.trixie.manager.add_artifact(
                     source,
                     user=cls.scenario.user,
-                    component="main",
-                    section="devel",
+                    variables={"component": "main", "section": "devel"},
                 )
                 binary, _ = cls.playground.create_artifact(
                     category=ArtifactCategory.BINARY_PACKAGE,
@@ -285,22 +330,27 @@ class CollectionSearchViewTests(CollectionViewsTestsBase):
                     create_files=True,
                     skip_add_files_in_store=True,
                 )
-                cls.items[f"lib{name}{ver}-dev"] = manager.add_binary_package(
-                    binary,
-                    user=cls.scenario.user,
-                    component="main",
-                    section="devel",
-                    priority="optional",
+                cls.items[f"lib{name}{ver}-dev"] = (
+                    cls.trixie.manager.add_artifact(
+                        binary,
+                        user=cls.scenario.user,
+                        variables={
+                            "component": "main",
+                            "section": "devel",
+                            "priority": "optional",
+                        },
+                    )
                 )
 
         source = cls.playground.create_source_artifact(name="libold0")
-        cls.items["libold0"] = manager.add_source_package(
+        cls.items["libold0"] = cls.trixie.manager.add_artifact(
             source,
             user=cls.scenario.user,
-            component="main",
-            section="devel",
+            variables={"component": "main", "section": "devel"},
         )
-        manager.remove_artifact(source, user=cls.scenario.user)
+        cls.trixie.manager.remove_item(
+            cls.items["libold0"], user=cls.scenario.user
+        )
 
     def test_permissions(self) -> None:
         """Test permissions on the collection list view."""
@@ -391,8 +441,7 @@ class CollectionSearchViewTests(CollectionViewsTestsBase):
             "srcpkg_name": "hello",
             "srcpkg_version": "1.0-1",
         }
-        manager = DebianPackageBuildLogsManager(collection=collection)
-        manager.add_bare_data(
+        collection.manager.add_bare_data(
             BareDataCategory.PACKAGE_BUILD_LOG,
             user=self.scenario.user,
             data=data,
@@ -478,7 +527,7 @@ class CollectionSearchViewTests(CollectionViewsTestsBase):
 
     def test_search_query_count(self) -> None:
         """Test that collection search makes a reasonable amount of queries."""
-        with self.assertNumQueries(13):
+        with self.assertNumQueries(14):
             self.client.get(self.trixie.get_absolute_url_search())
 
 
@@ -491,13 +540,11 @@ class CollectionItemDetailViewTests(CollectionViewsTestsBase):
     def setUpTestData(cls) -> None:
         """Set up a database layout for views."""
         super().setUpTestData()
-        manager = DebianSuiteManager(collection=cls.trixie)
         artifact = cls.playground.create_source_artifact(name="libfoo0")
-        cls.item = manager.add_source_package(
+        cls.item = cls.trixie.manager.add_artifact(
             artifact,
             user=cls.scenario.user,
-            component="main",
-            section="shlibs",
+            variables={"component": "main", "section": "shlibs"},
         )
 
     def test_get_title(self) -> None:

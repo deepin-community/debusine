@@ -1,0 +1,33 @@
+<script type="module">
+        const selectTab = () => {
+             {#If a user opens the page with a fragment (e.g. #tab_name in: #}
+            {#    https://debusine.example.org/something#tab_name: it opens #}
+            {# the "tab_name" tab. #}
+            let hash = window.location.hash;
+
+            if (!hash) return;
+
+            hash = hash.slice(1);
+
+            let dataBsTarget = `#nav-${hash}`;
+
+            const trigger = document.querySelector(`button[data-bs-target="${dataBsTarget}"]`);
+
+            if (trigger) {
+                const tab = new bootstrap.Tab(trigger);
+                tab.show()
+            }
+        };
+
+        const updateUrlFragment = (event) => {
+            const tab_name = event.target.dataset.bsTarget;
+            const fragment = "#" + tab_name.split("-", 2)[1];
+            history.replaceState(null, "", fragment);
+        };
+
+        document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tabButton => {
+            tabButton.addEventListener('shown.bs.tab', updateUrlFragment);
+        });
+
+        selectTab();
+</script>

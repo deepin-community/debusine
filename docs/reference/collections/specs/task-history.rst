@@ -1,4 +1,4 @@
-.. _collection-task-history:
+.. collection:: debusine:task-history
 
 Category ``debusine:task-history``
 ----------------------------------
@@ -54,8 +54,7 @@ Other collection-specific characteristics:
 
 * Valid items:
 
-  * ``debusine:historical-task-run`` bare data (see
-    :ref:`bare-data-historical-task-run`)
+  * :bare-data:`debusine:historical-task-run` bare data
 
 * Lookup names:
 

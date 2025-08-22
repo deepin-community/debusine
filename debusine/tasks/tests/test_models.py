@@ -16,7 +16,7 @@ from typing import get_args
 from unittest import TestCase
 
 import debusine.tasks.models as task_models
-from debusine.artifacts.models import ArtifactCategory
+from debusine.artifacts.models import ArtifactCategory, RuntimeStatistics
 
 
 class LookupTests(TestCase):
@@ -387,6 +387,48 @@ class EnumTests(TestCase):
                 for el in enum_cls:
                     with self.subTest(el=el):
                         self.assertEqual(str(el), el.value)
+
+
+class OutputDataTests(TestCase):
+    """Tests for ``OutputData``."""
+
+    def test_merge_disjoint(self) -> None:
+        """``merge`` sets all the fields explicitly set on each model."""
+        left = task_models.OutputData(
+            runtime_statistics=RuntimeStatistics(duration=1)
+        )
+        right = task_models.OutputData(
+            errors=[task_models.OutputDataError(message="message", code="code")]
+        )
+
+        merged = left.merge(right)
+
+        self.assertEqual(
+            merged.__fields_set__, {"runtime_statistics", "errors"}
+        )
+        self.assertEqual(
+            merged.runtime_statistics, RuntimeStatistics(duration=1)
+        )
+        self.assertEqual(
+            merged.errors,
+            [task_models.OutputDataError(message="message", code="code")],
+        )
+
+    def test_merge_other_wins(self) -> None:
+        """``merge`` prefers values from the ``other`` model."""
+        left = task_models.OutputData(
+            runtime_statistics=RuntimeStatistics(duration=1)
+        )
+        right = task_models.OutputData(
+            runtime_statistics=RuntimeStatistics(duration=1, cpu_time=1)
+        )
+
+        merged = left.merge(right)
+
+        self.assertEqual(merged.__fields_set__, {"runtime_statistics"})
+        self.assertEqual(
+            merged.runtime_statistics, RuntimeStatistics(duration=1, cpu_time=1)
+        )
 
 
 class LintianDataTests(TestCase):

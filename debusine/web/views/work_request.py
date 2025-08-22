@@ -8,8 +8,9 @@
 # contained in the LICENSE file.
 
 """debusine WorkRequest view."""
-
+import abc
 import functools
+from datetime import timedelta
 from typing import Any, cast
 
 from django.contrib import messages
@@ -17,20 +18,24 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
+from django.template.defaultfilters import filesizeformat
+from django.utils.duration import duration_string
 from django.views.generic.base import View
 from rest_framework import status
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.context import context
 from debusine.db.models import Artifact, TaskDatabase, User, WorkRequest
 from debusine.db.models.work_requests import (
+    CannotAbort,
     CannotRetry,
     CannotUnblock,
     InternalTaskError,
     WorkRequestQuerySet,
 )
 from debusine.server.workflows.models import WorkRequestManualUnblockAction
-from debusine.tasks import TaskConfigError
-from debusine.tasks.models import TaskTypes
+from debusine.tasks import BaseTask, TaskConfigError
+from debusine.tasks.models import OutputData
 from debusine.web.forms import WorkRequestForm, WorkRequestUnblockForm
 from debusine.web.views import sidebar, ui_shortcuts
 from debusine.web.views.base import (
@@ -41,11 +46,11 @@ from debusine.web.views.base import (
     SingleObjectMixinBase,
     WorkspaceView,
 )
-from debusine.web.views.base_rightbar import RightbarUIView
 from debusine.web.views.http_errors import HttpError400, catch_http_errors
+from debusine.web.views.mixins import RightbarUIMixin, UIShortcutsMixin
 from debusine.web.views.table import TableMixin
 from debusine.web.views.tables import WorkRequestTable
-from debusine.web.views.view_utils import format_yaml
+from debusine.web.views.view_utils import format_json, format_yaml
 
 
 class WorkRequestObjectMixin(WorkspaceView):
@@ -69,13 +74,16 @@ class WorkRequestObjectMixin(WorkspaceView):
 
 
 class WorkRequestDetailView(
-    WorkRequestObjectMixin, RightbarUIView, DetailViewBase[WorkRequest]
+    RightbarUIMixin,
+    WorkRequestObjectMixin,
+    UIShortcutsMixin,
+    DetailViewBase[WorkRequest],
 ):
     """Show a work request."""
 
     model = WorkRequest
     context_object_name = "work_request"
-    default_template_name = "web/work_request-detail.html"
+    template_name = "web/work_request-detail.html"
 
     @functools.cached_property
     def _validation_error_message(self) -> str | None:
@@ -87,35 +95,24 @@ class WorkRequestDetailView(
         else:
             return None
 
-    def _current_view_is_specialized(self) -> bool:
-        """
-        Specialized (based on a plugin) view will be served.
-
-        User did not force the default view, a plugin exists, and the work
-        request passes validation.
-        """
-        use_specialized = self.request.GET.get("view", "default") != "generic"
-        plugin_class = WorkRequestPlugin.plugin_for(
-            self.object.task_type, self.object.task_name
-        )
-
-        return (
-            use_specialized
-            and plugin_class is not None
-            and self._validation_error_message is None
-        )
-
     def get_main_ui_shortcuts(self) -> list[ui_shortcuts.UIShortcut]:
         """Return a list of UI shortcuts for this view."""
         actions = super().get_main_ui_shortcuts()
-        if self.request.user.is_authenticated and self.object.verify_retry():
-            actions.append(ui_shortcuts.create_work_request_retry(self.object))
+        if self.request.user.is_authenticated:
+            if self.object.verify_retry():
+                actions.append(
+                    ui_shortcuts.create_work_request_retry(self.object)
+                )
+            if self.object.verify_abort():
+                actions.append(
+                    ui_shortcuts.create_work_request_abort(self.object)
+                )
         return actions
 
     def get_sidebar_items(self) -> list[sidebar.SidebarItem]:
         """Return a list of sidebar items."""
         items = super().get_sidebar_items()
-        items.append(sidebar.create_work_request(self.object, link=False))
+        items.append(sidebar.create_work_request(self.object))
         if hasattr(self.object, "superseded"):
             items.append(sidebar.create_work_request_superseded(self.object))
         if self.object.supersedes:
@@ -159,20 +156,38 @@ class WorkRequestDetailView(
             for log in workflow_data.manual_unblock.log
         ]
 
-    def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
-        """
-        Add context to the default DetailView context.
+    def get_default_description(self) -> str | None:
+        """Return default description for the Task."""
+        try:
+            Task = BaseTask.class_from_name(
+                TaskTypes(self.object.task_type), self.object.task_name
+            )
+        except ValueError:
+            return None
 
-        Add the artifacts related to the work request.
-        """
+        return Task.__doc__
+
+    def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
+        """Return context for this view's tab."""
         context = super().get_context_data(**kwargs)
 
         plugin_view = WorkRequestPlugin.plugin_for(
             self.object.task_type, self.object.task_name
         )
 
-        if plugin_view is not None and self._current_view_is_specialized():
-            return {**context, **plugin_view(self.object).get_context_data()}
+        context["description_template"] = (
+            "web/_work_request-generic-description.html"
+        )
+        context["description_data"] = {
+            "default_description": self.get_default_description()
+        }
+
+        if plugin_view is not None:
+            # Add specific specialized plugin information
+            context.update(
+                **plugin_view(self.object).get_context_data(),
+                **{"specialized_view": True},
+            )
 
         context["manual_unblock_log_entries"] = self.get_manual_unblock_log()
         context["manual_unblock_form"] = WorkRequestUnblockForm()
@@ -188,21 +203,15 @@ class WorkRequestDetailView(
             task = self.object.get_task()
         except (TaskConfigError, InternalTaskError):
             task = None
-        source_artifacts: list[Artifact] = []
-        try:
-            if task and (
-                source_artifact_ids := task.get_source_artifacts_ids()
-            ):
-                source_artifacts.extend(
-                    Artifact.objects.filter(
-                        pk__in=source_artifact_ids
-                    ).annotate_complete()
-                )
-                context["source_artifacts"] = source_artifacts
-        except NotImplementedError:
-            # TODO: remove this once get_source_artifacts_ids has been
-            # implemented for all artifact types
-            context["source_artifacts_not_implemented"] = True
+        input_artifacts: list[Artifact] = []
+        if task and (input_artifact_ids := task.get_input_artifacts_ids()):
+            input_artifacts.extend(
+                Artifact.objects.filter(pk__in=input_artifact_ids)
+                .order_by("id")
+                .annotate_complete()
+            )
+
+        context["input_artifacts"] = input_artifacts
 
         built_artifacts = list(
             Artifact.objects.filter(created_by_work_request=self.object)
@@ -211,7 +220,7 @@ class WorkRequestDetailView(
         )
 
         # Generate UI shortcuts for artifacts
-        for artifact in source_artifacts + built_artifacts:
+        for artifact in input_artifacts + built_artifacts:
             self.add_object_ui_shortcuts(
                 artifact,
                 ui_shortcuts.create_artifact_view(artifact),
@@ -219,28 +228,105 @@ class WorkRequestDetailView(
             )
 
         context["built_artifacts"] = built_artifacts
-        context["task_data"] = format_yaml(self.object.used_task_data)
-        if self.object.task_data != self.object.used_task_data:
-            context["task_data_original"] = format_yaml(self.object.task_data)
-            context["task_data_configured"] = True
+        context["task_data"] = format_yaml(self.object.task_data)
+
+        if (dynamic_task_data := self.object.dynamic_task_data) is not None:
+            context["show_task_data_dynamic"] = True
+            context["task_data_dynamic"] = format_yaml(dynamic_task_data)
         else:
-            context["task_data_configured"] = False
+            context["show_task_data_dynamic"] = False
+
+        if self.object.configured_task_data is not None:
+            context["is_task_data_configured"] = True
+            context["task_data_configured"] = format_yaml(
+                self.object.configured_task_data
+            )
+        else:
+            context["is_task_data_configured"] = False
+
+        context["work_request_output_data"] = self._format_output_data(
+            self.object.output_data
+        )
+        context["work_request_event_reactions_json"] = format_json(
+            self.object.event_reactions_json
+        )
+        context["work_request_output_data_json"] = format_json(
+            self.object.output_data_json
+        )
+        context["work_request_workflow_data_json"] = format_json(
+            self.object.workflow_data_json
+        )
+
+        context["work_request_dependencies"] = WorkRequestTable(
+            self.request, self.object.dependencies.all(), prefix="dependencies"
+        ).get_paginator(per_page=10)
+        context["work_request_reverse_dependencies"] = WorkRequestTable(
+            self.request,
+            self.object.reverse_dependencies.all(),
+            prefix="reverse_dependencies",
+        ).get_paginator(per_page=10)
+
+        workflow_parents = []
+        parent = self.object.parent
+        while parent is not None:
+            workflow_parents.append(parent)
+            parent = parent.parent
+
+        context["workflow_parents"] = reversed(workflow_parents)
 
         return context
 
-    def get_template_names(self) -> list[str]:
-        """Return the plugin's template_name or the default one."""
-        if self._current_view_is_specialized():
-            plugin_class = WorkRequestPlugin.plugin_for(
-                self.object.task_type, self.object.task_name
-            )
-            assert plugin_class is not None
-            return [plugin_class.template_name]
+    @staticmethod
+    def _format_output_data(
+        output_data: OutputData | None,
+    ) -> dict[str, Any]:
+        """
+        Format OutputData into a dictionary with human-readable values.
 
-        return [self.default_template_name]
+        - Memory and disk sizes are formatted as MB/GB.
+        - Durations are shown in hours, minutes, and seconds.
+        """
+        if output_data is None:
+            return {}
+
+        runtime_statistics = {}
+
+        if output_data.runtime_statistics is not None:
+            for key, value in output_data.runtime_statistics:
+                if (
+                    key
+                    in (
+                        "memory",
+                        "available_memory",
+                        "disk_space",
+                        "available_disk_space",
+                    )
+                    and value is not None
+                ):
+                    value = filesizeformat(value)
+
+                if key in ("duration", "cpu_time") and value is not None:
+                    value = duration_string(timedelta(seconds=value))
+
+                key = key.replace("_", " ").capitalize().replace("Cpu ", "CPU ")
+
+                runtime_statistics[key] = value
+
+        errors = []
+        if output_data.errors is not None:
+            for error in output_data.errors:
+                errors.append({"message": error.message, "code": error.code})
+
+        formatted = {
+            "Runtime statistics": runtime_statistics,
+            "Errors": errors,
+        }
+        if output_data.skip_reason is not None:
+            formatted["Skipped"] = output_data.skip_reason
+        return formatted
 
 
-class WorkRequestPlugin:
+class WorkRequestPlugin(abc.ABC):
     """
     WorkRequests with specific outputs must subclass it.
 
@@ -251,10 +337,12 @@ class WorkRequestPlugin:
     """
 
     model = WorkRequest
-    template_name: str
-    task_type: TaskTypes
+    task_type: str
     task_name: str
+    template_name: str
 
+    #: Maps (task_type, task_name) tuples to their associated plugin class.
+    #: Used to look up the correct plugin for a given work request.
     _work_request_plugins: dict[tuple[str, str], type["WorkRequestPlugin"]] = {}
 
     def __init_subclass__(cls, **kwargs: Any) -> None:  # noqa: U100
@@ -271,6 +359,28 @@ class WorkRequestPlugin:
     ) -> type["WorkRequestPlugin"] | None:
         """Return WorkRequestPlugin for task_name or None."""
         return cls._work_request_plugins.get((task_type, task_name))
+
+    @functools.cached_property
+    def task(self) -> BaseTask[Any, Any]:
+        """Return task for the work request self.work_request."""
+        task_cls = BaseTask.class_from_name(
+            TaskTypes(self.task_type), self.task_name
+        )
+        return task_cls(
+            task_data=self.work_request.used_task_data,
+            dynamic_task_data=self.work_request.dynamic_task_data,
+        )
+
+    def get_description_data(self) -> dict[str, Any]:
+        """Return data for the description or {} if dynamic_data is None."""
+        if self.task.dynamic_data is None:
+            return {}
+
+        return self.do_get_description_data()
+
+    def do_get_description_data(self) -> dict[str, Any]:
+        """Return data used for the description."""
+        return {}
 
     def get_context_data(self) -> dict[str, Any]:
         """Must be implemented by subclasses."""
@@ -325,8 +435,9 @@ class WorkRequestListView(
                 continue
 
             if task.host_architecture() == architecture:
-                queryset = queryset | WorkRequest.objects.filter(
-                    id=work_request.id
+                queryset = (
+                    queryset
+                    | WorkRequest.objects.filter(id=work_request.id).distinct()
                 )
 
         return queryset
@@ -443,6 +554,29 @@ class WorkRequestRetryView(
         work_request = self.get_object()
         self.enforce(work_request.can_retry)
         return self.retry(work_request)
+
+
+class WorkRequestAbortView(
+    WorkRequestObjectMixin, SingleObjectMixinBase[WorkRequest], View
+):
+    """Form view for aborting a work request."""
+
+    model = WorkRequest
+
+    def abort(self, work_request: WorkRequest) -> HttpResponse:
+        """Abort the work request."""
+        try:
+            work_request.abort()
+        except CannotAbort as e:
+            messages.error(self.request, f"Cannot abort: {e}")
+
+        return redirect(work_request.get_absolute_url())
+
+    def post(self, *args: Any, **kwargs: Any) -> HttpResponse:
+        """Handle POST requests."""
+        work_request = self.get_object()
+        self.enforce(work_request.can_abort)
+        return self.abort(work_request)
 
 
 class WorkRequestUnblockView(

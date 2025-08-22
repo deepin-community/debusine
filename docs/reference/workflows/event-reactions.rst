@@ -11,6 +11,8 @@ below for details. The supported events are the following:
 
 * ``on_creation``: event triggered when the work request is created
 * ``on_unblock``: event triggered when the work request is unblocked
+* ``on_assignment``: event triggered when the work request is assigned to a
+  worker
 * ``on_success``: event triggered when the work request completes
   successfully
 * ``on_failure``: event triggered when the work request fails or errors
@@ -18,6 +20,27 @@ below for details. The supported events are the following:
 
 Supported actions
 ~~~~~~~~~~~~~~~~~
+
+.. _action-skip-if-lookup-result-changed:
+
+``skip-if-lookup-result-changed``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Skip this work request if the result of a lookup has changed since the work
+request was created.  This is intended for use in ``on_assignment`` events,
+and can be used when a workflow anticipates that multiple instances of
+itself may race to update the same piece of information in a collection.
+
+If a work request is skipped, the ``skip_reason`` field in its output data
+is set with a suitable explanation.
+
+* ``lookup`` (:ref:`lookup-single`, required): lookup to perform; this must
+  be within a collection, not just a bare artifact or collection ID
+* ``collection_item_id`` (integer, optional): the collection item ID
+  resulting from the lookup when the work request was created, or None if
+  the lookup did not return a result
+* ``promise_name`` (string, optional): if set, the promise in the current
+  workflow's internal collection to update with the result of the lookup
 
 .. _action-send-notification:
 
@@ -63,6 +86,8 @@ by the current work request.
   the Artifact model so that one can run
   ``work_request.artifact_set.filter(**artifact_filters)`` to
   identify the desired set of artifacts.
+* ``created_at`` (datetime, optional): if set, mark the new collection item
+  as having been created at this timestamp rather than now.
 
 .. note::
 
@@ -112,6 +137,8 @@ events.
 * ``data`` (dict, optional): data for the collection item.  This may also be
   used to compute the name for the item, either via substitution into
   ``name_template`` or by rules defined by the collection manager.
+* ``created_at`` (datetime, optional): if set, mark the new collection item
+  as having been created at this timestamp rather than now.
 
 .. note::
 
@@ -126,7 +153,7 @@ events.
 
 This action is used in ``on_failure`` event reactions.  It causes the work
 request to be retried automatically with various parameters, adding a
-dependency on a newly-created :ref:`task-delay`.
+dependency on a newly-created :task:`Delay` task.
 
 The current delay scheme is limited and simplistic, but we expect that more
 complex schemes can be added as variations on the parameters to this action.
@@ -137,7 +164,7 @@ complex schemes can be added as variations on the parameters to this action.
 
 The workflow data model for work requests gains a ``retry_count`` field,
 defaulting to 0 and incrementing on each successive automatic retry.  When
-this action runs, it creates a :ref:`task-delay` with its ``delay_until``
+this action runs, it creates a :task:`Delay` task with its ``delay_until``
 field set to the current time plus the item from ``delays`` corresponding to
 the current retry count, adds a dependency from its work request to that,
 and marks its work request as blocked on that dependency.  If the retry
@@ -150,18 +177,18 @@ does nothing.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This action is meant to be used as an event reaction to store the current
-task run in a :ref:`debusine:task-history <collection-task-history>`
-collection. The following fields are supported:
+task run in a :collection:`debusine:task-history` collection. The following
+fields are supported:
 
 * ``subject`` (optional, defaults to value stored in dynamic_data): the
   subject string used to record the statistics
 * ``context`` (optional, defaults to value stored in dynamic_data): the
   *runtime context* string used to record the statistics
 
-When the action is executed, it looks up the :ref:`debusine:task-history
-<collection-task-history>` singleton collection corresponding to the work
-request's workspace, and adds a new entry to it.  If there is no such
-collection, it does nothing.
+When the action is executed, it looks up the
+:collection:`debusine:task-history` singleton collection corresponding to
+the work request's workspace, and adds a new entry to it.  If there is no
+such collection, it does nothing.
 
 .. note::
 

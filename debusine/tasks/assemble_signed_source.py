@@ -124,6 +124,16 @@ class AssembleSignedSource(
             subject=package_name,
         )
 
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        if not self.dynamic_data:
+            return []
+        return [
+            self.dynamic_data.environment_id,
+            self.dynamic_data.template_id,
+            *self.dynamic_data.signed_ids,
+        ]
+
     def _check_category(
         self, artifact: ArtifactResponse, expected_category: ArtifactCategory
     ) -> bool:

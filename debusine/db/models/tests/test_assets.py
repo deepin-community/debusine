@@ -227,12 +227,12 @@ class AssetTests(TestCase):
         with context.local():
             context.set_scope(asset.workspace.scope)
             context.set_worker_token(ext_worker_token)
-            self.assertFalse(asset.can_create(AnonymousUser()))
+            self.assertFalse(asset.can_create(None))
 
         with context.local():
             context.set_scope(asset.workspace.scope)
             context.set_worker_token(sig_worker_token)
-            self.assertTrue(asset.can_create(AnonymousUser()))
+            self.assertTrue(asset.can_create(None))
 
     def test_can_create_no_workspace(self) -> None:
         asset = self.create_cloud_provider_account_asset(workspace=None)

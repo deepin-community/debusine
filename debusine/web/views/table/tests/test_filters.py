@@ -10,9 +10,10 @@
 """Tests for table filters."""
 
 import re
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
+import lxml
 from django.core.exceptions import FieldError, ImproperlyConfigured
 from django.db.models import Q
 from django.forms import ChoiceField, Form, modelform_factory
@@ -28,14 +29,13 @@ from debusine.web.views.table import (
     Table,
 )
 from debusine.web.views.table.filters import (
-    ActiveEntry,
-    ActiveEntryToggle,
     BoundFilter,
     BoundFilterField,
     BoundFilterSelectOne,
-    FormEntryField,
-    FormEntrySelectOne,
-    FormEntryText,
+    MainEntryField,
+    MainEntrySelectOne,
+    MainEntryText,
+    MainEntryToggle,
     MenuEntry,
     MenuEntryToggle,
     SelectOption,
@@ -47,27 +47,28 @@ from debusine.web.views.tests.utils import ViewTestMixin
 class MenuEntryTests(ViewTestMixin, TestCase):
     """Tests for :py:class:`MenuEntry`."""
 
-    def _mock_filter(self) -> BoundFilter[Any]:
+    def mock_filter(self) -> BoundFilter[Any]:
         """Build a mock BoundFilter."""
         res = mock.Mock()
         res.filter_prefix = "fieldname"
         res.label = "Label"
+        res.dom_id = "dom_id"
+        res.dom_id_form_dropdown = "dom_id1"
         return res
 
     def test_render(self) -> None:
         """Test :py:func:`render`."""
-        widget = MenuEntry(self._mock_filter())
+        widget = MenuEntry(self.mock_filter())
         tree = self.assertHTMLValid(self.render_widget(widget))
         a = self.assertHasElement(tree, "body/a")
-        self.assertEqual(a.get("href"), "#filters-form-fieldname")
-        self.assertEqual(a.get("aria-controls"), "filters-form-fieldname")
+        self.assertEqual(a.get("data-bs-target"), "#dom_id1")
         self.assertTextContentEqual(a, "Label")
 
 
 class MenuEntryToggleTests(ViewTestMixin, TestCase):
     """Tests for :py:class:`MenuEntryToggle`."""
 
-    def _mock_filter(self, value: Any) -> BoundFilter[Any]:
+    def mock_filter(self, value: Any) -> BoundFilter[Any]:
         """Build a mock BoundFilter."""
         res = mock.Mock()
         res.filter_prefix = "fieldname"
@@ -79,7 +80,7 @@ class MenuEntryToggleTests(ViewTestMixin, TestCase):
 
     def test_render_inactive(self) -> None:
         """Test :py:func:`render` on an inactive filter."""
-        widget = MenuEntryToggle(self._mock_filter(None))
+        widget = MenuEntryToggle(self.mock_filter(None))
         tree = self.assertHTMLValid(self.render_widget(widget))
         a = self.assertHasElement(tree, "body/a")
         self.assertEqual(a.get("href"), "?fieldname=1")
@@ -89,7 +90,7 @@ class MenuEntryToggleTests(ViewTestMixin, TestCase):
 
     def test_render_active(self) -> None:
         """Test :py:func:`render` on an active filter."""
-        widget = MenuEntryToggle(self._mock_filter(True))
+        widget = MenuEntryToggle(self.mock_filter(True))
         tree = self.assertHTMLValid(self.render_widget(widget))
         a = self.assertHasElement(tree, "body/a")
         self.assertEqual(a.get("href"), "?")
@@ -98,98 +99,249 @@ class MenuEntryToggleTests(ViewTestMixin, TestCase):
         self.assertTextContentEqual(a, "Label")
 
 
-class FormEntryTextTests(ViewTestMixin, TestCase):
-    """Tests for :py:class:`FormEntryText`."""
+class MainEntryFormTests(TableTestCase, ViewTestMixin):
+    """Base class for main entry tests for entries with forms."""
 
-    def _mock_filter(self, value: Any) -> BoundFilter[Any]:
+    def mock_filter(self, value: Any = None) -> BoundFilterField[Any]:
         """Build a mock BoundFilter."""
-        res = mock.Mock()
-        res.filter_prefix = "fieldname"
-        res.label = "Label"
-        res.value = value
-        return res
+        qstring: dict[str, Any] = {"order": "test"}
+        if value:
+            qstring["filter-username"] = value
 
-    def test_render(self) -> None:
-        """Test :py:func:`render`."""
-        widget = FormEntryText(self._mock_filter("testvalue"))
+        table = self._table(qstring=qstring)
+        return cast(BoundFilterField[Any], table.filters["username"])
+
+    def assertDropdownOpener(
+        self, opener: lxml.objectify.ObjectifiedElement, f: BoundFilter[Any]
+    ) -> None:
+        """Check the attributes of the dropdown opener."""
+        self.assertEqual(opener.get("id"), f"{f.dom_id}-form-dropdown")
+        self.assertEqual(opener.get("data-bs-toggle"), "dropdown")
+        self.assertEqual(opener.get("data-bs-auto-close"), "outside")
+
+    def assertDropdown(
+        self, dropdown: lxml.objectify.ObjectifiedElement, f: BoundFilter[Any]
+    ) -> lxml.objectify.ObjectifiedElement:
+        """
+        Check the general layout of the dropdown form.
+
+        :returns: the form element
+        """
+        btn_add = dropdown.button[0]
+        self.assertEqual(btn_add.get("type"), "submit")
+        self.assertEqual(btn_add.get("form"), f"{f.dom_id}-form")
+        self.assertTextContentEqual(btn_add, "Add filter")
+
+        btn_cancel = dropdown.button[1]
+        self.assertElementHasClass(btn_cancel, "debusine-dropdown-close")
+        self.assertTextContentEqual(btn_cancel, "Cancel")
+
+        form = dropdown.form[0]
+        self.assertEqual(form.get("id"), f"{f.dom_id}-form")
+        self.assertEqual(form.get("method"), "get")
+        return form
+
+    def assertActive(
+        self, tree: lxml.objectify.ObjectifiedElement, f: BoundFilter[Any]
+    ) -> lxml.objectify.ObjectifiedElement:
+        """
+        Check that the widget is representing an active field.
+
+        :returns: the form element
+        """
+        main = self.assertHasElement(tree, "body/div")
+        buttongroup = self.assertHasElement(main, "div")
+        self.assertEqual(
+            buttongroup.get("aria-label"),
+            f"Controls for active filter {f.label}",
+        )
+
+        opener = self.assertHasElement(buttongroup, "button")
+        self.assertDropdownOpener(opener, f)
+        self.assertTextContentEqual(opener, f"{f.label}: {f.value_formatted}")
+
+        remover = self.assertHasElement(buttongroup, "a")
+        self.assertEqual(remover.get("href"), "?order=test")
+        self.assertEqual(remover.get("title"), "Remove filter")
+
+        dropdown = self.assertHasElement(buttongroup, "div")
+        return self.assertDropdown(dropdown, f)
+
+
+class MainEntryFieldTests(MainEntryFormTests):
+    """Tests for :py:class:`MainEntryField`."""
+
+    def get_table_class(self) -> type[Table[User]]:
+        class _Table(Table[User]):
+            user = Column("User", ordering="username")
+            filter_username = FilterField("Username")
+            default_order = "user"
+
+        return _Table
+
+    def assertForm(
+        self, f: BoundFilterField[Any], form: lxml.objectify.ObjectifiedElement
+    ) -> None:
+        """Check the form contents."""
+        label = self.assertHasElement(form, "label")
+        self.assertTextContentEqual(label, f.label)
+        inp = self.assertHasElement(form, "input")
+        self.assertEqual(inp.get("id"), f.form_field.id_for_label)
+        self.assertEqual(inp.get("name"), f.filter_prefix)
+        self.assertEqual(inp.get("value"), f.value)
+
+    def test_render_active(self) -> None:
+        """Test :py:func:`render` with an active field."""
+        f = self.mock_filter("testvalue")
+        widget = MainEntryField(f)
         tree = self.assertHTMLValid(self.render_widget(widget))
-        div = self.assertHasElement(tree, "body/div")
-        inp = self.assertHasElement(div, "input")
-        self.assertEqual(inp.get("name"), "fieldname")
-        self.assertEqual(inp.get("value"), "testvalue")
+        form = self.assertActive(tree, f)
+        self.assertForm(f, form)
 
-
-class FormEntrySelectOneTests(ViewTestMixin, TestCase):
-    """Tests for :py:class:`FormEntrySelectOne`."""
-
-    def _mock_filter(self, value: Any) -> BoundFilter[Any]:
-        """Build a mock BoundFilter."""
-        res = mock.Mock()
-        res.filter_prefix = "fieldname"
-        res.label = "Label"
-        res.value = value
-        res.options = {
-            "foo": SelectOption("foo", "Foo", Q(username="foo")),
-            "bar": SelectOption("bar", "Bar", Q(username="bar")),
-        }
-        return res
-
-    def test_render(self) -> None:
-        """Test :py:func:`render`."""
-        widget = FormEntrySelectOne(self._mock_filter("foo"))
+    def test_render_inactive(self) -> None:
+        """Test :py:func:`render` with an active field."""
+        f = self.mock_filter()
+        widget = MainEntryField(f)
         tree = self.assertHTMLValid(self.render_widget(widget))
-        div = self.assertHasElement(tree, "body/div")
-        select = self.assertHasElement(div, "select")
-        self.assertEqual(select.get("name"), "fieldname")
+        main = self.assertHasElement(tree, "body/div")
+        self.assertDropdownOpener(main.div[0], f)
+        form = self.assertDropdown(main.div[1], f)
+        self.assertForm(f, form)
+
+
+class MainEntryTextTests(MainEntryFormTests):
+    """Tests for :py:class:`MainEntryText`."""
+
+    def get_table_class(self) -> type[Table[User]]:
+        class _Table(Table[User]):
+            user = Column("User", ordering="username")
+            filter_username = FilterText("Username")
+            default_order = "user"
+
+        return _Table
+
+    def assertForm(
+        self, f: BoundFilter[Any], form: lxml.objectify.ObjectifiedElement
+    ) -> None:
+        """Check the form contents."""
+        label = self.assertHasElement(form, "label")
+        self.assertTextContentEqual(label, f.label)
+        inp = self.assertHasElement(form, "input")
+        self.assertEqual(
+            inp.get("id"), f"{f.dom_id}-formfield-{f.filter_prefix}"
+        )
+        self.assertEqual(inp.get("name"), f.filter_prefix)
+        self.assertEqual(
+            inp.get("value"), f.value if f.value is not None else ""
+        )
+
+    def test_render_active(self) -> None:
+        """Test :py:func:`render` with an active field."""
+        f = self.mock_filter("testvalue")
+        widget = MainEntryText(f)
+        tree = self.assertHTMLValid(self.render_widget(widget))
+        form = self.assertActive(tree, f)
+        self.assertForm(f, form)
+
+    def test_render_inactive(self) -> None:
+        """Test :py:func:`render` with an active field."""
+        f = self.mock_filter()
+        widget = MainEntryText(f)
+        tree = self.assertHTMLValid(self.render_widget(widget))
+        main = self.assertHasElement(tree, "body/div")
+        self.assertDropdownOpener(main.div[0], f)
+        form = self.assertDropdown(main.div[1], f)
+        self.assertForm(f, form)
+
+
+class MainEntrySelectOneTests(MainEntryFormTests):
+    """Tests for :py:class:`MainEntrySelectOne`."""
+
+    def get_table_class(self) -> type[Table[User]]:
+        class _Table(Table[User]):
+            user = Column("User", ordering="username")
+            filter_username = FilterSelectOne(
+                "Username",
+                options=(
+                    SelectOption("foo", "Foo", Q(username="foo")),
+                    SelectOption("bar", "Bar", Q(username="bar")),
+                ),
+            )
+            default_order = "user"
+
+        return _Table
+
+    def assertForm(
+        self,
+        f: BoundFilter[Any],
+        form: lxml.objectify.ObjectifiedElement,
+        active: int | None = None,
+    ) -> None:
+        """Check the form contents."""
+        label = self.assertHasElement(form, "label")
+        self.assertTextContentEqual(label, f.label)
+        select = self.assertHasElement(form, "select")
+        self.assertEqual(
+            select.get("id"), f"{f.dom_id}-formfield-{f.filter_prefix}"
+        )
+        self.assertEqual(select.get("name"), f.filter_prefix)
+
         self.assertEqual(select.option[0].get("value"), "foo")
-        self.assertTrue(select.option[0].get("selected"))
+        self.assertEqual(bool(select.option[0].get("selected")), active == 0)
         self.assertTextContentEqual(select.option[0], "Foo")
         self.assertEqual(select.option[1].get("value"), "bar")
-        self.assertFalse(select.option[1].get("selected"))
+        self.assertEqual(bool(select.option[1].get("selected")), active == 1)
         self.assertTextContentEqual(select.option[1], "Bar")
 
-
-class ActiveEntryTests(ViewTestMixin, TestCase):
-    """Tests for :py:class:`ActiveEntry`."""
-
-    def _mock_filter(self, value: str) -> BoundFilter[Any]:
-        """Build a mock BoundFilter."""
-        res = mock.Mock()
-        res.qs_remove = ""
-        res.label = "Label"
-        res.format_value = mock.Mock(return_value=value)
-        res.filter_prefix = "filter_prefix"
-        return res
-
-    def test_render(self) -> None:
-        """Test :py:func:`render`."""
-        widget = ActiveEntry(self._mock_filter("42"))
+    def test_render_active(self) -> None:
+        """Test :py:func:`render` with an active field."""
+        f = self.mock_filter("foo")
+        widget = MainEntrySelectOne(f)
         tree = self.assertHTMLValid(self.render_widget(widget))
-        span = self.assertHasElement(tree, "body/span")
-        open_a = span.a[0]
-        self.assertEqual(open_a.get("href"), "#filters-form-filter_prefix")
-        self.assertTextContentEqual(open_a, "Label: 42")
-        remove_a = span.a[1]
-        self.assertEqual(remove_a.get("href"), "?")
+        form = self.assertActive(tree, f)
+        self.assertForm(f, form, active=0)
 
-
-class ActiveEntryToggleTests(ViewTestMixin, TestCase):
-    """Tests for :py:class:`ActiveEntryToggle`."""
-
-    def _mock_filter(self) -> BoundFilter[Any]:
-        """Build a mock BoundFilter."""
-        res = mock.Mock()
-        res.qs_remove = ""
-        res.label = "Label"
-        return res
-
-    def test_render(self) -> None:
-        """Test :py:func:`render`."""
-        widget = ActiveEntryToggle(self._mock_filter())
+    def test_render_inactive(self) -> None:
+        """Test :py:func:`render` with an active field."""
+        f = self.mock_filter()
+        widget = MainEntrySelectOne(f)
         tree = self.assertHTMLValid(self.render_widget(widget))
-        a = self.assertHasElement(tree, "body/a")
-        self.assertEqual(a.get("href"), "?")
-        self.assertTextContentEqual(a, "Label")
+        main = self.assertHasElement(tree, "body/div")
+        self.assertDropdownOpener(main.div[0], f)
+        form = self.assertDropdown(main.div[1], f)
+        self.assertForm(f, form)
+
+
+class MainEntryToggleTests(MainEntryFormTests):
+    """Tests for :py:class:`MainEntryToggle`."""
+
+    def get_table_class(self) -> type[Table[User]]:
+        class _Table(Table[User]):
+            user = Column("User", ordering="username")
+            filter_username = FilterToggle("Username", q=Q(username="foo"))
+            default_order = "user"
+
+        return _Table
+
+    def test_render_active(self) -> None:
+        """Test :py:func:`render` with an active field."""
+        f = self.mock_filter(True)
+        widget = MainEntryToggle(f)
+        tree = self.assertHTMLValid(self.render_widget(widget))
+        div = self.assertHasElement(tree, "body/div")
+        self.assertEqual(
+            div.get("aria-label"), "Controls for active filter Username"
+        )
+        self.assertTextContentEqual(div.span, "Username")
+
+        el_close = self.assertHasElement(div, "a")
+        self.assertEqual(el_close.get("href"), "?order=test")
+
+    def test_render_inactive(self) -> None:
+        """Test :py:func:`render` with an active field."""
+        f = self.mock_filter()
+        widget = MainEntryToggle(f)
+        self.assertEqual(self.render_widget(widget).strip(), "")
 
 
 class FilterTextTests(TestCase):
@@ -212,8 +364,7 @@ class FilterTextTests(TestCase):
         self.assertIsNone(f.icon)
         self.assertIsNone(f.placeholder)
         self.assertIs(f.menu_entry, MenuEntry)
-        self.assertIs(f.active_entry, ActiveEntry)
-        self.assertIs(f.form_entry, FormEntryText)
+        self.assertIs(f.main_entry, MainEntryText)
 
     def test_metadata_full(self) -> None:
         """Test field metadata."""
@@ -265,10 +416,8 @@ class FilterToggleTests(TestCase):
         self.assertEqual(f.label, "User")
         self.assertIsInstance(f.q, Q)
         self.assertIsNone(f.icon)
-        self.assertIsNone(f.form_entry)
         self.assertIs(f.menu_entry, MenuEntryToggle)
-        self.assertIs(f.active_entry, ActiveEntryToggle)
-        self.assertIsNone(f.form_entry)
+        self.assertIs(f.main_entry, MainEntryToggle)
 
     def test_metadata_full(self) -> None:
         """Test field metadata."""
@@ -280,13 +429,14 @@ class FilterToggleTests(TestCase):
         self.assertEqual(f.label, "User")
         self.assertIsInstance(f.q, Q)
         self.assertEqual(f.icon, "icon")
-        self.assertIsNone(f.form_entry)
+        self.assertIs(f.menu_entry, MenuEntryToggle)
+        self.assertIs(f.main_entry, MainEntryToggle)
 
     def test_filter_queryset(self) -> None:
         """Test filter_queryset."""
         f = FilterToggle("User", q=Q(username__contains="foo"))
         f.name = "username"
-        self.assertEqual(
+        self.assertCountEqual(
             [u.username for u in f.filter_queryset(User.objects.all(), True)],
             ["foo", "foobar"],
         )
@@ -313,8 +463,7 @@ class FilterSelectOneTests(TestCase):
         self.assertEqual(f.options, ())
         self.assertIsNone(f.icon)
         self.assertIs(f.menu_entry, MenuEntry)
-        self.assertIs(f.active_entry, ActiveEntry)
-        self.assertIs(f.form_entry, FormEntrySelectOne)
+        self.assertIs(f.main_entry, MainEntrySelectOne)
 
     def test_metadata_full(self) -> None:
         """Test field metadata."""
@@ -358,8 +507,7 @@ class FilterFieldTests(TestCase):
         self.assertEqual(f.q_field, "username__contains")
         self.assertIsNone(f.icon)
         self.assertIs(f.menu_entry, MenuEntry)
-        self.assertIs(f.active_entry, ActiveEntry)
-        self.assertIs(f.form_entry, FormEntryField)
+        self.assertIs(f.main_entry, MainEntryField)
 
     def test_metadata_full(self) -> None:
         """Test field metadata."""
@@ -414,28 +562,14 @@ class BoundFilterTests(TableTestCase):
         self.assertEqual(f.label, "Username")
         self.assertIsNone(f.icon)
         self.assertEqual(f.qs_with_value(42), "filter-user1=42")
-        self.assertIs(f.active_entry.filter, f)
         self.assertIs(f.menu_entry.filter, f)
-        assert f.form is not None
-        self.assertIs(f.form.filter, f)
+        self.assertIs(f.main_entry.filter, f)
 
     def test_table_prefix(self) -> None:
         """Ensure BoundFilter honors table_prefix."""
         table = self._table(prefix="test")
         f = table.filters["user1"]
         self.assertEqual(f.filter_prefix, "test-filter-user1")
-
-    def test_missing_form_widget(self) -> None:
-        """Getting form widget for FilterToggle gives None."""
-
-        class _Table(Table[User]):
-            user = Column("User", ordering="username")
-            filter_user = FilterToggle("Foo", q=Q(username="foo"))
-            default_order = "user"
-
-        table = self._table(table_class=_Table)
-        f = table.filters["user"]
-        self.assertIsNone(f.form)
 
     def test_preserve_order(self) -> None:
         """Ensure BoundFilter query string handling preserves ordering."""
@@ -459,7 +593,7 @@ class BoundFilterTests(TableTestCase):
             f.base_filter_args, [("order", "user"), ("filter-user2", "bar")]
         )
 
-    def test_format_value(self) -> None:
+    def test_value_formatted(self) -> None:
         table = self._table()
         f = table.filters["user1"]
         for value, expected in (
@@ -470,7 +604,7 @@ class BoundFilterTests(TableTestCase):
         ):
             with self.subTest(value=value):
                 f.value = value
-                self.assertEqual(f.format_value(), expected)
+                self.assertEqual(f._format_value(), expected)
 
     def test_value_for_querystring(self) -> None:
         table = self._table()
@@ -602,10 +736,8 @@ class BoundFilterSelectOneTests(TableTestCase):
         self.assertIsNone(f.icon)
         self.assertEqual(list(f.options.keys()), ["foo", "bar"])
         self.assertEqual(f.qs_with_value(42), "filter-user2=42")
-        self.assertIs(f.active_entry.filter, f)
         self.assertIs(f.menu_entry.filter, f)
-        assert f.form is not None
-        self.assertIs(f.form.filter, f)
+        self.assertIs(f.main_entry.filter, f)
 
     def test_declarative_options(self) -> None:
         """Test setting filter options declaratively."""
@@ -669,12 +801,10 @@ class BoundFilterFieldTests(TableTestCase):
         self.assertEqual(f.label, "Username")
         self.assertIsNone(f.icon)
         self.assertEqual(f.qs_with_value(42), "filter-username=42")
-        self.assertIs(f.active_entry.filter, f)
         self.assertIs(f.menu_entry.filter, f)
-        assert f.form is not None
-        self.assertIs(f.form.filter, f)
+        self.assertIs(f.main_entry.filter, f)
 
-    def test_format_value(self) -> None:
+    def test_value_formatted(self) -> None:
         table = self._table()
         f = table.filters["username"]
         for value, expected in (
@@ -684,7 +814,7 @@ class BoundFilterFieldTests(TableTestCase):
         ):
             with self.subTest(value=value):
                 f.value = value
-                self.assertEqual(f.format_value(), expected)
+                self.assertEqual(f._format_value(), expected)
 
     def test_invalid_field_name_with_auto_form(self) -> None:
         """Test object members."""
@@ -754,7 +884,7 @@ class BoundFilterSelectFieldTests(TableTestCase):
 
         return _Table
 
-    def test_format_value(self) -> None:
+    def test_value_formatted(self) -> None:
         table = self._table()
         f = table.filters["user"]
         for value, expected in (
@@ -768,7 +898,7 @@ class BoundFilterSelectFieldTests(TableTestCase):
         ):
             with self.subTest(value=value):
                 f.value = value
-                self.assertEqual(f.format_value(), expected)
+                self.assertEqual(f._format_value(), expected)
 
 
 class FiltersTests(TableTestCase):
@@ -891,12 +1021,19 @@ class FiltersTests(TableTestCase):
     def test_render(self) -> None:
         """Test :py:func:`render`."""
         table = self._table()
-        tree = self.assertHTMLValid(self.render_widget(table.filters))
+        tree = self.assertHTMLValid(
+            self.render_widget(table.filters), dump_on_error=True
+        )
         div = self.assertHasElement(tree, "body/div")
 
         # Filter menu
-        menu_ul = self.assertHasElement(div.div[0], "ul")
+        filters_opener = self.assertHasElement(
+            div, "//div[@id='table-filters-menu']"
+        )
+        parent = filters_opener.getparent()
+        assert parent is not None
+        filters_menu = parent.ul[0]
         self.assertEqual(
-            [self.get_node_text_normalized(li) for li in menu_ul.li],
-            ["Username", "User", "", "Reset filters"],
+            [self.get_node_text_normalized(li) for li in filters_menu.li],
+            ["Add filter on field…", "Username", "User"],
         )

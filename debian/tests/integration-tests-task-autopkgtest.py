@@ -14,7 +14,6 @@ Debusine integration tests.
 Test autopkgtest related code.
 """
 
-import logging
 import subprocess
 import unittest
 
@@ -22,12 +21,9 @@ import yaml
 
 from debusine.artifacts.models import ArtifactCategory
 from utils.client import Client
-from utils.common import Configuration, launch_tests
+from utils.common import Configuration
 from utils.integration_test_helpers_mixin import IntegrationTestHelpersMixin
 from utils.server import DebusineServer
-from utils.worker import Worker
-
-logger = logging.getLogger(__name__)
 
 
 class IntegrationTaskAutopkgtestTests(
@@ -46,6 +42,7 @@ class IntegrationTaskAutopkgtestTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         # If debusine-server or nginx was launched just before the
         # integration-tests-autopkgtest.py is launched the debusine-server
         # might not be yet available. Let's wait for the debusine-server to be
@@ -60,8 +57,6 @@ class IntegrationTaskAutopkgtestTests(
         self.architecture = subprocess.check_output(
             ["dpkg", "--print-architecture"], text=True
         ).strip()
-
-        self.worker = Worker()
 
     def test_autopkgtest(self) -> None:
         """Create an autopkgtest job: download the artifact and build."""
@@ -107,12 +102,14 @@ class IntegrationTaskAutopkgtestTests(
                 # Expected testinfo.json in the artifact
                 self.assertIn("testinfo.json", artifact["files"].keys())
 
+                # The log has a reasonable Content-Type
+                self.assertEqual(
+                    artifact["files"]["log"]["content_type"],
+                    "text/plain; charset=us-ascii",
+                )
+
                 # Check some of the data contents
                 self.assertIn("results", artifact["data"])
                 self.assertIn("source_package", artifact["data"])
 
         self.assertEqual(debian_autopkgtest_artifacts, 1)
-
-
-if __name__ == '__main__':
-    launch_tests("Task autopkgtest integration tests for debusine")

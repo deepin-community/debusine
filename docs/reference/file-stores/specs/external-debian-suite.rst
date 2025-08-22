@@ -1,4 +1,4 @@
-.. _file-backend-external-debian-suite:
+.. file-backend:: ExternalDebianSuite
 
 ExternalDebianSuite file backend
 ================================

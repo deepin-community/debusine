@@ -40,6 +40,8 @@ def setup_temp_data_directories() -> None:
     os.mkdir(settings.DEBUSINE_STORE_DIRECTORY)
     os.mkdir(settings.DEBUSINE_LOG_DIRECTORY)
 
+    settings.TEMPLATES[0]["DIRS"] = [settings.DEBUSINE_TEMPLATE_DIRECTORY]
+
     # We could send signals for tests that cache settings, and restore them:
     # https://docs.djangoproject.com/en/3.2/ref/signals/#django.test.signals.setting_changed
     # but we're early in the start-up process, this complexifies the code,

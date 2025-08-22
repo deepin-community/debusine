@@ -11,17 +11,18 @@
 
 import json
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Generic, Literal, NewType, TypeVar
+from typing import Any, Generic, Literal, NewType, Self, TypeVar
 
 try:
     import pydantic.v1 as pydantic
 except ImportError:
     import pydantic as pydantic  # type: ignore
 
+from debusine.artifacts.models import DebusineTaskConfiguration
 from debusine.assets import AssetCategory, BaseAssetDataModel, asset_data_model
 from debusine.utils import calculate_hash
 
@@ -57,6 +58,7 @@ class WorkRequestResponse(StrictBaseModel):
     """Server return a WorkRequest to the client."""
 
     id: int
+    url: str
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -110,6 +112,8 @@ class WorkflowTemplateResponse(StrictBaseModel):
     """Server returns a WorkflowTemplate to the server."""
 
     id: int
+    url: str
+    name: str
     task_name: str
     workspace: str
     task_data: dict[str, Any]
@@ -139,9 +143,13 @@ class FileRequest(StrictBaseModel):
     size: int = pydantic.Field(ge=0)
     checksums: dict[str, StrMaxLength255]
     type: Literal["file"]
+    #: A media type, suitable for an HTTP ``Content-Type`` header.
+    content_type: str | None = None
 
     @staticmethod
-    def create_from(path: Path) -> "FileRequest":
+    def create_from(
+        path: Path, *, content_type: str | None = None
+    ) -> "FileRequest":
         """Return a FileRequest for the file path."""
         return FileRequest(
             size=path.stat().st_size,
@@ -151,6 +159,7 @@ class FileRequest(StrictBaseModel):
                 )
             },
             type="file",
+            content_type=content_type,
         )
 
 
@@ -161,6 +170,7 @@ class FileResponse(StrictBaseModel):
     checksums: dict[str, StrMaxLength255]
     type: Literal["file"]
     url: pydantic.AnyUrl
+    content_type: str | None = None
 
 
 FilesRequestType = NewType("FilesRequestType", dict[str, FileRequest])
@@ -182,6 +192,7 @@ class ArtifactResponse(StrictBaseModel):
     """Declare an ArtifactResponse: server sends it to the client."""
 
     id: int
+    url: str
     workspace: str
     category: str
     created_at: datetime
@@ -196,6 +207,7 @@ class RemoteArtifact(StrictBaseModel):
     """Declare RemoteArtifact."""
 
     id: int
+    url: str
     workspace: str
 
 
@@ -218,7 +230,8 @@ class AssetResponse(StrictBaseModel):
     workspace: str
 
     @pydantic.root_validator
-    def parse_data(cls, values: dict[str, Any]) -> dict[str, Any]:  # noqa: U100
+    @classmethod
+    def parse_data(cls, values: dict[str, Any]) -> dict[str, Any]:
         """Parse data using the correct data model."""
         if isinstance(values.get("data"), dict):
             category = values.get("category")
@@ -430,6 +443,99 @@ class EnrollConfirmPayload(pydantic.BaseModel):
         if token is not None and not re_token.match(token):
             raise ValueError("Token is malformed")
         return token
+
+
+class TaskConfigurationCollection(StrictBaseModel):
+    """Response fragment identifying a TaskConfiguration collection."""
+
+    id: int
+    name: str
+    data: dict[str, Any]
+
+
+class TaskConfigurationCollectionContents(StrictBaseModel):
+    """Bundle together a TaskConfiguration collection and its items."""
+
+    collection: TaskConfigurationCollection
+    items: list[DebusineTaskConfiguration]
+
+
+class TaskConfigurationCollectionUpdateResults(StrictBaseModel):
+    """Results of a task configuration collection update."""
+
+    added: int
+    updated: int
+    removed: int
+    unchanged: int
+
+
+class WorkspaceInheritanceChainElement(StrictBaseModel):
+    """An element in an inheritance chain."""
+
+    id: int | None = None
+    scope: str | None = None
+    workspace: str | None = None
+
+    @pydantic.root_validator
+    @classmethod
+    def not_empty(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Ensure at least one of id or workspace is set."""
+        if values.get("id") is None and values.get("workspace") is None:
+            raise ValueError("at least id or workspace need to be set")
+        return values
+
+    def matches(self, element: "WorkspaceInheritanceChainElement") -> bool:
+        """Check if the components of element that are set match this one."""
+        return (
+            (element.id is None or element.id == self.id)
+            and (element.scope is None or element.scope == self.scope)
+            and (
+                element.workspace is None or element.workspace == self.workspace
+            )
+        )
+
+    @classmethod
+    def from_string(cls, value: str) -> Self:
+        """Resolve a command line argument to a WorkspaceInheritanceChain."""
+        if value.isdigit():
+            return cls(id=int(value))
+        elif "/" in value:
+            scope, workspace = value.split("/", 1)
+            return cls(scope=scope, workspace=workspace)
+        else:
+            return cls(workspace=value)
+
+
+class WorkspaceInheritanceChain(StrictBaseModel):
+    """Ordered list of workspaces inherited by a workspace."""
+
+    chain: list[WorkspaceInheritanceChainElement] = []
+
+    def __add__(self, other: "WorkspaceInheritanceChain") -> Self:
+        """Return the concatenation of this chain and another."""
+        return self.__class__(chain=self.chain + other.chain)
+
+    def __sub__(self, other: "WorkspaceInheritanceChain") -> Self:
+        """Return a copy of this chain without the elements in other."""
+        filtered: list[WorkspaceInheritanceChainElement] = []
+        for element in self.chain:
+            for to_remove in other.chain:
+                if element.matches(to_remove):
+                    break
+            else:
+                filtered.append(element)
+
+        return self.__class__(chain=filtered)
+
+    @classmethod
+    def from_strings(cls, values: Collection[str]) -> Self:
+        """Build an inheritance chain from a list of user-provided strings."""
+        return cls(
+            chain=[
+                WorkspaceInheritanceChainElement.from_string(value)
+                for value in values
+            ]
+        )
 
 
 def model_to_json_serializable_dict(

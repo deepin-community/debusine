@@ -13,7 +13,7 @@ User=debusine-server
 Group=debusine-server
 
 ExecStartPre=/usr/bin/debusine-admin check
-ExecStart=/usr/bin/debusine-admin delete_expired
+ExecStart=/usr/bin/debusine-admin delete_expired -v2
 
 WorkingDirectory=~
 PrivateTmp=True

@@ -62,7 +62,7 @@ class RegisterView(BaseAPIView):
             request.auth.delete()
         else:
             Worker.objects.create_with_fqdn(
-                fqdn, token, worker_type=worker_type
+                fqdn, token=token, worker_type=worker_type
             )
 
         logger.info('Client registered. Token key: %s', token_key)

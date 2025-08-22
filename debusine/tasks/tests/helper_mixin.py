@@ -19,7 +19,7 @@ from pathlib import Path
 from shutil import rmtree
 from tempfile import mkdtemp
 from typing import Any, Generic, Protocol, TypeVar, cast, overload
-from unittest import TestCase, mock
+from unittest import mock
 from unittest.mock import MagicMock
 
 try:
@@ -48,9 +48,12 @@ from debusine.tasks.models import (
 )
 from debusine.tasks.server import (
     ArtifactInfo,
+    CollectionInfo,
     MultipleArtifactInfo,
     TaskDatabaseInterface,
 )
+from debusine.test.base import TestCase
+from debusine.test.test_utils import create_artifact_response
 from debusine.utils import extract_generic_type_arguments
 
 TaskClass = TypeVar("TaskClass", bound=BaseTask[Any, Any])
@@ -60,7 +63,7 @@ ExternalTaskClass = TypeVar(
 
 
 class TaskTestProtocol(Protocol, Generic[TaskClass]):
-    """Attributes that tests using :class:`TaskHelperMixin` must provide."""
+    """Attributes that tests using :py:class:`TaskHelperMixin` must provide."""
 
     SAMPLE_TASK_DATA: dict[str, Any]
     task_class: type[TaskClass]
@@ -94,32 +97,38 @@ class FakeTaskDatabaseBase(TaskDatabaseInterface):
             ]
             | None
         ) = None,
+        single_collection_lookups: (
+            Mapping[
+                tuple[LookupSingle, CollectionCategory | None],
+                CollectionInfo | None,
+            ]
+            | None
+        ) = None,
         settings: dict[str, str] | None = None,
     ) -> None:
         """Construct a :py:class:`FakeTaskDatabase`."""
         self.single_lookups = single_lookups or {}
         self.multiple_lookups = multiple_lookups or {}
         self.relations = relations or {}
+        self.single_collection_lookups = single_collection_lookups or {}
         self.settings = settings or {}
 
     @overload
     def lookup_single_artifact(
         self,
         lookup: LookupSingle,
-        default_category: CollectionCategory | None = None,  # noqa: U100
+        default_category: CollectionCategory | None = None,
     ) -> ArtifactInfo: ...
 
     @overload
     def lookup_single_artifact(
-        self,
-        lookup: None,
-        default_category: CollectionCategory | None = None,  # noqa: U100
+        self, lookup: None, default_category: CollectionCategory | None = None
     ) -> None: ...
 
     def lookup_single_artifact(
         self,
         lookup: LookupSingle | None,
-        default_category: CollectionCategory | None = None,  # noqa: U100
+        default_category: CollectionCategory | None = None,
     ) -> ArtifactInfo | None:
         """Pretend to look up a single artifact."""
         return (
@@ -131,7 +140,7 @@ class FakeTaskDatabaseBase(TaskDatabaseInterface):
     def lookup_multiple_artifacts(
         self,
         lookup: LookupMultiple | None,
-        default_category: CollectionCategory | None = None,  # noqa: U100
+        default_category: CollectionCategory | None = None,
     ) -> MultipleArtifactInfo:
         """Pretend to look up multiple artifacts."""
         if not lookup:
@@ -157,27 +166,25 @@ class FakeTaskDatabaseBase(TaskDatabaseInterface):
     def lookup_single_collection(
         self,
         lookup: LookupSingle,
-        default_category: CollectionCategory | None = None,  # noqa: U100
-    ) -> int: ...
+        default_category: CollectionCategory | None = None,
+    ) -> CollectionInfo: ...
 
     @overload
     def lookup_single_collection(
-        self,
-        lookup: None,
-        default_category: CollectionCategory | None = None,  # noqa: U100
+        self, lookup: None, default_category: CollectionCategory | None = None
     ) -> None: ...
 
     def lookup_single_collection(
         self,
         lookup: LookupSingle | None,
-        default_category: CollectionCategory | None = None,  # noqa: U100
-    ) -> int | None:
-        """
-        Pretend to look up a single collection.
-
-        Not currently used.
-        """
-        raise NotImplementedError()
+        default_category: CollectionCategory | None = None,
+    ) -> CollectionInfo | None:
+        """Pretend to look up a single collection."""
+        return (
+            None
+            if lookup is None
+            else self.single_collection_lookups[(lookup, default_category)]
+        )
 
     def get_server_setting(self, setting: str) -> str:
         """Look up a Django setting (strings only)."""
@@ -379,7 +386,7 @@ class ExternalTaskHelperMixin(
 
     def fake_system_tarball_artifact(self) -> ArtifactResponse:
         """Create a fake ArtifactResponse for a debian:system-tarball."""
-        return ArtifactResponse(
+        return create_artifact_response(
             id=42,
             workspace="Testing",
             category=ArtifactCategory.SYSTEM_TARBALL,
@@ -418,7 +425,7 @@ class ExternalTaskHelperMixin(
 
     def fake_system_image_artifact(self) -> ArtifactResponse:
         """Create a fake ArtifactResponse for a debian:system-image."""
-        return ArtifactResponse(
+        return create_artifact_response(
             id=42,
             workspace="Testing",
             category=ArtifactCategory.SYSTEM_IMAGE,
@@ -461,7 +468,7 @@ class ExternalTaskHelperMixin(
 
     def fake_debian_source_package_artifact(self) -> ArtifactResponse:
         """Create a fake ArtifactResponse for a debian:source-package."""
-        return ArtifactResponse(
+        return create_artifact_response(
             id=6,
             workspace="Testing",
             category=ArtifactCategory.SOURCE_PACKAGE,
@@ -499,7 +506,7 @@ class ExternalTaskHelperMixin(
 
     def fake_debian_binary_package_artifact(self) -> ArtifactResponse:
         """Create a fake ArtifactResponse for a debian:binary-package."""
-        return ArtifactResponse(
+        return create_artifact_response(
             id=7,
             workspace="Testing",
             category=ArtifactCategory.BINARY_PACKAGE,
@@ -549,7 +556,7 @@ class ExternalTaskHelperMixin(
                 "{source_package_name}_1.0-1.debian.tar.xz",
                 "{source_package_name}_1.0-1.dsc",
             ]
-        return ArtifactResponse(
+        return create_artifact_response(
             id=8,
             workspace="Testing",
             category=ArtifactCategory.UPLOAD,
@@ -595,7 +602,7 @@ TD = TypeVar("TD", bound=BaseTaskData)
 DTD = TypeVar("DTD", bound=BaseDynamicTaskData)
 
 
-class TestBaseTask(BaseTask[TD, DTD]):
+class SampleBaseTask(BaseTask[TD, DTD]):
     """Common test implementation of abstract task methods."""
 
     def get_label(self) -> str:
@@ -609,8 +616,14 @@ class TestBaseTask(BaseTask[TD, DTD]):
         """Resolve artifact lookups for this task."""
         return self.dynamic_task_data_type()
 
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        return []
 
-class TestBaseExternalTask(TestBaseTask[TD, DTD], BaseExternalTask[TD, DTD]):
+
+class SampleBaseExternalTask(
+    SampleBaseTask[TD, DTD], BaseExternalTask[TD, DTD]
+):
     """Common test implementation of BaseExternalTask methods."""
 
 
@@ -618,7 +631,7 @@ TDE = TypeVar("TDE", bound=BaseTaskDataWithExecutor)
 DTDE = TypeVar("DTDE", bound=BaseDynamicTaskDataWithExecutor)
 
 
-class TestBaseTaskWithExecutor(
-    TestBaseTask[TDE, DTDE], BaseTaskWithExecutor[TDE, DTDE]
+class SampleBaseTaskWithExecutor(
+    SampleBaseTask[TDE, DTDE], BaseTaskWithExecutor[TDE, DTDE]
 ):
     """Common test implementation of BaseExternalTask methods."""

@@ -10,6 +10,7 @@
 """Manager for debusine:task-history collections."""
 
 import re
+from datetime import datetime
 from typing import Any, TypedDict
 from urllib.parse import quote, unquote
 
@@ -48,6 +49,8 @@ class TaskHistoryManager(CollectionManagerInterface):
         data: dict[str, Any] | None = None,
         name: str | None = None,  # noqa: U100
         replace: bool = False,
+        created_at: datetime | None = None,
+        replaced_by: CollectionItem | None = None,
     ) -> CollectionItem:
         """
         Add bare data into the managed collection.
@@ -85,7 +88,12 @@ class TaskHistoryManager(CollectionManagerInterface):
         name = ":".join(name_elements)
 
         if replace:
-            self.remove_bare_data(name, user=user, workflow=workflow)
+            self.remove_items_by_name(
+                name=name,
+                child_types=[CollectionItem.Types.BARE],
+                user=user,
+                workflow=workflow,
+            )
 
         try:
             item = CollectionItem.objects.create_from_bare_data(
@@ -93,8 +101,10 @@ class TaskHistoryManager(CollectionManagerInterface):
                 parent_collection=self.collection,
                 name=name,
                 data=data,
+                created_at=created_at,
                 created_by_user=user,
                 created_by_workflow=workflow,
+                replaced_by=replaced_by,
             )
         except IntegrityError as exc:
             raise ItemAdditionError(str(exc))
@@ -136,34 +146,28 @@ class TaskHistoryManager(CollectionManagerInterface):
                 "old_items_to_keep", 5
             )
         )
-        for old_name in (
+        for old_item in (
             old_items.exclude(id=item.id)
             .exclude(id__in=last_success.values("id"))
             .exclude(id__in=last_failure.values("id"))
             .exclude(id__in=most_recent.values("id"))
-            .values_list("name", flat=True)
         ):
-            self.remove_bare_data(old_name, user=user, workflow=workflow)
+            self.remove_item(old_item, user=user, workflow=workflow)
 
         return item
 
-    def do_remove_bare_data(
+    def do_remove_item(
         self,
-        name: str,
+        item: CollectionItem,
         *,
         user: User | None = None,
         workflow: WorkRequest | None = None,
     ) -> None:
-        """Remove a bare data item from the collection."""
-        CollectionItem.active_objects.filter(
-            name=name,
-            child_type=CollectionItem.Types.BARE,
-            parent_collection=self.collection,
-        ).update(
-            removed_by_user=user,
-            removed_by_workflow=workflow,
-            removed_at=timezone.now(),
-        )
+        """Remove an item from the collection."""
+        item.removed_by_user = user
+        item.removed_by_workflow = workflow
+        item.removed_at = timezone.now()
+        item.save()
 
     def do_lookup(self, query: str) -> CollectionItem | None:
         """
@@ -174,7 +178,7 @@ class TaskHistoryManager(CollectionManagerInterface):
           `last-failure:TASK_TYPE:TASK_NAME:SUBJECT:CONTEXT`.
         :raise LookupError: the query contains an unknown lookup format.
         """
-        objects = CollectionItem.active_objects
+        objects = CollectionItem.objects.active()
         query_filter = Q(
             parent_collection=self.collection,
             child_type=CollectionItem.Types.BARE,

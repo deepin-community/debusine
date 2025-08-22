@@ -72,19 +72,15 @@ class WorkersListViewTests(ViewTestMixin, TestCase):
         table = self.assertHasElement(tree, "//table[@id='worker-list']")
 
         # Assert names
+        self.assertEqual(len(table.tbody.tr), 2)
         self.assertEqual(table.tbody.tr[0].td[0].i.get("title"), "External")
         self.assertEqual(
             table.tbody.tr[0].td[0].i.get("class"),
             f"bi bi-{Icons.WORKER_EXTERNAL}",
         )
-        self.assertEqual(table.tbody.tr[1].td[0].i.get("title"), "Celery")
+        self.assertEqual(table.tbody.tr[1].td[0].i.get("title"), "Signing")
         self.assertEqual(
             table.tbody.tr[1].td[0].i.get("class"),
-            f"bi bi-{Icons.WORKER_CELERY}",
-        )
-        self.assertEqual(table.tbody.tr[2].td[0].i.get("title"), "Signing")
-        self.assertEqual(
-            table.tbody.tr[2].td[0].i.get("class"),
             f"bi bi-{Icons.WORKER_SIGNING}",
         )
 
@@ -210,21 +206,6 @@ class WorkersListViewTests(ViewTestMixin, TestCase):
             table.tbody.tr[0].td[4], external_running
         )
 
-    def test_celery_worker(self) -> None:
-        """Template shows "-" in Last Seen and Status for Celery workers."""
-        self.playground.create_worker(WorkerType.CELERY)
-
-        response = self.client.get(reverse("workers:list"))
-        tree = self.assertResponseHTML(response)
-
-        table = self.assertHasElement(tree, "//table[@id='worker-list']")
-
-        # Last Seen At is "-"
-        self.assertHTMLContentsEquivalent(table.tbody.tr[0].td[4], "<td>-</td>")
-
-        # Status is "-"
-        self.assertHTMLContentsEquivalent(table.tbody.tr[0].td[4], "<td>-</td>")
-
 
 class WorkersListViewOrderingTests(ViewTestMixin, TestCase):
     """Tests for :py:class:`WorkersListView` ordering."""
@@ -271,18 +252,14 @@ class WorkersListViewOrderingTests(ViewTestMixin, TestCase):
     def test_order_ascending(self) -> None:
         """Test ordering alphabetically."""
         response = self.client.get(reverse("workers:list"), {"order": "name"})
-        self.assertTableEntries(
-            response, ["a-external", "b-celery", "c-signing"]
-        )
+        self.assertTableEntries(response, ["a-external", "c-signing"])
 
     def test_order_descending(self) -> None:
         """Test ordering reverse-alphabetically."""
         response = self.client.get(
             reverse("workers:list"), {"order": "name.desc"}
         )
-        self.assertTableEntries(
-            response, ["c-signing", "b-celery", "a-external"]
-        )
+        self.assertTableEntries(response, ["c-signing", "a-external"])
 
 
 class WorkerDetailViewTests(ViewTestMixin, TestCase):
@@ -306,9 +283,9 @@ class WorkerDetailViewTests(ViewTestMixin, TestCase):
             el.td[0], worker.registered_at, anywhere=True
         )
         el = self.assertHasElement(tree, "//tr[@id='row-connected_at']")
-        self.assertTextContentEqual(el.td[0], "never")
+        self.assertTextContentEqual(el.td[0], "Never")
         el = self.assertHasElement(tree, "//tr[@id='row-instance_created_at']")
-        self.assertTextContentEqual(el.td[0], "never")
+        self.assertTextContentEqual(el.td[0], "Never")
         el = self.assertHasElement(tree, "//tr[@id='row-concurrency']")
         self.assertTextContentEqual(el.td[0], str(worker.concurrency))
 

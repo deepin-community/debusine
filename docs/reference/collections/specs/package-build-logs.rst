@@ -1,4 +1,4 @@
-.. _collection-package-build-logs:
+.. collection:: debian:package-build-logs
 
 Category ``debian:package-build-logs``
 --------------------------------------
@@ -18,8 +18,8 @@ add a bare item to this collection, in order that scheduled but incomplete
 builds can be made visible in views that allow browsing this collection.  It
 should use a corresponding :ref:`action-update-collection-with-artifacts`
 event reaction to replace that item with an artifact item when the build log
-is created.  Workflows such as the :ref:`sbuild workflow <workflow-sbuild>`
-are expected to handle the details of this.
+is created.  Workflows such as the :workflow:`sbuild` workflow are expected
+to handle the details of this.
 
 Views of this collection that need to filter by things like the result of
 the work request should join with the ``WorkRequest`` table, using the
@@ -37,10 +37,10 @@ computed from the supplied variables.
 
 * Valid items:
 
-  * ``debian:package-build-log`` bare items, indicating builds that have not
-    yet completed (see :ref:`bare-data-package-build-log`)
-  * ``debian:package-build-log`` artifacts; when added, these replace bare
-    items with the same category and item name (see :ref:`artifact-package-build-log`)
+  * :bare-data:`debian:package-build-log` bare data, indicating builds that
+    have not yet completed
+  * :artifact:`debian:package-build-log` artifacts; when added, these
+    replace bare items with the same category and item name
 
 * Per-item data:
 

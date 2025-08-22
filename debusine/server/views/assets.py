@@ -115,6 +115,10 @@ class AssetPermissionCheckView(BaseAPIView):
         """Return a dictionary description of artifact."""
         resource: dict[str, str] = {}
         match artifact.category:
+            case ArtifactCategory.REPOSITORY_INDEX:
+                # A debian:repository-index artifact must have exactly one
+                # file.
+                resource["path"] = artifact.fileinartifact_set.get().path
             case ArtifactCategory.SIGNING_INPUT:
                 resource["package"] = artifact.data["binary_package_name"]
                 try:
@@ -212,7 +216,7 @@ class AssetPermissionCheckView(BaseAPIView):
                 )
 
         task = work_request.get_task()
-        if artifact.id not in task.get_source_artifacts_ids():
+        if artifact.id not in task.get_input_artifacts_ids():
             raise DebusineAPIException(
                 title=f"{artifact} is not an input to {work_request}"
             )

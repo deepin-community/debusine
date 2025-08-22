@@ -13,7 +13,7 @@ Debusine is available in the Debian archive, in sid (unstable) and trixie
 (testing).
 
 If you want to run Debusine on Debian 12, you will need to enable the
-bookworm-backports repository and install python3-django from that
+bookworm-backports repository and install some packages from that
 repository:
 
 .. code-block:: console
@@ -23,7 +23,7 @@ repository:
   deb http://deb.debian.org/debian bookworm-backports main
   END
   $ sudo apt update
-  $ sudo apt install python3-django/bookworm-backports
+  $ sudo apt install libjs-bootstrap5/bookworm-backports python3-django/bookworm-backports
 
 The snapshot repository
 -----------------------

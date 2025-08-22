@@ -1,3 +1,5 @@
+# PYTHON_ARGCOMPLETE_OK
+#
 # Copyright © The Debusine Developers
 # See the AUTHORS file at the top-level directory of this distribution
 #

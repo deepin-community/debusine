@@ -2,9 +2,15 @@
 {% load debusine %}
 {% block content %}
     <h1>{{ title }}</h1>
-    <form method="post">
-        {% csrf_token %}
-        {{ form.as_p }}
-        <input class="btn btn-primary btn-sm" type="submit" value="Save">
-    </form>
+    <div class="container">
+        <div class="row">
+            <div class="col-6">
+                <form method="post">
+                    {% csrf_token %}
+                    {{ form.as_p }}
+                    <input class="btn btn-primary btn-sm" type="submit" value="Save">
+                </form>
+            </div>
+        </div>
+    </div>
 {% endblock %}

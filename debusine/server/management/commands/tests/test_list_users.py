@@ -21,6 +21,7 @@ class ListUsersCommandTests(TabularOutputTests, TestCase):
 
     def setUp(self) -> None:
         """Set up new user for the tests."""
+        super().setUp()
         self.user = get_user_model().objects.create_user(
             username="bob", email="bob@bob.com", password="123456"
         )

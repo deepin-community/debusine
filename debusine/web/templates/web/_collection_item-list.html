@@ -1,5 +1,6 @@
 {% load debusine %}
-<table class="table table-sm" id="collection-item-list">
+<table class="table table-sm table-hover table-striped"
+       id="collection-item-list">
     {% widget paginator.thead %}
     <tbody>
         {% for item in paginator.page_obj.object_list %}

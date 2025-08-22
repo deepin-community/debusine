@@ -2,13 +2,11 @@
 
 set -e
 
+debian/tests/utils/check-namespace-support
+
 source debian/tests/utils/add-debusine-log-files-to-artifacts.sh
 
 debian/tests/utils/integration-tests-setup-debusine-all.sh
+debian/tests/utils/integration-tests-setup-debusine-signing.sh
 
-signing_token=$(debian/tests/utils/integration-tests-setup-debusine-signing.sh)
-
-sudo -u debusine-server debusine-admin \
-    manage_worker --worker-type signing enable "$signing_token"
-
-debian/tests/integration-tests-task-signing.py
+pytest --rootdir=. -c /dev/null -v debian/tests/integration-tests-task-signing.py

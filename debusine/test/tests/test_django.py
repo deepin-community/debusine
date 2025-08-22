@@ -9,22 +9,36 @@
 
 """Tests for debusine.tests.django."""
 
+import contextlib
 import json
+import re
+from collections.abc import Callable, Generator
 from datetime import timedelta
-from typing import ClassVar
+from pathlib import Path
+from typing import Any, ClassVar, Never, Self
 from unittest import mock
 
+import django.template
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.db import transaction
-from django.http.response import HttpResponse
+from django.db.models import QuerySet
+from django.http.response import HttpResponse, HttpResponseBase, JsonResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 
 from debusine.db.context import context
-from debusine.db.models import ArtifactRelation, Scope, User, Workspace
+from debusine.db.models import (
+    ArtifactRelation,
+    Scope,
+    User,
+    Workspace,
+    permissions,
+)
+from debusine.db.models.permissions import Allow, PermissionUser
+from debusine.db.models.workspaces import WorkspaceQuerySet
 from debusine.server.views import ProblemResponse
 from debusine.test.django import (
     AllowAll,
@@ -160,7 +174,20 @@ class TestCaseTests(TestCase):
 
     playground_memory_file_store = False
 
-    @context.disable_permission_checks()
+    @contextlib.contextmanager
+    def assertExceptionHasFormattedAPIResponse(
+        self,
+    ) -> Generator[None, None, None]:
+        with mock.patch(
+            "debusine.test.django.BaseDjangoTestCase.format_api_response",
+            return_value="…",
+        ):
+            try:
+                yield
+            except Exception as exc:
+                self.assertIn("…", exc.__notes__)
+                raise
+
     def test_create_artifact_relation_default_type(self) -> None:
         """create_artifact_relation() create artifact with type=RELATED_TO."""
         artifact, _ = self.playground.create_artifact()
@@ -177,7 +204,6 @@ class TestCaseTests(TestCase):
             ArtifactRelation.Relations.RELATES_TO,
         )
 
-    @context.disable_permission_checks()
     def test_create_artifact_relation_specific_type(self) -> None:
         """create_artifact_relation() create artifact with given type."""
         artifact, _ = self.playground.create_artifact()
@@ -193,14 +219,12 @@ class TestCaseTests(TestCase):
         self.assertEqual(created_artifact_relation.target, target)
         self.assertEqual(created_artifact_relation.type, relation_type)
 
-    @context.disable_permission_checks()
     def test_create_artifact_default_expire_date(self) -> None:
         """create_artifact() set expire_at to None by default."""
         artifact, _ = self.playground.create_artifact()
         artifact.refresh_from_db()
         self.assertIsNone(artifact.expire_at)
 
-    @context.disable_permission_checks()
     def test_create_artifact_expire_date(self) -> None:
         """create_artifact() set expire_at use correct expire_at.."""
         now = timezone.now()
@@ -210,7 +234,6 @@ class TestCaseTests(TestCase):
         artifact.refresh_from_db()
         self.assertEqual(artifact.expire_at, now)
 
-    @context.disable_permission_checks()
     def test_create_artifact_create_files(self) -> None:
         """create_artifact() returns an Artifact and create files."""
         paths = ["src/a", "b"]
@@ -233,7 +256,6 @@ class TestCaseTests(TestCase):
                 local_path.read_bytes(), files_contents[file_in_artifact.path]
             )
 
-    @context.disable_permission_checks()
     def test_create_artifact_do_not_create_files(self) -> None:
         """create_artifact() returns an Artifact and does not create files."""
         artifact, _ = self.playground.create_artifact(
@@ -251,6 +273,116 @@ class TestCaseTests(TestCase):
             self.playground.create_artifact(
                 create_files=False, skip_add_files_in_store=True
             )
+
+    def test_format_api_response(self) -> None:
+        for response, expected in (
+            (
+                HttpResponse("ok"),
+                "200 OK (text/html; charset=utf-8): content='ok'",
+            ),
+            (
+                HttpResponse(
+                    "ok", status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                "500 Internal Server Error (text/html; charset=utf-8):"
+                " content='ok'",
+            ),
+            (
+                JsonResponse({"success": True}),
+                "200 OK (application/json): content={'success': True}",
+            ),
+            (
+                ProblemResponse(title="pr title"),
+                "400 Bad Request (application/problem+json): title='pr title'",
+            ),
+            (
+                ProblemResponse(title="", detail="pr detail"),
+                "400 Bad Request (application/problem+json):"
+                " title='' detail='pr detail'",
+            ),
+            (
+                ProblemResponse(
+                    title="", validation_errors={"arbitrary": "data"}
+                ),
+                "400 Bad Request (application/problem+json): title=''"
+                " validation_errors={'arbitrary': 'data'}",
+            ),
+            (
+                HttpResponse("x" * 300),
+                f"200 OK (text/html; charset=utf-8): content='{'x' * 200}…'",
+            ),
+            (
+                JsonResponse({"long": "x" * 200}),
+                f"200 OK (application/json): content={{'long': '{'x' * 190}…",
+            ),
+            (
+                HttpResponseBase(),
+                "200 OK (text/html; charset=utf-8): content not available",
+            ),
+        ):
+            with self.subTest(response=response):
+                self.assertEqual(self.format_api_response(response), expected)
+
+    def test_format_api_response_problemresponse_with_exception(self) -> None:
+        response = ProblemResponse(title="Error")
+        setattr(
+            response, "_original_exception", Exception("original exception")
+        )
+        self.assertEqual(
+            self.format_api_response(response),
+            "400 Bad Request (application/problem+json):"
+            " title='Error' original exception follows:\n"
+            "Exception: original exception\n",
+        )
+
+    def test_assertAPIResponseOk_ok(self) -> None:
+        data = {"success": True}
+        response = JsonResponse(data)
+        self.assertEqual(self.assertAPIResponseOk(response), data)
+
+    def test_assertAPIResponseOk_not_json(self) -> None:
+        response = HttpResponse("ok")
+        with (
+            self.assertRaisesRegex(
+                AssertionError,
+                r"content type 'text/html; charset=utf-8'"
+                " is not a JSON response",
+            ),
+            self.assertExceptionHasFormattedAPIResponse(),
+        ):
+            self.assertAPIResponseOk(response)
+
+    def test_assertAPIResponseOk_invalid_json(self) -> None:
+        response = HttpResponse("{", content_type="application/json")
+        with (
+            self.assertRaisesRegex(
+                json.JSONDecodeError,
+                r"Expecting property name enclosed in double quotes",
+            ),
+            self.assertExceptionHasFormattedAPIResponse(),
+        ):
+            self.assertAPIResponseOk(response)
+
+    def test_assertAPIResponseOk_bad_status(self) -> None:
+        response = HttpResponse(
+            "fail", status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        with (
+            self.assertRaisesRegex(AssertionError, r"500 != 200"),
+            self.assertExceptionHasFormattedAPIResponse(),
+        ):
+            self.assertAPIResponseOk(response)
+
+    def test_assertAPIResponseOk_no_content_type(self) -> None:
+        response = HttpResponse("ok")
+        del response.headers["Content-Type"]
+        with (
+            self.assertRaisesRegex(
+                AssertionError, r"response has no content type"
+            ),
+            self.assertExceptionHasFormattedAPIResponse(),
+        ):
+            self.assertAPIResponseOk(response)
 
     def test_assertResponseProblem_valid(self) -> None:
         """assertResponseProblem() does not raise any exception."""
@@ -446,11 +578,8 @@ class TestCaseTests(TestCase):
         """Test _test_check_predicate."""
         context.set_scope(self.playground.get_default_scope())
         context.set_user(self.playground.get_default_user())
-        with context.disable_permission_checks():
-            public = self.playground.get_default_workspace()
-            private = self.playground.create_workspace(
-                name="private", public=False
-            )
+        public = self.playground.get_default_workspace()
+        private = self.playground.create_workspace(name="private", public=False)
         self.assertPermission(
             "can_display",
             users=self.playground.get_default_user(),
@@ -462,11 +591,8 @@ class TestCaseTests(TestCase):
         """Test passing collections to assertPermission."""
         context.set_scope(self.playground.get_default_scope())
         context.set_user(self.playground.get_default_user())
-        with context.disable_permission_checks():
-            public = self.playground.get_default_workspace()
-            private = self.playground.create_workspace(
-                name="private", public=False
-            )
+        public = self.playground.get_default_workspace()
+        private = self.playground.create_workspace(name="private", public=False)
         self.assertPermission(
             "can_display",
             users=[self.playground.get_default_user()],
@@ -478,11 +604,8 @@ class TestCaseTests(TestCase):
         """Test assertPermission failure reporting."""
         context.set_scope(self.playground.get_default_scope())
         context.set_user(self.playground.get_default_user())
-        with context.disable_permission_checks():
-            public = self.playground.get_default_workspace()
-            private = self.playground.create_workspace(
-                name="private", public=False
-            )
+        public = self.playground.get_default_workspace()
+        private = self.playground.create_workspace(name="private", public=False)
 
         with self.assertRaises(self.failureException) as exc:
             self.assertPermission(
@@ -498,7 +621,12 @@ class TestCaseTests(TestCase):
             " with empty context\n"
             "* can_display is False for playground on debusine/private"
             " with scope set in context\n"
-            "* can_display is True for playground on debusine/System\n"
+            "* can_display is True for playground on debusine/System"
+            " with empty context\n"
+            "* can_display is True for playground on debusine/System"
+            " with scope set in context\n"
+            "* can_display is True for playground on debusine/System"
+            " with scope and workspace set in context\n"
             "* can_display for playground selects debusine/System"
             " instead of debusine/private\n",
         )
@@ -621,6 +749,70 @@ class TestCaseTests(TestCase):
         ):
             self.assertNoPermissionWhenRole(scope.can_display, user, "owner")
 
+    def test_custom_template(self) -> None:
+        """Test installing a custom template."""
+        with self.custom_template("web/foo.html") as path:
+            self.assertEqual(
+                path,
+                Path(settings.DEBUSINE_TEMPLATE_DIRECTORY) / "web" / "foo.html",
+            )
+            path.write_text("TEST")
+
+        self.assertFalse(path.exists())
+
+    def test_custom_template_not_written(self) -> None:
+        """Test installing a custom template."""
+        with self.custom_template("web/foo.html") as path:
+            pass
+        self.assertFalse(path.exists())
+
+    def test_clear_template_cache(self) -> None:
+        """Test clearing the template cache."""
+        engine = django.template.engines["django"]
+
+        with (
+            self.custom_template("main.html") as main,
+            self.custom_template("included.html") as included,
+        ):
+            main.write_text("A{% include 'included.html' %}")
+            included.write_text("B")
+            template = engine.get_template("main.html")
+            self.assertEqual(template.render({}), "AB")
+
+            # Changing the contents of an included template doesn't invalidate
+            # the template cache
+            included.write_text("C")
+            template = engine.get_template("main.html")
+            self.assertEqual(template.render({}), "AB")
+
+            # Invalidating it manually works
+            self.clear_template_cache()
+            template = engine.get_template("main.html")
+            self.assertEqual(template.render({}), "AC")
+
+    def test_clear_template_cache_skip_unknown(self) -> None:
+        """Test skipping unknown engines and loaders."""
+        from django.template.backends.django import DjangoTemplates
+        from django.template.loaders.base import Loader
+
+        mock_django_loader = mock.Mock(spec=Loader)
+        mock_other_loader = mock.Mock()
+        mock_loaders = [mock_django_loader, mock_other_loader]
+
+        mock_django_engine = mock.Mock(spec=DjangoTemplates)
+        mock_django_engine.engine = mock.Mock()
+        mock_django_engine.engine.template_loaders = mock_loaders
+        mock_other_engine = mock.Mock()
+        mock_engines = [mock_django_engine, mock_other_engine]
+
+        with mock.patch(
+            "django.template.engines.all", return_value=mock_engines
+        ):
+            self.clear_template_cache()
+
+        mock_django_loader.reset.assert_called()
+        mock_other_loader.reset.assert_not_called()
+
 
 # TODO: coverage is confused by something here, possibly
 # https://github.com/python/cpython/issues/106749
@@ -685,3 +877,197 @@ class TestChannelsHelpersMixinTests(
             "^Expected nothing. Received: '{'type': 'work_request.assigned'}'$",
         ):
             await self.assert_channel_nothing_received(channel)
+
+
+class AssertRolePredicateTests(TestCase):
+    """Tests for assertRolePredicate."""
+
+    def assertFails(
+        self, pattern: str, resource_cls: type[Any] = Workspace
+    ) -> None:
+        """Call the test and expect it to fail with matching error."""
+        with self.assertRaisesRegex(self.failureException, re.escape(pattern)):
+            self.assertRolePredicate(
+                resource_cls(),
+                "can_configure",
+                Workspace.Roles.OWNER,
+                workers=Allow.NEVER,
+            )
+
+    def test_no_perm_check(self) -> None:
+        self.assertFails(
+            "object has no @permission_check can_configure", resource_cls=object
+        )
+
+    def test_perm_check_undecorated(self) -> None:
+        def f(_: PermissionUser) -> Never:
+            raise NotImplementedError()
+
+        with mock.patch("debusine.db.models.Workspace.can_configure", f):
+            self.assertFails(
+                "Workspace.can_configure is not marked as @permission_check"
+            )
+
+    def test_perm_check_wrong_result(self) -> None:
+        def _pred(result: bool) -> Callable[[Workspace, PermissionUser], bool]:
+            @permissions.permission_check("fail", workers=Allow.NEVER)
+            def _predicate(self: Workspace, user: PermissionUser) -> bool:
+                self.has_role(user, Workspace.Roles.OWNER)
+                return result
+
+            return _predicate
+
+        with mock.patch(
+            "debusine.db.models.Workspace.can_configure", _pred(True)
+        ):
+            self.assertFails("True is not false")
+        with mock.patch(
+            "debusine.db.models.Workspace.can_configure", _pred(False)
+        ):
+            self.assertFails("False is not true")
+
+    def test_perm_check_wrong_role(self) -> None:
+        def _pred(
+            *roles: Workspace.Roles,
+        ) -> Callable[[Workspace, PermissionUser], bool]:
+            results = list(roles)
+
+            @permissions.permission_check("fail", workers=Allow.NEVER)
+            def _predicate(self: Workspace, user: PermissionUser) -> bool:
+                return self.has_role(user, results.pop(0))
+
+            return _predicate
+
+        with mock.patch(
+            "debusine.db.models.Workspace.can_configure",
+            _pred(Workspace.Roles.CONTRIBUTOR),
+        ):
+            self.assertFails("expected call not found")
+
+        with mock.patch(
+            "debusine.db.models.Workspace.can_configure",
+            _pred(Workspace.Roles.OWNER, Workspace.Roles.CONTRIBUTOR),
+        ):
+            self.assertFails("expected call not found")
+
+    def test_no_manager_filter(self) -> None:
+        with mock.patch("debusine.db.models.Workspace.objects", object()):
+            self.assertFails(
+                "Workspace.objects has no @permission_filter can_configure"
+            )
+
+    def test_manager_filter_undecorated(self) -> None:
+        def f(_: PermissionUser) -> Never:
+            raise NotImplementedError()
+
+        with mock.patch.object(Workspace.objects, "can_configure", f):
+            self.assertFails(
+                "Workspace.objects.can_configure"
+                " is not marked as @permission_filter"
+            )
+
+    def test_manager_filter_wrong_result(self) -> None:
+        @permissions.permission_filter(workers=Allow.NEVER)
+        def _predicate(
+            self: WorkspaceQuerySet[Any], user: PermissionUser
+        ) -> WorkspaceQuerySet[Any]:
+            self.with_role(user, Workspace.Roles.OWNER)
+            return None  # type: ignore[return-value]
+
+        with mock.patch(
+            "debusine.db.models.workspaces.WorkspaceQuerySet.can_configure",
+            _predicate,
+        ):
+            self.assertFails("None is not <object")
+
+    def test_manager_filter_wrong_role(self) -> None:
+        @permissions.permission_filter(workers=Allow.NEVER)
+        def _predicate(
+            self: WorkspaceQuerySet[Any], user: PermissionUser
+        ) -> WorkspaceQuerySet[Any]:
+            return self.with_role(user, Workspace.Roles.CONTRIBUTOR)
+
+        with mock.patch(
+            "debusine.db.models.workspaces.WorkspaceQuerySet.can_configure",
+            _predicate,
+        ):
+            self.assertFails("expected call not found")
+
+    def test_no_queryset_filter(self) -> None:
+        class TestQuerySet(QuerySet[Workspace]):
+            def with_role(
+                self,
+                user: PermissionUser,  # noqa: U100
+                role: Workspace.Roles,  # noqa: U100
+            ) -> Self:
+                raise NotImplementedError()
+
+        with mock.patch(
+            "debusine.db.models.workspaces.WorkspaceManager.all",
+            return_value=TestQuerySet(Workspace),
+        ):
+            self.assertFails(
+                "QuerySet[Workspace] has no @permission_filter can_configure"
+            )
+
+    def test_queryset_filter_undecorated(self) -> None:
+        class TestQuerySet(QuerySet[Workspace]):
+            def with_role(
+                self, user: PermissionUser, role: Workspace.Roles  # noqa: U100
+            ) -> Self:
+                raise NotImplementedError()
+
+            def can_configure(self, _: PermissionUser) -> Self:
+                raise NotImplementedError()
+
+        with mock.patch(
+            "debusine.db.models.workspaces.WorkspaceManager.all",
+            return_value=TestQuerySet(Workspace),
+        ):
+            self.assertFails(
+                "QuerySet[Workspace].can_configure"
+                " is not marked as @permission_filter"
+            )
+
+    def test_queryset_filter_wrong_result(self) -> None:
+        class TestQuerySet(QuerySet[Workspace]):
+            def with_role(
+                self, user: PermissionUser, role: Workspace.Roles  # noqa: U100
+            ) -> Self:
+                raise NotImplementedError()
+
+            @permissions.permission_filter(workers=Allow.NEVER)
+            def can_configure(self, user: PermissionUser) -> Self:
+                self.with_role(user, Workspace.Roles.OWNER)
+                return None  # type: ignore[return-value]
+
+        with mock.patch(
+            "debusine.db.models.workspaces.WorkspaceManager.all",
+            return_value=TestQuerySet(Workspace),
+        ):
+            self.assertFails("None is not <object")
+
+    def test_queryset_filter_wrong_role(self) -> None:
+        class TestQuerySet(QuerySet[Workspace]):
+            def with_role(
+                self, user: PermissionUser, role: Workspace.Roles  # noqa: U100
+            ) -> Self:
+                raise NotImplementedError()
+
+            @permissions.permission_filter(workers=Allow.NEVER)
+            def can_configure(self, user: PermissionUser) -> Self:
+                return self.with_role(user, Workspace.Roles.CONTRIBUTOR)
+
+        with mock.patch(
+            "debusine.db.models.workspaces.WorkspaceManager.all",
+            return_value=TestQuerySet(Workspace),
+        ):
+            self.assertFails("expected call not found")
+
+    def test_predicate(self) -> None:
+        self.assertRolePredicate(
+            Workspace(),
+            "can_configure",
+            Workspace.Roles.OWNER,
+            workers=Allow.NEVER,
+        )

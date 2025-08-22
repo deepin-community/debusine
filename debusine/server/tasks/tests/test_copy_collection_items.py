@@ -18,9 +18,9 @@ from debusine.artifacts.models import (
     ArtifactCategory,
     BareDataCategory,
     CollectionCategory,
+    TaskTypes,
 )
 from debusine.client.models import LookupChildType
-from debusine.db.context import context
 from debusine.db.models import (
     Collection,
     CollectionItem,
@@ -37,7 +37,7 @@ from debusine.server.tasks.models import (
     CopyCollectionItemsCopies,
     CopyCollectionItemsData,
 )
-from debusine.tasks.models import LookupMultiple, TaskTypes, WorkerType
+from debusine.tasks.models import LookupMultiple, WorkerType
 from debusine.test.django import TestCase
 
 
@@ -53,7 +53,6 @@ class CopyCollectionItemsTests(TestCase):
     target_build_logs: ClassVar[Collection]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()
@@ -79,7 +78,6 @@ class CopyCollectionItemsTests(TestCase):
             workspace=cls.target_workspace,
         )
 
-    @context.disable_permission_checks()
     def create_build_log_placeholder(self) -> CollectionItem:
         """Create a bare data collection item with a build log placeholder."""
         return self.playground.create_bare_data_item(
@@ -96,7 +94,6 @@ class CopyCollectionItemsTests(TestCase):
             },
         )
 
-    @context.disable_permission_checks()
     def create_build_log(
         self,
         work_request: WorkRequest | None = None,
@@ -246,11 +243,15 @@ class CopyCollectionItemsTests(TestCase):
             ).exists()
         )
 
-    @context.disable_permission_checks()
     def test_copy_item_artifact(self) -> None:
         """Copy an artifact item."""
         work_request = self.playground.create_work_request(
             workspace=self.source_workspace
+        )
+        self.playground.create_group_role(
+            self.target_workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[work_request.created_by],
         )
         artifact_item = self.create_build_log(work_request=work_request)
         artifact = artifact_item.artifact
@@ -264,6 +265,7 @@ class CopyCollectionItemsTests(TestCase):
             build_log_file
         ).get()
 
+        work_request.set_current()
         CopyCollectionItems.copy_item(
             source_items[0], self.target_build_logs, user=self.user
         )
@@ -327,11 +329,15 @@ class CopyCollectionItemsTests(TestCase):
                 source_items[0], self.target_build_logs, user=self.user
             )
 
-    @context.disable_permission_checks()
     def test_copy_item_artifact_with_unembargo(self) -> None:
         """Copying an artifact from private to public can unembargo it."""
         work_request = self.playground.create_work_request(
-            workspace=self.source_workspace
+            workspace=self.source_workspace, assign_contributor_role=True
+        )
+        self.playground.create_group_role(
+            self.target_workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[work_request.created_by],
         )
         artifact_item = self.create_build_log(work_request=work_request)
         artifact = artifact_item.artifact
@@ -343,6 +349,7 @@ class CopyCollectionItemsTests(TestCase):
         self.source_workspace.public = False
         self.source_workspace.save()
 
+        work_request.set_current()
         CopyCollectionItems.copy_item(
             source_items[0],
             self.target_build_logs,
@@ -367,9 +374,16 @@ class CopyCollectionItemsTests(TestCase):
         assert copied_artifact is not None
         self.assertEqual(copied_artifact.workspace, self.target_workspace)
 
-    @context.disable_permission_checks()
     def test_copy_item_artifact_variables(self) -> None:
         """Pass additional variables while copying an artifact."""
+        work_request = self.playground.create_work_request(
+            workspace=self.source_workspace
+        )
+        self.playground.create_group_role(
+            self.target_workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[work_request.created_by],
+        )
         self.create_build_log(extra_data={"nested": {"foo": "bar"}})
         source_items = self.lookup_source_items(
             {"child_type": LookupChildType.ARTIFACT}
@@ -381,6 +395,7 @@ class CopyCollectionItemsTests(TestCase):
             workspace=self.target_workspace,
         )
 
+        work_request.set_current()
         CopyCollectionItems.copy_item(
             source_items[0],
             target_collection,
@@ -418,15 +433,23 @@ class CopyCollectionItemsTests(TestCase):
                 variables={"$key": "nonexistent"},
             )
 
-    @context.disable_permission_checks()
     def test_copy_item_artifact_incomplete_file(self) -> None:
         """We cannot copy artifacts with incomplete files."""
+        work_request = self.playground.create_work_request(
+            workspace=self.source_workspace
+        )
+        self.playground.create_group_role(
+            self.target_workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[work_request.created_by],
+        )
         artifact_item = self.create_build_log(skip_add_files_in_store=True)
         source_items = self.lookup_source_items(
             {"child_type": LookupChildType.ARTIFACT}
         )
         self.assertEqual(len(source_items), 1)
 
+        work_request.set_current()
         with self.assertRaisesRegex(
             CannotCopy,
             f"Cannot copy incomplete 'hello_1.0-1_amd64.buildlog' from "
@@ -436,9 +459,16 @@ class CopyCollectionItemsTests(TestCase):
                 source_items[0], self.target_build_logs, user=self.user
             )
 
-    @context.disable_permission_checks()
     def test_copy_item_artifact_not_in_any_file_store(self) -> None:
         """We cannot copy artifacts that are not in any file store."""
+        work_request = self.playground.create_work_request(
+            workspace=self.source_workspace
+        )
+        self.playground.create_group_role(
+            self.target_workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[work_request.created_by],
+        )
         artifact_item = self.create_build_log()
         source_items = self.lookup_source_items(
             {"child_type": LookupChildType.ARTIFACT}
@@ -446,6 +476,7 @@ class CopyCollectionItemsTests(TestCase):
         self.assertEqual(len(source_items), 1)
         self.source_scope.file_stores.get().files.clear()
 
+        work_request.set_current()
         with self.assertRaisesRegex(
             CannotCopy,
             f"Cannot copy 'hello_1.0-1_amd64.buildlog' from artifact ID "
@@ -455,7 +486,6 @@ class CopyCollectionItemsTests(TestCase):
                 source_items[0], self.target_build_logs, user=self.user
             )
 
-    @context.disable_permission_checks()
     def test_copy_item_artifact_different_file_store(self) -> None:
         """
         Copy artifact file contents from a different file store.
@@ -472,6 +502,11 @@ class CopyCollectionItemsTests(TestCase):
         work_request = self.playground.create_work_request(
             workspace=self.source_workspace
         )
+        self.playground.create_group_role(
+            self.target_workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[work_request.created_by],
+        )
         build_log_contents = b"a build log\n"
         artifact_item = self.create_build_log(
             work_request=work_request, build_log_contents=build_log_contents
@@ -487,6 +522,7 @@ class CopyCollectionItemsTests(TestCase):
             build_log_file
         ).get()
 
+        work_request.set_current()
         CopyCollectionItems.copy_item(
             source_items[0], self.target_build_logs, user=self.user
         )
@@ -523,7 +559,6 @@ class CopyCollectionItemsTests(TestCase):
         ):
             self.assertEqual(target_file.read(), source_file.read())
 
-    @context.disable_permission_checks()
     def test_execute(self) -> None:
         """The task copies all the given items."""
         # Partially simulate a package build in a workflow, and add the
@@ -601,6 +636,11 @@ class CopyCollectionItemsTests(TestCase):
                     ),
                 ]
             ),
+        )
+        self.playground.create_group_role(
+            self.target_workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[copy_collection_items.created_by],
         )
         worker = self.playground.create_worker(worker_type=WorkerType.CELERY)
         copy_collection_items.assign_worker(worker)

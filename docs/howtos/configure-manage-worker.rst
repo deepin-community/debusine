@@ -5,7 +5,7 @@ Configure and manage a worker
 =============================
 
 After having set up a new worker, you might want to configure its static metadata
-with :ref:`debusine-admin edit_worker_metadata <debusine-admin-edit-worker-metadata>`
+with :ref:`debusine-admin worker edit_metadata <debusine-admin-worker-edit-metadata>`
 to alter its behaviour in different ways, as presented in this page.
 
 .. note::
@@ -14,7 +14,7 @@ to alter its behaviour in different ways, as presented in this page.
     use a non-interactive method that overwrites all worker's metadata.
     In practice you will often combine different metadata: you can do that
     either interactively in the text editor that is spawned by
-    ``debusine-admin edit_worker_metadata`` or you need to provide a YAML file
+    ``debusine-admin worker edit_metadata`` or you need to provide a YAML file
     combining the different keys if you use the non-interactive approach
     shown in the examples.
 
@@ -34,7 +34,7 @@ by providing a list of task names in the ``tasks_allowlist`` metadata:
   - sbuild
   - lintian
   END
-  $ sudo -u debusine-server debusine-admin edit_worker_metadata \
+  $ sudo -u debusine-server debusine-admin worker edit_metadata \
     debusine-internal --set /tmp/metadata
 
 .. note::
@@ -55,7 +55,7 @@ forbidden tasks in the ``tasks_denylist`` metadata.
   - sbuild
   - simplesystemimagebuild
   END
-  $ sudo -u debusine-server debusine-admin edit_worker_metadata \
+  $ sudo -u debusine-server debusine-admin worker edit_metadata \
     debusine-internal --set /tmp/metadata
 
 .. _howto-configure-worker-architectures:
@@ -76,7 +76,7 @@ document the list of compatible architectures in its
   - amd64
   - i386
   END
-  $ sudo -u debusine-server debusine-admin edit_worker_metadata \
+  $ sudo -u debusine-server debusine-admin worker edit_metadata \
     debusine-internal --set /tmp/metadata
 
 Most typical installations will use the following lists:

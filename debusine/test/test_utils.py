@@ -17,6 +17,7 @@ from collections.abc import Callable, Generator, Iterator
 from datetime import datetime, timedelta, timezone
 from itertools import count
 from typing import Any
+from urllib.parse import quote, urljoin
 
 try:
     import pydantic.v1 as pydantic
@@ -29,6 +30,7 @@ from debusine.client.models import (
     FileResponse,
     FilesResponseType,
     PaginatedResponse,
+    RemoteArtifact,
     StrictBaseModel,
     WorkRequestResponse,
     WorkflowTemplateResponse,
@@ -93,28 +95,63 @@ def create_file_response(**kwargs: Any) -> FileResponse:
     return FileResponse(**defaults)
 
 
-def create_artifact_response(**kwargs: Any) -> ArtifactResponse:
+def create_artifact_response(
+    base_url: str = "https://example.com/",
+    scope: str = "debusine",
+    **kwargs: Any,
+) -> ArtifactResponse:
     """Return an ArtifactResponse. Use defaults for certain fields."""
     kwargs = kwargs.copy()
     defaults: dict[str, Any] = {
         "category": "Testing",
         "data": {},
         "files_to_upload": [],
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
         "workspace": "Testing",
         "download_tar_gz_url": "https://example.com/some-path",
         "files": FilesResponseType(kwargs.pop("files", {})),
     }
     defaults.update(kwargs)
+    defaults.setdefault(
+        "url",
+        urljoin(
+            base_url,
+            f"{quote(scope)}/{quote(defaults['workspace'])}/"
+            f"artifact/{defaults['id']}/",
+        ),
+    )
 
     return ArtifactResponse(**defaults)
 
 
-def create_work_request_response(**kwargs: Any) -> WorkRequestResponse:
+def create_remote_artifact(
+    base_url: str = "https://example.com/",
+    scope: str = "debusine",
+    **kwargs: Any,
+) -> RemoteArtifact:
+    """Return a RemoteArtifact. Use defaults for certain fields."""
+    defaults: dict[str, Any] = kwargs.copy()
+    defaults.setdefault(
+        "url",
+        urljoin(
+            base_url,
+            f"{quote(scope)}/{quote(defaults['workspace'])}/"
+            f"artifact/{defaults['id']}/",
+        ),
+    )
+
+    return RemoteArtifact(**defaults)
+
+
+def create_work_request_response(
+    base_url: str = "https://example.com/",
+    scope: str = "debusine",
+    **kwargs: Any,
+) -> WorkRequestResponse:
     """Return a WorkRequestResponse. Use defaults for certain fields."""
     defaults: dict[str, Any] = {
         "id": 11,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
         "status": "pending",
         "result": "",
         "task_type": "Worker",
@@ -126,22 +163,41 @@ def create_work_request_response(**kwargs: Any) -> WorkRequestResponse:
         "workspace": "Testing",
     }
     defaults.update(kwargs)
+    defaults.setdefault(
+        "url",
+        urljoin(
+            base_url,
+            f"{quote(scope)}/{quote(defaults['workspace'])}/"
+            f"work-request/{defaults['id']}/",
+        ),
+    )
 
     return WorkRequestResponse(**defaults)
 
 
 def create_workflow_template_response(
+    base_url: str = "https://example.com/",
+    scope: str = "debusine",
     **kwargs: Any,
 ) -> WorkflowTemplateResponse:
     """Return a WorkflowTemplateResponse. Use defaults for certain fields."""
     defaults: dict[str, Any] = {
         "id": 11,
+        "name": "noop",
         "task_name": "noop",
         "task_data": {},
         "priority": 0,
         "workspace": "Testing",
     }
     defaults.update(kwargs)
+    defaults.setdefault(
+        "url",
+        urljoin(
+            base_url,
+            f"{quote(scope)}/{quote(defaults['workspace'])}/"
+            f"workflow-template/{quote(defaults['name'])}/",
+        ),
+    )
 
     return WorkflowTemplateResponse(**defaults)
 
@@ -172,6 +228,7 @@ def create_system_tarball_data(
         filename="system.tar.xz",
         vendor="debian",
         codename=codename,
+        components=["main"],
         mirror=pydantic.parse_obj_as(
             pydantic.AnyUrl, "https://deb.debian.org/debian"
         ),

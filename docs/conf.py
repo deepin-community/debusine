@@ -18,6 +18,7 @@ import django
 from django.conf import settings
 
 sys.path.insert(0, os.path.abspath('..'))
+sys.path.insert(0, os.path.abspath('_ext'))
 
 from docs.dynamic_data import DynamicDataDirective
 
@@ -49,7 +50,9 @@ release = ''
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'debusine_sphinx',
     'sphinx.ext.autodoc',
+    'sphinx.ext.extlinks',
     'sphinx.ext.intersphinx',
     'sphinx.ext.todo',
     'sphinx.ext.coverage',
@@ -76,6 +79,9 @@ master_doc = 'index'
 # This is also used if you do content translation via gettext catalogs.
 # Usually you set "language" from the command line for these cases.
 language = 'en'
+
+# The name of the default domain.
+primary_domain = 'debusine'
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
@@ -254,6 +260,18 @@ linkcheck_request_headers = {
     "https://repost.aws/": {"User-Agent": "Mozilla/5.0"},
     "https://docs.hetzner.com/": {"User-Agent": "Mozilla/5.0"},
     "https://www.hetzner.com/": {"User-Agent": "Mozilla/5.0"},
+}
+
+# -- Options for extlinks extension ------------------------------------------
+extlinks = {
+    "issue": (
+        "https://salsa.debian.org/freexian-team/debusine/-/issues/%s",
+        "#%s",
+    ),
+    "mr": (
+        "https://salsa.debian.org/freexian-team/debusine/-/merge_requests/%s",
+        "!%s",
+    ),
 }
 
 

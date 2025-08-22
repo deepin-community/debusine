@@ -60,6 +60,10 @@ from debusine.tasks.models import LookupMultiple, WorkerType
 from debusine.tasks.server import ArtifactInfo
 from debusine.tasks.tests.helper_mixin import FakeTaskDatabase
 from debusine.test import TestCase
+from debusine.test.test_utils import (
+    create_artifact_response,
+    create_remote_artifact,
+)
 from debusine.utils import calculate_hash, is_command_available
 
 # Bare minimum that sbsigntool will recognize as a valid PE/COFF image.
@@ -144,7 +148,7 @@ class SignTestMixin:
         self, artifact: LocalArtifact[Any], artifact_id: int
     ) -> ArtifactResponse:
         """Make a fake artifact response."""
-        return ArtifactResponse(
+        return create_artifact_response(
             id=artifact_id,
             workspace="System",
             category=artifact.category,
@@ -294,8 +298,8 @@ class SignTests(SignTestMixin, TestCase, DjangoTestCase):
             ),
         )
 
-    def test_get_source_artifacts_ids(self) -> None:
-        """Test get_source_artifacts_ids."""
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
         task = Sign(
             task_data={
                 "purpose": KeyPurpose.UEFI,
@@ -303,10 +307,10 @@ class SignTests(SignTestMixin, TestCase, DjangoTestCase):
                 "key": "ABC123",
             }
         )
-        self.assertEqual(task.get_source_artifacts_ids(), [])
+        self.assertEqual(task.get_input_artifacts_ids(), [])
 
         task.dynamic_data = SignDynamicData(unsigned_ids=[2])
-        self.assertEqual(task.get_source_artifacts_ids(), [2])
+        self.assertEqual(task.get_input_artifacts_ids(), [2])
 
     def test_fetch_input_missing_trusted_cert(self) -> None:
         """fetch_input requires trusted_certs to match configuration."""
@@ -621,7 +625,9 @@ class SignTests(SignTestMixin, TestCase, DjangoTestCase):
         task._debug_log_files_directory = debug_log_files_directory
         task.prepare_to_run(download_directory, execute_directory)
 
-        with mock.patch.object(key, "sign", side_effect=Exception("Boom")):
+        with mock.patch(
+            "debusine.signing.tasks.sign.sign", side_effect=Exception("Boom")
+        ):
             self.assertFalse(task.run(execute_directory))
 
         self.assertEqual(
@@ -663,7 +669,7 @@ class SignTests(SignTestMixin, TestCase, DjangoTestCase):
         task._debug_log_files_directory = debug_log_files_directory
         task.prepare_to_run(download_directory, execute_directory)
 
-        with mock.patch.object(key, "sign") as mock_sign:
+        with mock.patch("debusine.signing.tasks.sign.sign") as mock_sign:
             self.assertTrue(task.run(execute_directory))
 
         self.assertEqual(
@@ -671,6 +677,7 @@ class SignTests(SignTestMixin, TestCase, DjangoTestCase):
             {2: [SigningResult(file="image", output_file="image.sig")]},
         )
         mock_sign.assert_called_once_with(
+            [key],
             execute_directory / "input" / "image",
             execute_directory / "output" / "image.sig",
             SigningMode.DETACHED,
@@ -718,7 +725,7 @@ class SignTests(SignTestMixin, TestCase, DjangoTestCase):
         task._debug_log_files_directory = debug_log_files_directory
         task.prepare_to_run(download_directory, execute_directory)
 
-        with mock.patch.object(key, "sign"):
+        with mock.patch("debusine.signing.tasks.sign.sign"):
             self.assertTrue(task.run(execute_directory))
 
         self.assertEqual(
@@ -762,7 +769,7 @@ class SignTests(SignTestMixin, TestCase, DjangoTestCase):
         task._debug_log_files_directory = debug_log_files_directory
         task.prepare_to_run(download_directory, execute_directory)
 
-        with mock.patch.object(key, "sign"):
+        with mock.patch("debusine.signing.tasks.sign.sign"):
             self.assertFalse(task.run(execute_directory))
 
         self.assertEqual(
@@ -834,7 +841,6 @@ class SignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
         def upload_artifact(
             local_artifact: LocalArtifact[Any], **kwargs: Any
         ) -> RemoteArtifact:
-            nonlocal uploaded_paths
             for path in local_artifact.files.values():
                 uploaded_paths.append(path)
                 shutil.copy(path, output_path)
@@ -847,7 +853,7 @@ class SignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
                     artifact_id = work_request_debug_logs_id
                 case _ as unreachable:
                     raise AssertionError(f"unexpected upload: {unreachable}")
-            return RemoteArtifact(id=artifact_id, workspace="System")
+            return create_remote_artifact(id=artifact_id, workspace="System")
 
         task = Sign(
             task_data={
@@ -889,6 +895,7 @@ class SignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
                     SigningOutputArtifact(
                         category=SigningOutputArtifact._category,
                         files={"image.sig": uploaded_paths[0]},
+                        content_types={"image.sig": "application/octet-stream"},
                         data=DebusineSigningOutput(
                             purpose=KeyPurpose.UEFI,
                             fingerprint=key.fingerprint,
@@ -906,6 +913,9 @@ class SignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
                     SigningOutputArtifact(
                         category=SigningOutputArtifact._category,
                         files={"image2.sig": uploaded_paths[1]},
+                        content_types={
+                            "image2.sig": "application/octet-stream"
+                        },
                         data=DebusineSigningOutput(
                             purpose=KeyPurpose.UEFI,
                             fingerprint=key.fingerprint,
@@ -928,6 +938,9 @@ class SignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
                                 Path(debug_log_files_directory.name)
                                 / "cmd-output.log"
                             )
+                        },
+                        content_types={
+                            "cmd-output.log": "text/plain; charset=utf-8"
                         },
                     ),
                     workspace="System",
@@ -1000,11 +1013,12 @@ class SignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
         def upload_artifact(
             local_artifact: LocalArtifact[Any], **kwargs: Any
         ) -> RemoteArtifact:
-            nonlocal uploaded_paths
             for path in local_artifact.files.values():
                 uploaded_paths.append(path)
                 shutil.copy(path, output_path)
-            return RemoteArtifact(id=signing_output_id, workspace="System")
+            return create_remote_artifact(
+                id=signing_output_id, workspace="System"
+            )
 
         task = Sign(
             task_data={
@@ -1055,6 +1069,9 @@ class SignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
                     SigningOutputArtifact(
                         category=SigningOutputArtifact._category,
                         files={"foo.changes.sig": uploaded_paths[0]},
+                        content_types={
+                            "foo.changes.sig": "application/octet-stream"
+                        },
                         data=DebusineSigningOutput(
                             purpose=KeyPurpose.OPENPGP,
                             fingerprint=key.fingerprint,
@@ -1078,6 +1095,9 @@ class SignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
                                 Path(debug_log_files_directory.name)
                                 / "cmd-output.log"
                             )
+                        },
+                        content_types={
+                            "cmd-output.log": "text/plain; charset=utf-8"
                         },
                     ),
                     workspace="System",

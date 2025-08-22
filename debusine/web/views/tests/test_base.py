@@ -289,3 +289,41 @@ class TestBaseUI(ViewTestMixin, TestCase):
             tree.xpath("//footer/p")[-1],
             "Documentation • Bugs • Code • Contributing",
         )
+
+    def test_footer_custom_replace(self) -> None:
+        """Footer replaced by templates installed by site admins."""
+        context.set_scope(self.scenario.scope)
+        context.set_user(AnonymousUser())
+        tree = self.assertResponseHTML(self.render_base())
+        footer = self.assertHasElement(tree, "//footer")
+        self.assertTextContentEqual(
+            footer.p[0], "Status: Worker pools • Workers • Task status"
+        )
+
+        with self.custom_template("web/footer.html") as template:
+            template.write_text("CUSTOM")
+            tree = self.assertResponseHTML(self.render_base())
+            footer = self.assertHasElement(tree, "//footer")
+            self.assertTextContentEqual(footer, "CUSTOM")
+
+    def test_footer_custom_extend(self) -> None:
+        """Footer extended by templates installed by site admins."""
+        context.set_scope(self.scenario.scope)
+        context.set_user(AnonymousUser())
+        tree = self.assertResponseHTML(self.render_base())
+        footer = self.assertHasElement(tree, "//footer")
+        self.assertTextContentEqual(
+            footer.p[0], "Status: Worker pools • Workers • Task status"
+        )
+
+        with self.custom_template("web/footer.html") as template:
+            template.write_text(
+                "{% extends 'web/footer.html' %}"
+                "{% block status %}{{block.super}} • Testing{% endblock %}"
+            )
+            tree = self.assertResponseHTML(self.render_base())
+            footer = self.assertHasElement(tree, "//footer")
+            self.assertTextContentEqual(
+                footer.p[0],
+                "Status: Worker pools • Workers • Task status • Testing",
+            )

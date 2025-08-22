@@ -17,7 +17,6 @@ from debusine.artifacts.models import (
     BareDataCategory,
     CollectionCategory,
 )
-from debusine.db.context import context
 from debusine.db.models import Collection, CollectionItem
 from debusine.server.collections import (
     CollectionManagerInterface,
@@ -32,6 +31,7 @@ class WorkflowInternalManagerTests(TestCase):
 
     def setUp(self) -> None:
         """Set up tests."""
+        super().setUp()
         self.user = self.playground.get_default_user()
 
         self.workspace = self.playground.get_default_workspace()
@@ -111,7 +111,6 @@ class WorkflowInternalManagerTests(TestCase):
         self.assertEqual(collection_item.name, "test")
         self.assertEqual(collection_item.child_type, CollectionItem.Types.BARE)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_no_name(self) -> None:
         """`do_add_artifact` requires an item name."""
         artifact_1, _ = self.playground.create_artifact(
@@ -124,7 +123,6 @@ class WorkflowInternalManagerTests(TestCase):
         ):
             self.manager.add_artifact(artifact_1, user=self.user)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_raise_item_addition_error(self) -> None:
         """Test do_add_artifact raise error on Integrity issue."""
         artifact_1, _ = self.playground.create_artifact(
@@ -139,7 +137,6 @@ class WorkflowInternalManagerTests(TestCase):
                     artifact_1, user=self.user, name="actiontest"
                 )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace(self) -> None:
         """`do_add_artifact` can replace an existing artifact."""
         workflow = self.playground.create_workflow()
@@ -172,7 +169,6 @@ class WorkflowInternalManagerTests(TestCase):
         self.assertEqual(collection_item2.artifact, artifact_2)
         self.assertIsNone(collection_item2.removed_at)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_with_promise_variable_raises_error(self) -> None:
         r"""
         Test adding artifact raises ItemAdditionError.
@@ -197,7 +193,6 @@ class WorkflowInternalManagerTests(TestCase):
                 artifact_1, user=self.user, variables=variables, name="test"
             )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_with_variables_copied(self) -> None:
         """Test adding artifact copies the variables into CollectionItem."""
         artifact_1, _ = self.playground.create_artifact(
@@ -216,7 +211,6 @@ class WorkflowInternalManagerTests(TestCase):
 
         self.assertEqual(collection_item.data, variables)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace_nonexistent(self) -> None:
         """Replacing a nonexistent artifact is allowed."""
         artifact, _ = self.playground.create_artifact(
@@ -230,7 +224,6 @@ class WorkflowInternalManagerTests(TestCase):
         self.assertEqual(collection_item.name, "test")
         self.assertEqual(collection_item.artifact, artifact)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace_bare_data(self) -> None:
         """Replacing bare data with an artifact is allowed."""
         artifact, _ = self.playground.create_artifact(

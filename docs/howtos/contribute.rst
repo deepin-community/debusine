@@ -203,9 +203,9 @@ development:
 
        $ tox
 
-     This basically runs ``./manage.py test`` with multiple versions of
-     Django and Python. It also ensures that you respected our coding
-     conventions. If you get errors, make sure to fix them.
+     This basically runs ``pytest`` with multiple versions of Django and
+     Python. It also ensures that you respected our coding conventions. If
+     you get errors, make sure to fix them.
 
      .. note::
         If you get errors like ``OSError: [Errno 38] Function not

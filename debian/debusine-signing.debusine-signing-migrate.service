@@ -8,6 +8,7 @@ WantedBy=multi-user.target
 
 [Service]
 Type=oneshot
+RemainAfterExit=true
 User=debusine-signing
 Group=debusine-signing
 

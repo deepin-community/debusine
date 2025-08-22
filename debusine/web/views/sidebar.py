@@ -25,7 +25,6 @@ from django.utils.html import format_html
 from django.utils.safestring import SafeString
 from django.utils.timesince import timesince
 
-from debusine.artifacts.models import ArtifactCategory
 from debusine.db.models import (
     Artifact,
     Collection,
@@ -34,7 +33,6 @@ from debusine.db.models import (
     Worker,
     Workspace,
 )
-from debusine.db.models.artifacts import ARTIFACT_CATEGORY_SHORT_NAMES
 from debusine.web.icons import Icons
 from debusine.web.views.base import Widget
 
@@ -142,23 +140,15 @@ def create_workspace(workspace: Workspace) -> SidebarItem:
     )
 
 
-def create_work_request(
-    work_request: WorkRequest | None, *, link: bool = False
-) -> SidebarItem:
+def create_work_request(work_request: WorkRequest) -> SidebarItem:
     """Create work request information."""
     kwargs = {
         "icon": Icons.WORK_REQUEST,
         "label": "Work request",
     }
 
-    if work_request is None:
-        return SidebarElement(**kwargs)
-
     kwargs["detail"] = f"{work_request.task_type} {work_request.task_name} task"
     kwargs["value"] = work_request.get_label()
-
-    if not link:
-        return SidebarElement(**kwargs)
 
     return SidebarAction(
         url=work_request.get_absolute_url(),
@@ -204,11 +194,11 @@ def create_expire_at(at: datetime | None) -> SidebarItem:
     if at:
         return SidebarElement(
             detail=date_format(at, "DATETIME_FORMAT"),
-            value=timesince(at),
+            value=timesince(at, reversed=True),
             **kwargs,
         )
     else:
-        return SidebarElement(value="never", **kwargs)
+        return SidebarElement(value="Never", **kwargs)
 
 
 def create_work_request_status(work_request: WorkRequest) -> SidebarItem:
@@ -219,15 +209,11 @@ def create_work_request_status(work_request: WorkRequest) -> SidebarItem:
     }
 
     match work_request.status:
-        case (
-            WorkRequest.Statuses.PENDING
-            | WorkRequest.Statuses.RUNNING
-            | WorkRequest.Statuses.BLOCKED
-        ):
+        case WorkRequest.Statuses.PENDING | WorkRequest.Statuses.RUNNING:
             status_bg = "secondary"
         case WorkRequest.Statuses.COMPLETED:
             status_bg = "primary"
-        case WorkRequest.Statuses.ABORTED:
+        case WorkRequest.Statuses.ABORTED | WorkRequest.Statuses.BLOCKED:
             status_bg = "dark"
         case _ as unreachable:  # noqa: F841
             status_bg = "info"
@@ -248,6 +234,8 @@ def create_work_request_status(work_request: WorkRequest) -> SidebarItem:
             result_bg = "warning"
         case WorkRequest.Results.ERROR:
             result_bg = "danger"
+        case WorkRequest.Results.SKIPPED:
+            result_bg = "light"
         case _ as unreachable:  # noqa: F841
             result_bg = "info"
 
@@ -362,18 +350,6 @@ def create_work_request_duration(work_request: WorkRequest) -> SidebarItem:
         value=timesince(work_request.started_at, work_request.completed_at),
         detail=date_format(work_request.completed_at, "DATETIME_FORMAT"),
         **kwargs,
-    )
-
-
-def create_artifact_category(artifact: Artifact) -> SidebarItem:
-    """Show an artifact's category."""
-    return SidebarElement(
-        icon=Icons.CATEGORY,
-        label="Artifact category",
-        detail=artifact.category,
-        value=ARTIFACT_CATEGORY_SHORT_NAMES.get(
-            ArtifactCategory(artifact.category), "artifact"
-        ),
     )
 
 

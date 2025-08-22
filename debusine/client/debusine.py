@@ -25,29 +25,33 @@ import shutil
 import subprocess
 import tempfile
 import urllib
-from collections.abc import Coroutine, Iterable
-from pathlib import Path
+from collections.abc import Coroutine, Iterable, Sequence
+from pathlib import Path, PurePath
 from typing import Any, Literal, Protocol, TYPE_CHECKING, overload
 from urllib.parse import urlencode
 
 import aiohttp
+import magic
 import requests
 import tenacity
 from requests_toolbelt.downloadutils.stream import stream_response_to_file
 
 from debusine.artifacts import LocalArtifact
-from debusine.artifacts.models import CollectionCategory
+from debusine.artifacts.models import ArtifactData, CollectionCategory
 from debusine.assets import AssetCategory, BaseAssetDataModel
 from debusine.client.debusine_http_client import DebusineHttpClient
 from debusine.client.exceptions import TokenDisabledError
 from debusine.client.file_uploader import FileUploader
 from debusine.client.models import (
+    ArtifactCreateRequest,
     ArtifactResponse,
     AssetCreateRequest,
     AssetPermissionCheckResponse,
     AssetResponse,
     AssetsResponse,
     CreateWorkflowRequest,
+    FileRequest,
+    FilesRequestType,
     LookupChildType,
     LookupMultipleRequest,
     LookupMultipleResponse,
@@ -61,15 +65,22 @@ from debusine.client.models import (
     RelationType,
     RelationsResponse,
     RemoteArtifact,
+    TaskConfigurationCollectionContents,
+    TaskConfigurationCollectionUpdateResults,
     WorkRequestExternalDebsignRequest,
     WorkRequestRequest,
     WorkRequestResponse,
     WorkflowTemplateRequest,
     WorkflowTemplateResponse,
+    WorkspaceInheritanceChain,
     model_to_json_serializable_dict,
 )
 
 if TYPE_CHECKING:
+    from debusine.client.task_configuration import (
+        LocalTaskConfigurationRepository,
+        RemoteTaskConfigurationRepository,
+    )
     from debusine.tasks.models import LookupMultiple, LookupSingle, OutputData
 
 
@@ -79,6 +90,73 @@ class _MessageProcessor(Protocol):
     def __call__(
         self, *, msg_content: dict[str, Any]
     ) -> Coroutine[Any, Any, None] | None: ...
+
+
+def serialize_local_artifact(
+    artifact: LocalArtifact[Any],
+    *,
+    workspace: str | None,
+    work_request: int | None = None,
+    expire_at: datetime.datetime | None = None,
+) -> dict[str, Any]:
+    """Return dictionary to be used by the API to create an artifact."""
+    files: FilesRequestType = FilesRequestType({})
+    for artifact_path, local_path in artifact.files.items():
+        content_type = artifact.content_types.get(artifact_path)
+        if content_type is None:
+            match PurePath(artifact_path).suffix:
+                case ".buildinfo" | ".dsc" | ".changes":
+                    # Policy requires these to be UTF-8.
+                    content_type = "text/plain; charset=utf-8"
+                case ".md":
+                    # libmagic guesses this as text/plain.
+                    content_type = "text/markdown; charset=utf-8"
+                case _:
+                    # Try to automatically detect a suitable Content-Type.
+                    # Note that for the moment we deliberately don't look at
+                    # the content of compressed files, since as a general
+                    # rule we don't want browsers to automatically
+                    # uncompress them.
+                    #
+                    # We run Content-Type detection on the client so that
+                    # the server doesn't need to run possibly
+                    # security-sensitive parsing/guessing code, but we also
+                    # don't want to give the client entirely free rein since
+                    # some Content-Types could be used to attack browsers.
+                    # The server therefore squashes Content-Types that it
+                    # doesn't know to be safe; see debusine.web.views.files.
+                    content_type = magic.Magic(
+                        mime=True, mime_encoding=True
+                    ).from_file(local_path)
+        files[artifact_path] = FileRequest.create_from(
+            local_path, content_type=content_type
+        )
+    for artifact_path, file_request in artifact.remote_files.items():
+        files[artifact_path] = file_request
+
+    artifact.validate_model()
+
+    serialized = model_to_json_serializable_dict(
+        ArtifactCreateRequest(
+            workspace=workspace,
+            category=artifact.category,
+            files=files,
+            data=(
+                artifact.data.dict()
+                if isinstance(artifact.data, ArtifactData)
+                else artifact.data
+            ),
+            work_request=work_request,
+            expire_at=expire_at,
+        )
+    )
+
+    # If the workspace was not specified: do not send it to the API.
+    # The server will assign it.
+    if serialized["workspace"] is None:
+        del serialized["workspace"]
+
+    return serialized
 
 
 class Debusine:
@@ -156,6 +234,17 @@ class Debusine:
         """Retry a work request."""
         return self._debusine_http_client.post(
             path=f"/work-request/{work_request_id}/retry/",
+            data={},
+            expected_class=WorkRequestResponse,
+        )
+
+    def work_request_abort(
+        self,
+        work_request_id: int,
+    ) -> WorkRequestResponse:
+        """Abort a work request."""
+        return self._debusine_http_client.post(
+            path=f"/work-request/{work_request_id}/abort/",
             data={},
             expected_class=WorkRequestResponse,
         )
@@ -297,7 +386,8 @@ class Debusine:
         return self._debusine_http_client.post(
             "/artifact/",
             ArtifactResponse,
-            data=artifact.serialize_for_create_artifact(
+            data=serialize_local_artifact(
+                artifact=artifact,
                 workspace=workspace,
                 work_request=work_request,
                 expire_at=expire_at,
@@ -376,7 +466,9 @@ class Debusine:
         )
 
         return RemoteArtifact(
-            id=artifact_response.id, workspace=artifact_response.workspace
+            id=artifact_response.id,
+            url=artifact_response.url,
+            workspace=artifact_response.workspace,
         )
 
     def relation_create(
@@ -747,6 +839,68 @@ class Debusine:
             "/lookup/multiple/", LookupMultipleResponse, data=request.dict()
         )
 
+    def fetch_task_configuration_collection(
+        self, *, workspace: str, name: str
+    ) -> "RemoteTaskConfigurationRepository":
+        """Fetch a task configuration collection."""
+        from debusine.client.task_configuration import (
+            Manifest,
+            RemoteTaskConfigurationRepository,
+        )
+
+        response = self._debusine_http_client.get(
+            f"/task-configuration/{workspace}/{name}/",
+            TaskConfigurationCollectionContents,
+        )
+        manifest = Manifest(workspace=workspace, collection=response.collection)
+        return RemoteTaskConfigurationRepository.from_items(
+            manifest, response.items
+        )
+
+    def push_task_configuration_collection(
+        self,
+        *,
+        repo: "LocalTaskConfigurationRepository",
+        dry_run: bool,
+    ) -> TaskConfigurationCollectionUpdateResults:
+        """Replace the contents of a task configuration collection on server."""
+        from debusine.client.task_configuration import InvalidRepository
+
+        if repo.manifest is None:
+            raise InvalidRepository("repository has no manifest")
+
+        data = {
+            "collection": repo.manifest.collection.dict(),
+            "items": [i.item.dict() for i in repo.entries.values()],
+            "dry_run": dry_run,
+        }
+
+        return self._debusine_http_client.post(
+            f"/task-configuration/{repo.manifest.workspace}"
+            f"/{repo.manifest.collection.name}/",
+            data=data,
+            expected_class=TaskConfigurationCollectionUpdateResults,
+        )
+
+    def get_workspace_inheritance(
+        self, workspace: str
+    ) -> WorkspaceInheritanceChain:
+        """Get a workspace inheritance chain."""
+        return self._debusine_http_client.get(
+            f"/workspace/{workspace}/inheritance/",
+            expected_class=WorkspaceInheritanceChain,
+        )
+
+    def set_workspace_inheritance(
+        self, workspace: str, *, chain: WorkspaceInheritanceChain
+    ) -> WorkspaceInheritanceChain:
+        """Set a workspace inheritance chain."""
+        return self._debusine_http_client.post(
+            f"/workspace/{workspace}/inheritance/",
+            data=model_to_json_serializable_dict(chain),
+            expected_class=WorkspaceInheritanceChain,
+        )
+
     def _log_tenacity_exception(
         self, retry_state: tenacity.RetryCallState
     ) -> None:
@@ -759,7 +913,7 @@ class Debusine:
     def _on_work_request_completed(
         self,
         *,
-        command: str | os.PathLike[str],
+        command: Sequence[str | os.PathLike[str]],
         working_directory: Path,
         last_completed_at: Path | None,
         msg_content: dict[str, Any],
@@ -769,8 +923,7 @@ class Debusine:
         )
 
         # Execute the command
-        cmd = [
-            str(command),
+        cmd = list(command) + [
             str(on_work_request_completed.work_request_id),
             on_work_request_completed.result,
         ]
@@ -787,7 +940,7 @@ class Debusine:
         self,
         *,
         url: str,
-        command: str | os.PathLike[str],
+        command: Sequence[str | os.PathLike[str]],
         working_directory: Path,
         last_completed_at: Path | None,
     ) -> None:
@@ -876,7 +1029,7 @@ class Debusine:
         *,
         workspaces: list[str] | None = None,
         last_completed_at: Path | None = None,
-        command: str,
+        command: list[str],
         working_directory: Path,
     ) -> None:
         """Execute command when a work request is completed."""

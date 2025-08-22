@@ -13,6 +13,7 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
 from django.core.checks import Error
 from django.core.management import call_command
 from django.test import TestCase
@@ -21,6 +22,7 @@ from debusine.django import checks as common_checks
 from debusine.signing import checks
 
 
+@pytest.mark.xdist_group("serial-signing-checks")
 class ChecksTests(TestCase):
     """Tests for functions in checks.py."""
 
@@ -103,7 +105,7 @@ class ChecksTests(TestCase):
 
         for command in common_checks._migration_commands:
             with self.subTest(command=command):
-                sys.argv[1] = command
+                sys.argv[1:] = [command]
                 self.assertEqual(
                     checks.all_migrations_applied(
                         "debusine-signing", app_configs=None

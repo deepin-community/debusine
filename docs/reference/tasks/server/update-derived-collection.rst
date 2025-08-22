@@ -1,4 +1,4 @@
-.. _update-derived-collection-task:
+.. task:: UpdateDerivedCollection
 
 UpdateDerivedCollection task
 ----------------------------

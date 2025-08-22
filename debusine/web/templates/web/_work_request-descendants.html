@@ -1,13 +1,14 @@
+{% load debusine %}
 <details open>
-    <summary>{% include "web/_work_request-workflow-child.html" %}</summary>
+    <summary>{% include "web/_work_request-workflow.html" %}</summary>
     <ul>
         {# TODO: This should be batched. #}
-        {% for child in work_request.children.all %}
+        {% for child in work_request_ui.workflow_children|lookup:work_request.id %}
             <li>
-                {% if child.children.all %}
-                    {% include "web/_work_request-descendants.html" with work_request=child only %}
+                {% if work_request_ui.workflow_children|lookup:child.id %}
+                    {% include "web/_work_request-descendants.html" with work_request=child %}
                 {% else %}
-                    {% include "web/_work_request-workflow-child.html" with work_request=child only %}
+                    {% include "web/_work_request-workflow.html" with work_request=child %}
                 {% endif %}
             </li>
         {% endfor %}

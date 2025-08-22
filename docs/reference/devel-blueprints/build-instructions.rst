@@ -34,7 +34,7 @@ At some point, we will want the packages to be able to provide the value
 directly. But for now, we want to be able to control that architecture
 through the task-configuration mechanism.
 
-The sbuild task doesn't require any change. We can already feed the
+The :task:`Sbuild` task doesn't require any change. We can already feed the
 architecture of our choice in ``host_architecture`` and set
 ``build_components`` to ``all``.
 
@@ -65,7 +65,7 @@ sbuild workflow and worker task level, so that the task-configuration
 mechanism can be used to control them.
 
 The sbuild workflow supports ``build_profiles`` but not ``build_options``.
-The sbuild task supports both parameters, but doesn't implement the
+The :task:`Sbuild` task supports both parameters, but doesn't implement the
 ``build_options`` one. ``build_profiles`` is defined as a list, but
 ``build_options`` as a string.
 
@@ -79,8 +79,8 @@ that do not match those requirements. Typically small workers are not able
 to build some heavy packages. Or some packages require a GPU for their
 tests.
 
-The current plan to address this is to implement a `tag-based
-approach <https://salsa.debian.org/freexian-team/debusine/-/issues/326>`__.
+The current plan to address this is to implement a :issue:`tag-based
+approach <326>`.
 
 To complement this, we need some way to define some specific requirements
 while submitting the worker tasks. The proposal is to add a new
@@ -124,10 +124,10 @@ Changes to the sbuild workflow
 ------------------------------
 
 * Addition of the ``build_options`` option. Must be passed down to the
-  sbuild task.
+  :task:`Sbuild` task.
  
-Changes to the sbuild task
---------------------------
+Changes to the :task:`Sbuild` task
+----------------------------------
 
 * Change the schema of the ``build_options`` parameter to be a list like
   ``build_profiles`` instead of a string.

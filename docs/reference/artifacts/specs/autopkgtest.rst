@@ -1,4 +1,4 @@
-.. _artifact-autopkgtest:
+.. artifact:: debian:autopkgtest
 
 Category ``debian:autopkgtest``
 ===============================
@@ -33,6 +33,4 @@ Category ``debian:autopkgtest``
 
 * Relationships:
 
-  * ``relates-to``: the artifacts used as input that are part of the source
-    package being tested. They can be of types ``debian:source-package``,
-    ``debian:upload``, ``debian:binary-packages`` or ``debian:upload``
+  * None currently (see :issue:`806`).

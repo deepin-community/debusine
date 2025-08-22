@@ -20,6 +20,33 @@ except ImportError:
     import pydantic as pydantic  # type: ignore
 
 from debusine.assets import KeyPurpose
+from debusine.utils import DjangoChoicesEnum
+
+
+class TaskTypes(DjangoChoicesEnum):
+    """Possible values for task_type."""
+
+    WORKER = "Worker"
+    SERVER = "Server"
+    INTERNAL = "Internal"
+    WORKFLOW = "Workflow"
+    SIGNING = "Signing"
+    WAIT = "Wait"
+
+
+class WorkRequestResults(DjangoChoicesEnum):
+    """Possible values for WorkRequest.result."""
+
+    NONE = ""
+    SUCCESS = "success"
+    FAILURE = "failure"
+    ERROR = "error"
+    SKIPPED = "skipped"
+
+    @enum.property
+    def label(self) -> str:
+        """Return this item's label."""
+        return self.capitalize()
 
 
 class BaseArtifactDataModel(pydantic.BaseModel):
@@ -44,6 +71,7 @@ class BareDataCategory(enum.StrEnum):
     PROMISE = "debusine:promise"
     HISTORICAL_TASK_RUN = "debusine:historical-task-run"
     TASK_CONFIGURATION = "debusine:task-configuration"
+    QA_RESULT = "debian:qa-result"
 
     # Only implemented in tests.
     TEST = "debusine:test"
@@ -104,20 +132,6 @@ class RuntimeStatistics(BaseArtifactDataModel):
     cpu_count: int | None = None
 
 
-def _validate_task_type(value: str) -> str:
-    """Ensure value is a valid TASK_TYPE."""
-    from debusine.tasks.models import TaskTypes
-
-    # From python 3.13:
-    # if value not in TaskTypes:
-    try:
-        TaskTypes(value)
-    except ValueError:
-        raise ValueError(f"{value!r} is not a valid task type")
-
-    return value
-
-
 def _validate_no_colons(value: str | None) -> str | None:
     """
     Check that value, if set, contains no colons.
@@ -133,30 +147,26 @@ def _validate_no_colons(value: str | None) -> str | None:
 class DebusineHistoricalTaskRun(BaseArtifactDataModel):
     """Pydantic model for historical task runs."""
 
-    # Really TaskTypes, but for layering reasons we don't want to import
-    # from debusine.tasks here.
-    task_type: str
+    task_type: TaskTypes
     task_name: str
     subject: str | None = None
     context: str | None = None
     timestamp: int
     work_request_id: int
-    # Really WorkRequest.Results, but for layering reasons we don't want to
-    # import from debusine.db here.
-    result: str
+    result: WorkRequestResults
     runtime_statistics: RuntimeStatistics
-
-    _validate_task_type = pydantic.validator("task_type", allow_reuse=True)(
-        _validate_task_type
-    )
 
 
 class DebusineTaskConfiguration(BaseArtifactDataModel):
     """Pydantic model for task configuration."""
 
-    # Really TaskTypes, but for layering reasons we don't want to import
-    # from debusine.tasks here.
-    task_type: str | None = None
+    # Note: this is used in debusine.client.models to deserialize the contents
+    # of a task configuration collection. If this model gets changed, the old
+    # version needs to be copied to debusine.client.models, and
+    # debusine.server.serializers.TaskConfigurationCollectionContentsSerializer
+    # changed accordingly, to preserve compatibility with old clients
+
+    task_type: TaskTypes | None = None
     task_name: str | None = None
     subject: str | None = None
     context: str | None = None
@@ -203,9 +213,6 @@ class DebusineTaskConfiguration(BaseArtifactDataModel):
             names.append(f"{task_type}:{task_name}:{subject}:{context_encoded}")
         return names
 
-    _validate_task_type = pydantic.validator("task_type", allow_reuse=True)(
-        _validate_task_type
-    )
     _validate_task_name = pydantic.validator("task_name", allow_reuse=True)(
         _validate_no_colons
     )
@@ -244,6 +251,18 @@ class DebusineTaskConfiguration(BaseArtifactDataModel):
         return values
 
 
+class DebianQAResult(BaseArtifactDataModel):
+    """Pydantic model for a single QA result."""
+
+    task_name: str
+    package: str
+    version: str
+    architecture: str
+    timestamp: int
+    work_request_id: int
+    result: WorkRequestResults
+
+
 class ArtifactCategory(enum.StrEnum):
     """Possible artifact categories."""
 
@@ -261,6 +280,7 @@ class ArtifactCategory(enum.StrEnum):
     SYSTEM_IMAGE = "debian:system-image"
     SIGNING_INPUT = "debusine:signing-input"
     SIGNING_OUTPUT = "debusine:signing-output"
+    REPOSITORY_INDEX = "debian:repository-index"
 
     # Only implemented in tests.
     TEST = "debusine:test"
@@ -276,12 +296,15 @@ class CollectionCategory(enum.StrEnum):
     WORKFLOW_INTERNAL = "debusine:workflow-internal"
     TASK_CONFIGURATION = "debusine:task-configuration"
     TASK_HISTORY = "debusine:task-history"
+    ARCHIVE = "debian:archive"
+    QA_RESULTS = "debian:qa-results"
 
     # Only implemented in tests.
     TEST = "debusine:test"
 
 
 SINGLETON_COLLECTION_CATEGORIES = {
+    CollectionCategory.ARCHIVE,
     CollectionCategory.PACKAGE_BUILD_LOGS,
     CollectionCategory.TASK_HISTORY,
 }
@@ -422,6 +445,7 @@ class DebianPackageBuildLog(ArtifactData):
 
     source: str
     version: str
+    architecture: str | None = None
     filename: str
     bd_uninstallable: DoseDistCheck | None = None
 
@@ -583,6 +607,7 @@ class DebianSystemTarball(ArtifactData):
     vendor: str
     codename: str
     mirror: pydantic.AnyUrl
+    components: list[str]
     variant: str | None
     pkglist: dict[str, str]
     architecture: str
@@ -629,6 +654,10 @@ class DebianLintianSummary(BaseArtifactDataModel):
 class DebianLintian(ArtifactData):
     """Data for debian:lintian artifacts."""
 
+    # TODO: Once old artifacts created without it have expired, this should
+    # become required.  (It isn't possible to set it in a data migration in
+    # all cases.)
+    architecture: str | None = None
     summary: DebianLintianSummary
 
     def get_label(self) -> str:
@@ -732,6 +761,17 @@ class DebDiff(ArtifactData):
     def get_label(self) -> str:
         """Return a short human-readable label for the artifact."""
         return f"debdiff {self.original} {self.new}"
+
+
+class DebianRepositoryIndex(ArtifactData):
+    """Data for debian:repository-index artifacts."""
+
+    # New artifacts have this set; old ones may not.
+    path: str | None = None
+
+    def get_label(self) -> str | None:
+        """Return a short human-readable label for the artifact."""
+        return self.path
 
 
 def get_source_package_name(

@@ -1,4 +1,4 @@
-.. _artifact-lintian:
+.. artifact:: debian:lintian
 
 Category ``debian:lintian``
 ===========================
@@ -13,6 +13,11 @@ Category ``debian:lintian``
 
 * Data:
 
+  * ``architecture``: ``source`` for a source package analysis, ``all`` for
+    a binary-all analysis, or the architecture of the relevant binary
+    package artifacts for a binary-any analysis (the task analyzes all its
+    artifacts together, but then creates a separate ``debian:lintian``
+    artifact for each architecture)
   * ``summary``: a duplicate of the ``summary`` key in ``analysis.json``
 
 * ``analysis.json`` structure:
@@ -87,6 +92,7 @@ Category ``debian:lintian``
 
 * Relationships:
 
-  * ``relates-to``: the corresponding artifacts that have been analyzed. They
-    can be of type ``debian:source-package``, ``debian:binary-package``,
-    ``debian:binary-packages``, or ``debian:upload``.
+  * ``relates-to``: the corresponding artifacts that have been analyzed.
+    They can be of type :artifact:`debian:source-package`,
+    :artifact:`debian:binary-package`, :artifact:`debian:binary-packages`,
+    or :artifact:`debian:upload`.

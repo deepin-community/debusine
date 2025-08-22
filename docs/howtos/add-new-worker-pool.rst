@@ -37,8 +37,7 @@ Initial Configuration
    network in the cloud to the Debusine server.
 
 #. Create a YAML file (``hetzner-account.yaml``) describing a
-   :ref:`debusine:cloud-provider-account asset
-   <asset-cloud-provider-account>`:
+   :asset:`debusine:cloud-provider-account` asset:
 
    .. code-block:: yaml
 

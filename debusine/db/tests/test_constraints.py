@@ -17,7 +17,6 @@ from django.db.models import CheckConstraint, Q
 
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
 from debusine.db.constraints import JsonDataUniqueConstraint
-from debusine.db.context import context
 from debusine.db.models import Collection, CollectionItem, User
 from debusine.test.django import TestCase
 
@@ -164,7 +163,6 @@ class JsonDataUniqueConstraintTests(TestCase):
 
         self.assert_constraint_deconstruction(constraint, expected_kwargs)
 
-    @context.disable_permission_checks()
     def test_database_constraint(self) -> None:
         """
         Test cannot create two objects with duplicated data.

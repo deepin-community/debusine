@@ -1,4 +1,4 @@
-.. _file-backend-local:
+.. file-backend:: Local
 
 Local file backend
 ==================

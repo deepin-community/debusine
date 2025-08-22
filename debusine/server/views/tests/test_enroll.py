@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncIterator, Generator
-from typing import Any, ClassVar, Union
+from typing import Any, ClassVar, Never, Union
 from unittest import mock
 
 from asgiref.sync import sync_to_async
@@ -60,7 +60,7 @@ class EnrollViewTests(TestCase):
 
         with (
             mock.patch(
-                "debusine.server.views.enroll.get_channel_layer",
+                "debusine.server.views.enroll.EnrollView.long_poll",
                 side_effect=Reached,
             ),
             self.assertRaises(Reached),
@@ -259,10 +259,11 @@ class EnrollViewTests(TestCase):
             def __init__(self) -> None:
                 self.future: asyncio.Future[None] = asyncio.Future()
 
-            def receive(
-                self, channel_name: str  # noqa: U100
-            ) -> asyncio.Future[None]:
-                return self.future
+            async def receive(self, channel_name: str) -> Never:  # noqa: U100
+                await self.future
+                raise AssertionError(
+                    "the future should have raised CancelledError"
+                )
 
         mock_channel_layer = _MockChannelLayer()
 
@@ -272,19 +273,46 @@ class EnrollViewTests(TestCase):
         ):
             response = await self._apost(self.payload)
 
-        # Payload is in the database
-        await ClientEnroll.objects.aget(nonce=self.payload.nonce)
-
-        # Simulate a browser disconnect
-        mock_channel_layer.future.cancel()
-
-        # Consume streaming content as a replacement for daphne doing its thing
-        # TODO: is there a better way to simulate a client disconnect?
-        with self.assertRaises(asyncio.CancelledError):
-            assert isinstance(response.streaming_content, AsyncIterator)
-            async for chunk in response.streaming_content:
-                pass  # pragma: no cover
-
-        # The payload has been deleted from the database
-        with self.assertRaises(ClientEnroll.DoesNotExist):
+            # Payload is in the database
             await ClientEnroll.objects.aget(nonce=self.payload.nonce)
+
+            # Simulate a browser disconnect
+            mock_channel_layer.future.cancel()
+
+            # Consume streaming content as a replacement for daphne doing its
+            # thing
+            # TODO: is there a better way to simulate a client disconnect?
+            with self.assertRaises(asyncio.CancelledError):
+                assert isinstance(response.streaming_content, AsyncIterator)
+                async for chunk in response.streaming_content:
+                    pass  # pragma: no cover
+
+            # The payload has been deleted from the database
+            with self.assertRaises(ClientEnroll.DoesNotExist):
+                await ClientEnroll.objects.aget(nonce=self.payload.nonce)
+
+    async def test_keepalive(self) -> None:
+        """Test data sent to keep the connection alive during the long poll."""
+        # Set interval timeout to "immediate"
+        with mock.patch(
+            "debusine.server.views.enroll.EnrollView.PING_INTERVAL", 0
+        ):
+            response = await self._apost(self.payload)
+
+            # Before confirmation arrives, the line is kept alive with newlines
+            assert isinstance(response.streaming_content, AsyncIterator)
+            chunk = await anext(response.streaming_content)
+            self.assertEqual(chunk, b"\n")
+
+            # Send confirmation
+            channel_layer = get_channel_layer()
+            confirmation = EnrollConfirmPayload(
+                outcome=EnrollOutcome.CONFIRM, token="a" * 32
+            )
+
+            await channel_layer.send(
+                f"enroll.{self.payload.nonce}", confirmation.dict()
+            )
+
+            payload = await self.assertResponsePayload(response)
+            self.assertEqual(payload.token, "a" * 32)

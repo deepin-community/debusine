@@ -1,27 +1,28 @@
-.. _task-extract-for-signing:
+.. task:: ExtractForSigning
 
 ExtractForSigning task
 ----------------------
 
-This is a worker task that takes the output of the :ref:`Sbuild task
-<task-sbuild>` and extracts :ref:`debusine:signing-input
-<artifact-signing-input>` artifacts from them for use by the :ref:`Sign task
-<task-sign>`.
+This is a worker task that takes the output of the :task:`Sbuild` task and
+extracts :artifact:`debusine:signing-input` artifacts from them for use by
+the :task:`Sign` task.
 
 The ``task_data`` for this task may contain the following keys:
 
 * ``input`` (required): a dictionary describing the input data:
 
   * ``template_artifact`` (:ref:`lookup-single`, required): a
-    ``debian:binary-package`` artifact containing a `template package
+    :artifact:`debian:binary-package` artifact containing a `template
+    package
     <https://wiki.debian.org/SecureBoot/Discussion#Source_template_inside_a_binary_package>`_
   * ``binary_artifacts`` (:ref:`lookup-multiple`, required): a list of
-    ``debian:binary-package`` or ``debian:upload`` artifacts used to find
-    the packages referred to by the template's ``files.json``
+    :artifact:`debian:binary-package` or :artifact:`debian:upload` artifacts
+    used to find the packages referred to by the template's ``files.json``
 
 * ``environment`` (:ref:`lookup-single` with default category
-  ``debian:environments``, required): ``debian:system-tarball`` artifact
-  that will be used to unpack binary packages using the ``unshare`` backend
+  :collection:`debian:environments`, required):
+  :artifact:`debian:system-tarball` artifact that will be used to unpack
+  binary packages using the ``unshare`` backend
 
 The task computes dynamic metadata as:
 
@@ -31,10 +32,10 @@ The task computes dynamic metadata as:
 The task operates as follows:
 
 * It finds the set of binary artifacts to operate on from
-  ``binary_artifacts``.  It uses ``debian:binary-package`` artifacts
-  directly; if it finds ``debian:upload`` artifacts, it follows ``extends``
-  relationships from those to find individual ``debian:binary-package``
-  artifacts, and uses those.
+  ``binary_artifacts``.  It uses :artifact:`debian:binary-package` artifacts
+  directly; if it finds :artifact:`debian:upload` artifacts, it follows
+  ``extends`` relationships from those to find individual
+  :artifact:`debian:binary-package` artifacts, and uses those.
 * It extracts the
   ``/usr/share/code-signing/$binary_package_name/files.json`` file from the
   template binary package.
@@ -56,8 +57,7 @@ The task operates as follows:
     * It stores a copy of the file in the output artifact with the name
       ``$package/$file``.
 
-The output will be provided as :ref:`debusine:signing-input
-<artifact-signing-input>` artifacts, one for each package in the template's
-``files.json``, with each artifact having a ``relates-to`` relationship to
-the template package and to the binary package from which its files were
-extracted.
+The output will be provided as :artifact:`debusine:signing-input` artifacts,
+one for each package in the template's ``files.json``, with each artifact
+having a ``relates-to`` relationship to the template package and to the
+binary package from which its files were extracted.

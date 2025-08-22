@@ -40,9 +40,22 @@
         </p>
     {% endif %}
     <h4 id="control-diffs-changes">Control diffs changes</h4>
-    {% if debdiff_binary_parsed.control_diff %}
-        <pre>{{ debdiff_binary_parsed.control_diff }}</pre>
-    {% else %}
+    {% if debdiff_binary_parsed.control_diffs %}<pre>{{ debdiff_binary_parsed.control_diffs }}</pre>{% endif %}
+    {% if debdiff_binary_parsed.control_diffs_packages_items %}
+        {% for package, changes in debdiff_binary_parsed.control_diffs_packages_items %}
+            <h5>Package: {{ package }}</h5>
+            <pre>{{ changes }}</pre>
+        {% endfor %}
+    {% endif %}
+    {% if debdiff_binary_parsed.control_diffs_packages_no_changes %}
+        <p>
+            No differences were encountered between the control files of package{{ debdiff_binary_parsed.control_diffs_packages_no_changes|length|pluralize }}:
+        </p>
+        <ul>
+            {% for package in debdiff_binary_parsed.control_diffs_packages_no_changes %}<li>{{ package }}</li>{% endfor %}
+        </ul>
+    {% endif %}
+    {% if not debdiff_binary_parsed.control_diffs and not debdiff_binary_parsed.control_diffs_packages_items and not debdiff_binary_parsed.control_diffs_packages_no_changes %}
         <p>No changes reported by debdiff in control files.</p>
     {% endif %}
 {% else %}

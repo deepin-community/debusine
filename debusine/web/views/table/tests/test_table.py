@@ -34,6 +34,7 @@ class TableTestCase(ViewTestMixin, TestCase, abc.ABC):
         default_order: str | None = None,
         table_class: type[Table[User]] | None = None,
         qstring: dict[str, str] | None = None,
+        preview: bool = False,
     ) -> Table[User]:
         """Instantiate a table."""
         url = "/"
@@ -48,6 +49,7 @@ class TableTestCase(ViewTestMixin, TestCase, abc.ABC):
             object_list=queryset,
             prefix=prefix,
             default_order=default_order,
+            preview=preview,
         )
 
 
@@ -255,3 +257,12 @@ class TableTests(TableTestCase):
         self.assertQuerySetEqual(
             table.rows, list(User.objects.all()), ordered=False
         )
+
+    def test_preview_disables_filters(self) -> None:
+        class _Table(Table[User]):
+            user = Column("User", ordering="username")
+            filter_username = FilterText("User")
+            default_order = "user"
+
+        table = self._table(table_class=_Table, preview=True)
+        self.assertEqual(list(table.filters.options.keys()), [])

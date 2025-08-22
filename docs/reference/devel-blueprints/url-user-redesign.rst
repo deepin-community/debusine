@@ -39,7 +39,7 @@ only makes sense for the currently logged in user, and is delegating to
 Django's logout view which assumes that.
 
 The rest of the moves also make space for an upcoming user display view (see
-`MR !1486 <https://salsa.debian.org/freexian-team/debusine/-/merge_requests/1486>`)::
+:mr:`1486`)::
 
   /-/user/<username>/
 

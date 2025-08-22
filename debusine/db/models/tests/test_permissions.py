@@ -9,15 +9,17 @@
 
 """Unit tests for model permissions."""
 import re
-from typing import Any, ClassVar
+from collections.abc import Collection, Generator
+from typing import Any, ClassVar, Protocol, Self
 
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import PermissionDenied
 from django.db import models
 
 from debusine.db.context import ContextConsistencyError, context
-from debusine.db.models import Group, Scope, Token, User, Workspace, system_user
+from debusine.db.models import Group, Scope, Token, User, Workspace
 from debusine.db.models.permissions import (
+    Allow,
     PermissionUser,
     enforce,
     format_permission_check_error,
@@ -36,34 +38,128 @@ from debusine.test.django import (
 )
 
 
-@permission_filter()
-def perm_filter(
-    queryset: models.QuerySet[User],
+class PredicateWrapper(Protocol):
+    """Structural typing for check/filter predicate testers."""
+
+    last_user: PermissionUser
+    called: bool
+
+    def test(self) -> bool: ...
+
+
+class PredicateTester:
+    """Encapsulate tests for check and filter predicates."""
+
+    def __init__(
+        self,
+        test_case: TestCase,
+        user: PermissionUser,
+        tester: PredicateWrapper,
+    ) -> None:
+        """Test calling tester with user."""
+        self.test_case = test_case
+        self.user = user
+        self.tester = tester
+
+    def __repr__(self) -> str:
+        """Representation for debugging, shown by subTest."""
+        return f"{self.user=!r}, {self.tester=!r}"
+
+    def assert_forced_false(self) -> None:
+        """The predicate failed without calling its body."""
+        self.test_case.assertFalse(self.tester.test())
+        self.test_case.assertFalse(self.tester.called)
+
+    def assert_forced_true(self) -> None:
+        """The predicate succeeded without calling its body."""
+        self.test_case.assertTrue(self.tester.test())
+        self.test_case.assertFalse(self.tester.called)
+
+    def assert_called(self) -> None:
+        """The predicate body has been called with the user passed to it."""
+        self.test_case.assertFalse(self.tester.test())
+        self.test_case.assertTrue(self.tester.called)
+        self.test_case.assertEqual(self.tester.last_user, self.user)
+
+    def assert_passes_with_checks_disabled(self) -> None:
+        """The predicate always succeeds with permission checks disabled."""
+        with context.disable_permission_checks():
+            self.test_case.assertTrue(self.tester.test())
+            self.test_case.assertFalse(self.tester.called)
+
+
+def mock_pred_check(
+    test_case: TestCase,
+    *,
     user: PermissionUser,
-) -> models.QuerySet[User]:
-    """Payload for testing the permission_filter decorator."""
-    assert user is not None
-    if user.is_authenticated:
-        return queryset.filter(pk=user.pk)
-    else:
-        return queryset.none()
+    workers: Allow,
+    anonymous: Allow,
+) -> PredicateTester:
+    """Create a tester for check predicates."""
+
+    class CheckContainer:
+        """Mock resource used to test the permission_check decorator."""
+
+        def __init__(self) -> None:
+            """Make space to store a trace of checks."""
+            self.last_user: PermissionUser = None
+            self.called = False
+
+        def __repr__(self) -> str:
+            return f"permission_check({workers=!r}, {anonymous=!r}, {user=})"
+
+        # permission_check wants a Model, but it's easier to have a mock class
+        # that is not a model to avoid having to deal with Django's model
+        # registry. Override the check instead
+        @permission_check(  # type: ignore[type-var]
+            "{user} cannot pred {resource}",
+            workers=workers,
+            anonymous=anonymous,
+        )
+        def _predicate(self, user: PermissionUser) -> bool:
+            self.last_user = user
+            self.called = True
+            return False
+
+        def test(self) -> bool:
+            self.called = False
+            return self._predicate(user)
+
+    return PredicateTester(test_case, user, CheckContainer())
 
 
-class MockResource(models.Model):
-    """Mock resource used to test the permission_check decorator."""
+def mock_pred_filter(
+    test_case: TestCase,
+    *,
+    user: PermissionUser,
+    workers: Allow,
+    anonymous: Allow,
+) -> PredicateTester:
+    """Create a tester for filter predicates."""
 
-    class Meta:
-        managed = False
+    class FilterContainer(models.QuerySet[User]):
+        """Mock resource used to test the permission_filter decorator."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Make space to store last user set."""
-        super().__init__(*args, **kwargs)
-        self.last_user: PermissionUser = None
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            """Make space to store a trace of checks."""
+            super().__init__(*args, **kwargs)
+            self.last_user: PermissionUser = None
+            self.called = False
 
-    @permission_check("{user} cannot pred {resource}")
-    def _pred(self, user: PermissionUser) -> bool:  # noqa: U100
-        self.last_user = user
-        return False
+        def __repr__(self) -> str:
+            return f"permission_filter({workers=!r}, {anonymous=!r}, {user=})"
+
+        @permission_filter(workers=workers, anonymous=anonymous)
+        def _predicate(self, user: PermissionUser) -> Self:
+            self.last_user = user
+            self.called = True
+            return self.none()
+
+        def test(self) -> bool:
+            self.called = False
+            return self._predicate(user).count() > 0
+
+    return PredicateTester(test_case, user, FilterContainer(User))
 
 
 class PermissionsTests(TestCase):
@@ -139,14 +235,22 @@ class PermissionsTests(TestCase):
 
     def test_permission_error_template(self) -> None:
         """Test accessing the permission error template."""
+        res = mock_pred_check(
+            self,
+            user=AnonymousUser(),
+            workers=Allow.ALWAYS,
+            anonymous=Allow.ALWAYS,
+        )
+        resource = res.tester
+        resource_class = resource.__class__
+        cls_predicate = resource_class._predicate  # type: ignore[attr-defined]
         self.assertEqual(
-            getattr(MockResource._pred, "error_template"),
+            cls_predicate.error_template,
             "{user} cannot pred {resource}",
         )
 
-        res = MockResource()
         self.assertEqual(
-            getattr(res._pred, "error_template"),
+            resource._predicate.error_template,  # type: ignore[attr-defined]
             "{user} cannot pred {resource}",
         )
 
@@ -169,116 +273,173 @@ class PermissionsTests(TestCase):
         ):
             enforce(self.scope.can_display)
 
-    def test_permission_check_user_unset(self) -> None:
-        """Test the permission_check decorator with no user in context."""
-        res = MockResource()
+    def predicate_testers(
+        self,
+        workers: Collection[Allow],
+        anonymous: Collection[Allow],
+        users: Collection[PermissionUser],
+    ) -> Generator[PredicateTester]:
+        for w in workers:
+            for a in anonymous:
+                for u in users:
+                    yield mock_pred_check(self, workers=w, anonymous=a, user=u)
+                    yield mock_pred_filter(self, workers=w, anonymous=a, user=u)
 
-        with self.assertRaisesRegex(
-            ContextConsistencyError, "user was not set in context"
+    def test_predicates_user_unset_no_worker(self) -> None:
+        """Test predicates with neither user nor worker in context."""
+        for tester in self.predicate_testers(
+            workers=(Allow.ALWAYS, Allow.PASS, Allow.NEVER),
+            anonymous=(Allow.ALWAYS, Allow.PASS, Allow.NEVER),
+            users=[None],
         ):
-            res._pred(context.user)
+            with self.subTest(tester=tester):
+                with self.assertRaisesRegex(
+                    ContextConsistencyError,
+                    "user was not set in context",
+                ):
+                    tester.tester.test()
+                self.assertFalse(tester.tester.called)
+                tester.assert_passes_with_checks_disabled()
 
-        with context.disable_permission_checks():
-            self.assertTrue(res._pred(context.user))
-
-    def test_permission_check_user_unset_with_token(self) -> None:
-        """Test the permission_check decorator with no user but a token."""
+    def test_predicates_user_anonymous_always_worker_set(self) -> None:
+        """Test predicates with anonymous, allowed always, and worker set."""
         context.set_worker_token(self.worker_token)
 
-        res = MockResource()
-        self.assertFalse(res._pred(None))
-        # User was defaulted to AnonymousUser()
-        self.assertEqual(res.last_user, AnonymousUser())
-
-        for user in (AnonymousUser(), self.user):
-            with self.subTest(user=user):
-                self.assertFalse(res._pred(user))
-                with context.disable_permission_checks():
-                    self.assertTrue(res._pred(user))
-
-    def test_permission_check_user_context(self) -> None:
-        """Test the permission_check decorator with user from context."""
-        res = MockResource()
-        context.set_scope(self.scope)
-        context.set_user(self.user)
-        self.assertFalse(res._pred(context.user))
-        with context.disable_permission_checks():
-            self.assertTrue(res._pred(context.user))
-
-    def test_permission_check_user_explicit(self) -> None:
-        """Test the permission_check decorator with explicitly given user."""
-        res = MockResource()
-        for user in (AnonymousUser(), self.user):
-            with self.subTest(user=user):
-                self.assertFalse(res._pred(user))
-                with context.disable_permission_checks():
-                    self.assertTrue(res._pred(user))
-
-    def test_permission_filter_user_unset(self) -> None:
-        """Test permission_filter with but no user in context."""
-        # Default user without context raises ContextConsistencyError
-        with self.assertRaisesRegex(
-            ContextConsistencyError, r"user was not set in context"
+        for tester in self.predicate_testers(
+            workers=[Allow.ALWAYS, Allow.PASS, Allow.NEVER],
+            anonymous=[Allow.ALWAYS],
+            users=[AnonymousUser()],
         ):
-            perm_filter(User.objects.all(), context.user)
+            with self.subTest(tester=tester):
+                tester.assert_forced_true()
+                tester.assert_passes_with_checks_disabled()
 
-        # But it works if permission checks are disabled
-        with context.disable_permission_checks():
-            self.assertQuerySetEqual(
-                perm_filter(User.objects.all(), context.user),
-                [system_user(), self.user, self.user1],
-                ordered=False,
-            )
-
-    def test_permission_filter_user_unset_with_token(self) -> None:
-        """Test permission_filter with the no user in context but a token."""
+    def test_predicates_user_anonymous_pass_worker_set(self) -> None:
+        """Test predicates with anonymous, allowed pass, and worker set."""
         context.set_worker_token(self.worker_token)
 
-        # User unset defaults to AnonymousUser()
-        self.assertQuerySetEqual(perm_filter(User.objects.all(), None), [])
-
-    def test_permission_filter_user_context(self) -> None:
-        """Test permission_filter with the context user."""
-        context.set_scope(self.scope)
-        context.set_user(self.user)
-
-        self.assertQuerySetEqual(
-            perm_filter(User.objects.all(), self.user), [self.user]
-        )
-
-        # If user is not passed, take it from context
-        self.assertQuerySetEqual(
-            perm_filter(User.objects.all(), context.user), [self.user]
-        )
-
-        # Disabling permission checks works for any user
-        with context.disable_permission_checks():
-            for user in (AnonymousUser(), self.user, self.user1):
-                self.assertQuerySetEqual(
-                    perm_filter(User.objects.all(), user),
-                    [system_user(), self.user, self.user1],
-                    ordered=False,
-                )
-
-    def test_permission_filter_user_explicit(self) -> None:
-        """Test permission_filter with an explicit user."""
-        for user, expected in (
-            (self.user, [self.user]),
-            (AnonymousUser(), []),
-            (self.user1, [self.user1]),
+        for tester in self.predicate_testers(
+            workers=[Allow.ALWAYS, Allow.PASS, Allow.NEVER],
+            anonymous=[Allow.PASS],
+            users=[AnonymousUser()],
         ):
-            with self.subTest(user=user):
-                self.assertQuerySetEqual(
-                    perm_filter(User.objects.all(), user),
-                    expected,
-                    ordered=False,
-                )
+            with self.subTest(tester=tester):
+                tester.assert_called()
+                tester.assert_passes_with_checks_disabled()
+
+    def test_predicates_user_anonymous_never_worker_set(self) -> None:
+        """Test predicates with both user and worker set."""
+        context.set_worker_token(self.worker_token)
+
+        for tester in self.predicate_testers(
+            workers=[Allow.ALWAYS, Allow.PASS, Allow.NEVER],
+            anonymous=[Allow.NEVER],
+            users=[AnonymousUser()],
+        ):
+            with self.subTest(tester=tester):
+                tester.assert_forced_false()
+                tester.assert_passes_with_checks_disabled()
+
+    def test_predicates_user_and_worker_set(self) -> None:
+        """Test predicates with both user and worker set."""
+        context.set_worker_token(self.worker_token)
+
+        for tester in self.predicate_testers(
+            workers=[Allow.ALWAYS, Allow.PASS, Allow.NEVER],
+            anonymous=(Allow.ALWAYS, Allow.PASS, Allow.NEVER),
+            users=[self.user],
+        ):
+            with self.subTest(tester=tester):
+                tester.assert_called()
+                tester.assert_passes_with_checks_disabled()
+
+    def test_predicates_user_unset_worker_always(self) -> None:
+        """Test predicates with worker, workers=ALWAYS."""
+        context.set_worker_token(self.worker_token)
+
+        for tester in self.predicate_testers(
+            workers=[Allow.ALWAYS],
+            anonymous=(Allow.ALWAYS, Allow.PASS, Allow.NEVER),
+            users=[None],
+        ):
+            with self.subTest(tester=tester):
+                tester.assert_forced_true()
+                tester.assert_passes_with_checks_disabled()
+
+    def test_predicates_user_unset_worker_pass(self) -> None:
+        """Test predicates with worker, workers=PASS."""
+        context.set_worker_token(self.worker_token)
+
+        for tester in self.predicate_testers(
+            workers=[Allow.PASS],
+            anonymous=(Allow.ALWAYS, Allow.PASS, Allow.NEVER),
+            users=[None],
+        ):
+            with self.subTest(tester=tester):
+                tester.assert_called()
+                tester.assert_passes_with_checks_disabled()
+
+    def test_predicates_user_unset_worker_never(self) -> None:
+        """Test predicates with worker, workers=NEVER."""
+        context.set_worker_token(self.worker_token)
+
+        for tester in self.predicate_testers(
+            workers=[Allow.NEVER],
+            anonymous=(Allow.ALWAYS, Allow.PASS, Allow.NEVER),
+            users=[None],
+        ):
+            with self.subTest(tester=tester):
+                tester.assert_forced_false()
+                tester.assert_passes_with_checks_disabled()
+
+    def test_predicates_user_anonymous_never(self) -> None:
+        """Test predicates with anonymous user, anonymous=NEVER."""
+        for tester in self.predicate_testers(
+            workers=(Allow.ALWAYS, Allow.PASS, Allow.NEVER),
+            anonymous=[Allow.NEVER],
+            users=[AnonymousUser()],
+        ):
+            with self.subTest(tester=tester):
+                tester.assert_forced_false()
+                tester.assert_passes_with_checks_disabled()
+
+    def test_predicates_user_anonymous_pass(self) -> None:
+        """Test predicates with anonymous user, anonymous=PASS."""
+        for tester in self.predicate_testers(
+            workers=[Allow.ALWAYS, Allow.PASS, Allow.NEVER],
+            anonymous=[Allow.PASS],
+            users=[AnonymousUser()],
+        ):
+            with self.subTest(tester=tester):
+                tester.assert_called()
+                tester.assert_passes_with_checks_disabled()
+
+    def test_predicates_user_anonymous_always(self) -> None:
+        """Test predicates with anonymous user, anonymous=ALWAYS."""
+        for tester in self.predicate_testers(
+            workers=[Allow.ALWAYS, Allow.PASS, Allow.NEVER],
+            anonymous=[Allow.ALWAYS],
+            users=[AnonymousUser()],
+        ):
+            with self.subTest(tester=tester):
+                tester.assert_forced_true()
+                tester.assert_passes_with_checks_disabled()
+
+    def test_predicates_user(self) -> None:
+        """Test predicates with explicitly given user."""
+        for tester in self.predicate_testers(
+            workers=(Allow.ALWAYS, Allow.PASS, Allow.NEVER),
+            anonymous=(Allow.ALWAYS, Allow.PASS, Allow.NEVER),
+            users=[self.user],
+        ):
+            with self.subTest(tester=tester):
+                tester.assert_called()
+                tester.assert_passes_with_checks_disabled()
 
     def test_get_resource_scope(self) -> None:
         """Test get_resource_scope."""
-        with context.disable_permission_checks():
-            workspace = self.playground.get_default_workspace()
-            artifact, _ = self.playground.create_artifact(create_files=False)
+        workspace = self.playground.get_default_workspace()
+        artifact, _ = self.playground.create_artifact(create_files=False)
 
         self.assertIsNone(get_resource_scope(self.user))
         self.assertEqual(get_resource_scope(self.group), self.scope)
@@ -291,9 +452,8 @@ class PermissionsTests(TestCase):
 
     def test_get_resource_workspace(self) -> None:
         """Test get_resource_workspace."""
-        with context.disable_permission_checks():
-            workspace = self.playground.get_default_workspace()
-            artifact, _ = self.playground.create_artifact(create_files=False)
+        workspace = self.playground.get_default_workspace()
+        artifact, _ = self.playground.create_artifact(create_files=False)
 
         self.assertIsNone(get_resource_workspace(self.user))
         self.assertIsNone(get_resource_workspace(self.group))

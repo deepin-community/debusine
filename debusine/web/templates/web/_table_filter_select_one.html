@@ -1,11 +1,13 @@
-<div class="input-group flex-grow-1">
-    <label class="input-group-text" for="{{ filter.filter_prefix }}">{{ filter.label }}:</label>
+{% extends "web/_table_filter_form_dropdown_menu.html" %}
+{% block form %}
+    <label class="form-label me-2"
+           for="{{ filter.dom_id }}-formfield-{{ filter.filter_prefix }}">{{ filter.label }}</label>
     <select class="form-control"
-            id="{{ filter.filter_prefix }}"
+            id="{{ filter.dom_id }}-formfield-{{ filter.filter_prefix }}"
             name="{{ filter.filter_prefix }}">
         {% for o in filter.options.values %}
             <option value="{{ o.name }}"
                     {% if filter.value == o.name %}selected{% endif %}>{{ o.label }}</option>
         {% endfor %}
     </select>
-</div>
+{% endblock %}

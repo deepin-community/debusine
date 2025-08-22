@@ -66,6 +66,7 @@ class SystemImageBuildTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.configure_task()
 
     def test_compute_dynamic_data(self) -> None:

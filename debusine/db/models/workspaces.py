@@ -11,7 +11,7 @@
 
 import enum
 import re
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from datetime import datetime, timedelta
 from typing import (
     Any,
@@ -21,25 +21,41 @@ from typing import (
     TypeAlias,
     TypeVar,
     Union,
-    assert_never,
     cast,
 )
 
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.postgres.aggregates import ArrayAgg
+from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import models
-from django.db.models import F, Max, Q, QuerySet, UniqueConstraint, Value
+from django.db.models import (
+    BigIntegerField,
+    Count,
+    Exists,
+    F,
+    Func,
+    IntegerField,
+    Max,
+    OuterRef,
+    Q,
+    QuerySet,
+    Subquery,
+    UniqueConstraint,
+    Value,
+)
+from django.db.models.expressions import RawSQL
 from django.db.models.functions import Greatest
 from django.urls import reverse
+from django_cte import CTEQuerySet, With
 
+from debusine.artifacts.models import CollectionCategory
 from debusine.db.context import ContextConsistencyError, context
 from debusine.db.models import permissions
 from debusine.db.models.files import File
 from debusine.db.models.permissions import (
-    AllowWorkers,
-    PartialCheckResult,
+    Allow,
     PermissionUser,
     Role,
     enforce,
@@ -96,6 +112,7 @@ class WorkspaceRoleBase(permissions.RoleBase):
 
     implied_by_scope_roles: frozenset["ScopeRoles"]
     implied_by_workspace_roles: frozenset["WorkspaceRoles"]
+    implied_by_public: bool
 
     def _setup(self) -> None:
         """Set up implications for a newly constructed role."""
@@ -103,6 +120,7 @@ class WorkspaceRoleBase(permissions.RoleBase):
         implied_by_workspace_roles: set[WorkspaceRoles] = {
             cast(WorkspaceRoles, self)
         }
+        implied_by_public: bool = False
         for i in self.implied_by:
             match i:
                 case ScopeRoles():
@@ -113,6 +131,8 @@ class WorkspaceRoleBase(permissions.RoleBase):
                     wr = self.__class__(i.value)
                     implied_by_scope_roles |= wr.implied_by_scope_roles
                     implied_by_workspace_roles |= wr.implied_by_workspace_roles
+                case "public":
+                    implied_by_public = True
                 case _:
                     raise ImproperlyConfigured(
                         "Workspace roles do not support"
@@ -120,19 +140,36 @@ class WorkspaceRoleBase(permissions.RoleBase):
                     )
         self.implied_by_scope_roles = frozenset(implied_by_scope_roles)
         self.implied_by_workspace_roles = frozenset(implied_by_workspace_roles)
+        self.implied_by_public = implied_by_public
 
-    def q(self, user: "User") -> Q:
+    def q(self, user: PermissionUser) -> Q:
         """Return a Q expression to select workspaces with this role."""
+        assert user is not None
+        if not user.is_authenticated:
+            if self.implied_by_public:
+                return Q(public=True)
+            else:
+                return Q(pk__in=())
+
         q = Q(
             roles__group__users=user,
             roles__role__in=self.implied_by_workspace_roles,
         )
         if self.implied_by_scope_roles:
             q |= Q(
-                scope__roles__group__users=user,
-                scope__roles__role__in=self.implied_by_scope_roles,
+                scope__in=Scope.objects.filter(
+                    roles__group__users=user,
+                    roles__role__in=self.implied_by_scope_roles,
+                )
             )
+        if self.implied_by_public:
+            q |= Q(public=True)
+
         return q
+
+    def implies(self, role: "WorkspaceRoles") -> bool:
+        """Check if this role implies the given one."""
+        return self in role.implied_by_workspace_roles
 
 
 class WorkspaceRoles(permissions.Roles, WorkspaceRoleBase, enum.ReprEnum):
@@ -140,6 +177,7 @@ class WorkspaceRoles(permissions.Roles, WorkspaceRoleBase, enum.ReprEnum):
 
     OWNER = Role("owner", implied_by=[ScopeRoles.OWNER])
     CONTRIBUTOR = Role("contributor", implied_by=[OWNER])
+    VIEWER = Role("viewer", implied_by=[CONTRIBUTOR, "public"])
 
 
 WorkspaceRoles.setup()
@@ -155,9 +193,37 @@ class WorkspaceQuerySet(QuerySet["Workspace", A], Generic[A]):
             + Greatest("created_at", Max("workrequest__completed_at"))
         )
 
-    def with_role(self, user: "User", role: WorkspaceRoles) -> Self:
+    def with_role_annotations(self, user: PermissionUser) -> Self:
+        """
+        Annotate the queryset with a bool for each role, with its presence.
+
+        The returned annotations are in the form ``"is_{role}"`` and are True
+        if the user has the given role on the annotated resource.
+
+        A further ``roles_for`` annotation marks the stringified public key of
+        the user used to compute annotations, or the empty string if the
+        annotations are for the anonymous user.
+        """
+        queryset = self.annotate(
+            roles_for=Value(
+                str(user.pk) if user and user.is_authenticated else ""
+            )
+        )
+        for role in WorkspaceRoles:
+            queryset = queryset.annotate(
+                **{
+                    f"is_{role}": Exists(
+                        Workspace.objects.filter(pk=OuterRef("pk")).with_role(
+                            user, role
+                        )
+                    )
+                }
+            )
+        return queryset
+
+    def with_role(self, user: PermissionUser, role: WorkspaceRoles) -> Self:
         """Keep only resources where the user has the given role."""
-        return self.filter(role.q(user))
+        return self.filter(role.q(user)).distinct()
 
     def in_current_scope(self) -> Self:
         """Filter to workspaces in the current scope."""
@@ -165,54 +231,119 @@ class WorkspaceQuerySet(QuerySet["Workspace", A], Generic[A]):
             raise ContextConsistencyError("scope is not set")
         return self.filter(scope=context.scope)
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS, anonymous=Allow.PASS)
     def can_display(self, user: PermissionUser) -> Self:
         """Keep only Workspaces that can be displayed."""
-        assert user is not None  # Enforced by decorator
-        constraints = Q(public=True)
         # This is the same check done in Workspace.set_current, and if changed
         # they need to be kept in sync
-        if user.is_authenticated:
-            constraints |= Workspace.Roles.CONTRIBUTOR.q(user)
-        return self.filter(constraints).distinct()
+        return self.with_role(user, Workspace.Roles.VIEWER)
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_configure(self, user: PermissionUser) -> Self:
         """Keep only Workspaces that can be configured."""
-        assert user is not None  # Enforced by decorator
-        if not user.is_authenticated:
-            return self.none()
-        return self.filter(Workspace.Roles.OWNER.q(user)).distinct()
+        return self.with_role(user, Workspace.Roles.OWNER)
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS)
     def can_create_artifacts(self, user: PermissionUser) -> Self:
         """Keep only Workspaces where the user can create artifacts."""
-        assert user is not None  # Enforced by decorator
-        if not user.is_authenticated:
-            return self.none()
-        # TODO: this allows writing to public workspaces. It reflects the
-        # status quo, and it may now be what we want in the long term
-        constraints = Q(public=True) | Workspace.Roles.CONTRIBUTOR.q(user)
-        return self.filter(constraints).distinct()
+        return self.with_role(user, Workspace.Roles.CONTRIBUTOR)
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_create_work_requests(self, user: PermissionUser) -> Self:
         """Workspaces where the user can create work requests."""
-        assert user is not None  # Enforced by decorator
-        # Anonymous users are not allowed
-        if not user.is_authenticated:
-            return self.none()
-        return self.filter(Workspace.Roles.CONTRIBUTOR.q(user)).distinct()
+        return self.with_role(user, Workspace.Roles.CONTRIBUTOR)
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_create_experiment_workspace(self, user: PermissionUser) -> Self:
         """Workspaces from which the user can create an experiment workspace."""
-        assert user is not None  # Enforced by decorator
-        # Anonymous users are not allowed
-        if not user.is_authenticated:
-            return self.none()
-        constraints = Q(public=True) | Workspace.Roles.CONTRIBUTOR.q(user)
-        return self.filter(constraints).distinct()
+        return self.with_role(user, Workspace.Roles.CONTRIBUTOR)
+
+    @permission_filter()
+    def can_edit_task_configuration(self, user: PermissionUser) -> Self:
+        """Workspaces in which the user can edit task configuration."""
+        return self.with_role(user, Workspace.Roles.OWNER)
+
+    def get_for_context(self, name: str) -> "Workspace":
+        """
+        Query a workspace for setting into the current context.
+
+        This defaults to context.scope as the scope, and prefetches roles for
+        the current user
+        """
+        # Note: user permissions are checked by Workspace.set_current
+        scope = context.require_scope()
+
+        # Do not annotate with user roles if using a worker token
+        if context.worker_token:
+            return cast("Workspace", self.get(scope=scope, name=name))
+
+        user = context.require_user()
+        queryset = self.select_related("scope")
+        if user.is_authenticated:
+            queryset = cast(
+                "WorkspaceQuerySet[A]",
+                queryset.annotate(
+                    user_roles=ArrayAgg(
+                        "roles__role",
+                        filter=Q(roles__group__users=user),
+                        distinct=True,
+                        default=Value([]),
+                    )
+                ),
+            )
+        workspace = queryset.get(scope=scope, name=name)
+        assert isinstance(workspace, Workspace)
+        return workspace
+
+    def annotate_with_workflow_stats(self) -> "WorkspaceQuerySet[Any]":
+        """
+        Annotate with workflow statistics.
+
+        * ``running``: number of running workflows
+        * ``needs_input``: number of workflows needing input
+        * ``completed``: number of completed workflows
+        """
+        # Prevent circular import loop
+        from debusine.db.models.work_requests import WorkRequest
+
+        # Using subqueries so we can use our custom QuerySet filter methods.
+        #
+        # See https://stackoverflow.com/a/43771738 for an explanation of how
+        # the annotations below are constructed.
+        return self.annotate(
+            running=Subquery(
+                WorkRequest.objects.running()
+                .workflows()
+                .filter(parent__isnull=True)
+                .filter(workspace=OuterRef("pk"))
+                .values("workspace")
+                .annotate(count=Count("pk"))
+                .values("count")
+            ),
+            needs_input=Subquery(
+                WorkRequest.objects.needs_input()
+                .workflows()
+                .filter(parent__isnull=True)
+                .filter(workspace=OuterRef("pk"))
+                .values("workspace")
+                .annotate(count=Count("pk"))
+                .values("count")
+            ),
+            completed=Subquery(
+                WorkRequest.objects.filter(
+                    status__in=(
+                        WorkRequest.Statuses.COMPLETED,
+                        WorkRequest.Statuses.ABORTED,
+                    )
+                )
+                .workflows()
+                .filter(parent__isnull=True)
+                .filter(workspace=OuterRef("pk"))
+                .values("workspace")
+                .annotate(count=Count("pk"))
+                .values("count")
+            ),
+        )
 
 
 class WorkspaceManager(models.Manager["Workspace"]):
@@ -225,30 +356,6 @@ class WorkspaceManager(models.Manager["Workspace"]):
     def get_queryset(self) -> WorkspaceQuerySet[Any]:
         """Use the custom QuerySet."""
         return WorkspaceQuerySet(self.model, using=self._db)
-
-    def get_for_context(self, name: str) -> "Workspace":
-        """
-        Query a workspace for setting into the current context.
-
-        This defaults to context.scope as the scope, and prefetches roles for
-        the current user
-        """
-        # Note: user permissions are checked by Workspace.set_current
-        scope = context.require_scope()
-        user = context.require_user()
-        queryset = self.get_queryset().select_related("scope")
-        if user.is_authenticated:
-            queryset = queryset.annotate(
-                user_roles=ArrayAgg(
-                    "roles__role",
-                    filter=Q(roles__group__users=user),
-                    distinct=True,
-                    default=Value([]),
-                )
-            )
-        workspace = queryset.get(scope=scope, name=name)
-        assert isinstance(workspace, Workspace)
-        return workspace
 
 
 class DeleteWorkspaces:
@@ -276,7 +383,9 @@ class DeleteWorkspaces:
             workspace__in=workspaces
         )
         self.collection_items = dmodels.CollectionItem.objects.filter(
-            parent_collection__workspace__in=workspaces
+            Q(parent_collection__workspace__in=workspaces)
+            | Q(artifact__workspace__in=workspaces)
+            | Q(collection__workspace__in=workspaces)
         )
         self.collections = dmodels.Collection.objects.filter(
             workspace__in=workspaces
@@ -302,8 +411,8 @@ class DeleteWorkspaces:
     def perform_deletions(self) -> None:
         """Delete the workspaces and all their resources."""
         self.workflow_templates.delete()
-        self.work_requests.delete()
         self.collection_items.delete()
+        self.work_requests.delete()
         self.collections.delete()
         self.file_in_artifacts.delete()
         self.artifact_relations.delete()
@@ -358,7 +467,7 @@ class Workspace(models.Model):
         null=True,
         help_text=(
             "if set, time since the last task completion time"
-            "after which the workspace can be deleted"
+            " after which the workspace can be deleted"
         ),
     )
 
@@ -372,11 +481,17 @@ class Workspace(models.Model):
 
     def get_absolute_url(self) -> str:
         """Return an absolute URL to this workspace."""
-        return reverse("workspaces:detail", kwargs={"wname": self.name})
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.scope.name):
+            return reverse("workspaces:detail", kwargs={"wname": self.name})
 
     def get_absolute_url_configure(self) -> str:
         """Return an absolute URL to configure this workspace."""
-        return reverse("workspaces:update", kwargs={"wname": self.name})
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.scope.name):
+            return reverse("workspaces:update", kwargs={"wname": self.name})
 
     @copy_signature_from(models.Model.save)
     def save(self, **kwargs: Any) -> None:
@@ -419,113 +534,68 @@ class Workspace(models.Model):
                     "Cannot set workspace before user"
                 )
 
-        workspace_roles: frozenset[Workspace.Roles]
-        if not user.is_authenticated and context.worker_token:
-            workspace_roles = frozenset()
-        elif (user_roles := getattr(self, "user_roles", None)) is not None:
-            # Use cached version if available
-            workspace_roles = frozenset(user_roles)
-        else:
-            workspace_roles = frozenset(self.get_roles(user))
-
-        # Check workspace visibility. This is the same as the can_display
-        # predicate, and if changed they need to be kept in sync
-        expected = Workspace.Roles.CONTRIBUTOR
-        if (
-            self.public
-            or context.worker_token
-            or not expected.implied_by_scope_roles.isdisjoint(
-                context.scope_roles
-            )
-            or not expected.implied_by_workspace_roles.isdisjoint(
-                workspace_roles
-            )
-        ):
+        if context.worker_token:
             context._workspace.set(self)
-            context._workspace_roles.set(workspace_roles)
+            context._workspace_roles.set(frozenset())
         else:
-            raise ContextConsistencyError(
-                f"User {user} cannot access workspace {self}"
-            )
+            _workspace_roles: set[str] = set()
+
+            if self.public:
+                _workspace_roles.add(Workspace.Roles.VIEWER)
+
+            if not user.is_authenticated:
+                pass
+            elif (user_roles := getattr(self, "user_roles", None)) is not None:
+                # Use cached version if available
+                _workspace_roles.update(user_roles)
+            else:
+                _workspace_roles.update(self.get_group_roles(user))
+
+            workspace_roles = Workspace.Roles.from_iterable(_workspace_roles)
+
+            # Check workspace visibility. This is the same as the can_display
+            # predicate, and if changed they need to be kept in sync
+            expected = Workspace.Roles.VIEWER
+            if (
+                context.worker_token
+                or not expected.implied_by_scope_roles.isdisjoint(
+                    context.scope_roles
+                )
+                or any(a.implies(expected) for a in workspace_roles)
+            ):
+                context._workspace.set(self)
+                context._workspace_roles.set(workspace_roles)
+            else:
+                raise ContextConsistencyError(
+                    f"User {user} cannot access workspace {self}"
+                )
 
     @permission_check(
         "{user} cannot display workspace {resource}",
-        workers=AllowWorkers.ALWAYS,
+        workers=Allow.ALWAYS,
+        anonymous=Allow.PASS,
     )
     def can_display(self, user: PermissionUser) -> bool:
         """Check if the workspace can be displayed."""
-        assert user is not None  # enforced by decorator
-        # Shortcuts to avoid hitting the database for common cases
-        if self.public:
-            return True
-        if not user.is_authenticated:
-            return False
-        # Shortcut to avoid hitting the database for common cases
-        match self.context_has_role(user, Workspace.Roles.CONTRIBUTOR):
-            case PartialCheckResult.ALLOW:
-                return True
-            case PartialCheckResult.DENY:
-                return False
-            case PartialCheckResult.PASS:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
-        return Workspace.objects.can_display(user).filter(pk=self.pk).exists()
+        return self.has_role(user, Workspace.Roles.VIEWER)
 
     @permission_check(
         "{user} cannot configure workspace {resource}",
-        workers=AllowWorkers.NEVER,
     )
     def can_configure(self, user: PermissionUser) -> bool:
         """Check if the workspace can be configured."""
-        assert user is not None  # enforced by decorator
-        if not user.is_authenticated:
-            return False
-        # Shortcut to avoid hitting the database for common cases
-        match self.context_has_role(user, Workspace.Roles.OWNER):
-            case PartialCheckResult.ALLOW:
-                return True
-            case PartialCheckResult.DENY:
-                return False
-            case PartialCheckResult.PASS:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
-        return Workspace.objects.can_configure(user).filter(pk=self.pk).exists()
+        return self.has_role(user, Workspace.Roles.OWNER)
 
     @permission_check(
         "{user} cannot create artifacts in {resource}",
-        workers=AllowWorkers.ALWAYS,
+        workers=Allow.ALWAYS,
     )
     def can_create_artifacts(self, user: PermissionUser) -> bool:
         """Check if the user can create artifacts."""
-        assert user is not None  # enforced by decorator
-        # Anonymous users cannot create artifacts
-        if not user.is_authenticated:
-            return False
-        # Shortcuts to avoid hitting the database for common cases
-        if self.public:
-            # TODO: this allows writing to public workspaces. It reflects the
-            # status quo, and it may now be what we want in the long term
-            return True
-        match self.context_has_role(user, Workspace.Roles.CONTRIBUTOR):
-            case PartialCheckResult.ALLOW:
-                return True
-            case PartialCheckResult.DENY:
-                return False
-            case PartialCheckResult.PASS:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
-        return (
-            Workspace.objects.can_create_artifacts(user)
-            .filter(pk=self.pk)
-            .exists()
-        )
+        return self.has_role(user, Workspace.Roles.CONTRIBUTOR)
 
     @permission_check(
         "{user} cannot create work requests in {resource}",
-        workers=AllowWorkers.NEVER,
     )
     def can_create_work_requests(self, user: PermissionUser) -> bool:
         """Check if the user can create work requests."""
@@ -535,102 +605,91 @@ class Workspace(models.Model):
         # some other things, such as exactly how we implement custom
         # workflows and making it easy for users to create their own
         # workspaces.
-        assert user is not None  # enforced by decorator
-        # Anonymous users are not allowed
-        if not user.is_authenticated:
-            return False
-        # Shortcut to avoid hitting the database for common cases
-        match self.context_has_role(user, Workspace.Roles.CONTRIBUTOR):
-            case PartialCheckResult.ALLOW:
-                return True
-            case PartialCheckResult.DENY:
-                return False
-            case PartialCheckResult.PASS:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
-        return (
-            Workspace.objects.can_create_work_requests(user)
-            .filter(pk=self.pk)
-            .exists()
-        )
+        return self.has_role(user, Workspace.Roles.CONTRIBUTOR)
 
     @permission_check(
         "{user} cannot create an experiment workspace from {resource}",
-        workers=AllowWorkers.NEVER,
     )
     def can_create_experiment_workspace(self, user: PermissionUser) -> bool:
         """Check if the user can create an experiment workspace from this."""
-        assert user is not None  # enforced by decorator
-        # Anonymous cannot create experiment workspaces
-        if not user.is_authenticated:
-            return False
-        # Shortcut to avoid hitting the database for common cases
-        if self.public:
+        return self.has_role(user, Workspace.Roles.CONTRIBUTOR)
+
+    @permission_check(
+        "{user} cannot edit task configuration in {resource}",
+    )
+    def can_edit_task_configuration(self, user: PermissionUser) -> bool:
+        """Check if the user can edit task configuration."""
+        return self.has_role(user, Workspace.Roles.OWNER)
+
+    def has_role(self, user: PermissionUser, role: WorkspaceRoles) -> bool:
+        """Check if the user has the given role on this Workspace."""
+        # Honor implied_by_public immediately as it's independent from the user
+        if role.implied_by_public and self.public:
             return True
-        match self.context_has_role(user, Workspace.Roles.CONTRIBUTOR):
-            case PartialCheckResult.ALLOW:
+
+        if not user or not user.is_authenticated:
+            return False
+
+        if context.user == user and context.workspace == self:
+            # Allowed as implied by scope roles the user has
+            if not context.scope_roles.isdisjoint(role.implied_by_scope_roles):
                 return True
-            case PartialCheckResult.DENY:
-                return False
-            case PartialCheckResult.PASS:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
+
+            # Allowed as implied by workspace roles the user has
+            if any(r.implies(role) for r in context.workspace_roles):
+                return True
+
+            # The context has enough information to know that the user does not
+            # have the given role on this workspace
+            return False
         return (
-            Workspace.objects.can_create_experiment_workspace(user)
-            .filter(pk=self.pk)
-            .exists()
+            Workspace.objects.with_role(user, role).filter(pk=self.pk).exists()
         )
 
-    def context_has_role(
-        self, user: "User", role: WorkspaceRoles
-    ) -> PartialCheckResult:
-        """
-        Check the context to see if the user has a role on this Workspace.
-
-        :returns:
-          * ALLOW if the context has enough information to determine that the
-            user has the given role
-          * DENY if the context has enough information to determine that the
-            user does not have the given role
-          * PASS if the context does not have enough information to decide
-        """
-        if (
-            context.user != user
-            or context.scope != self.scope
-            or context.workspace != self
-        ):
-            return PartialCheckResult.PASS
-
-        # Allowed as implied by scope roles the user has
-        if not role.implied_by_scope_roles.isdisjoint(context.scope_roles):
-            return PartialCheckResult.ALLOW
-
-        # Allowed as implied by workspace roles the user has
-        if not role.implied_by_workspace_roles.isdisjoint(
-            context.workspace_roles
-        ):
-            return PartialCheckResult.ALLOW
-
-        # The context has enough information to know that the user does not
-        # have the given role on this workspace
-        return PartialCheckResult.DENY
-
     # See https://github.com/typeddjango/django-stubs/issues/1047 for the typing
-    def get_roles(
-        self, user: Union["User", "AnonymousUser"]
-    ) -> QuerySet["WorkspaceRole", "WorkspaceRoles"]:
+    def get_group_roles(
+        self, user: PermissionUser
+    ) -> QuerySet["WorkspaceRole", str]:
         """Get the roles of the user on this workspace."""
-        if not user.is_authenticated:
-            result = WorkspaceRole.objects.none().values_list("role", flat=True)
+        if not user or not user.is_authenticated:
+            return WorkspaceRole.objects.none().values_list("role", flat=True)
         else:
-            result = (
+            return (
                 self.roles.filter(group__users=user)
                 .values_list("role", flat=True)
                 .distinct()
             )
-        return cast(QuerySet["WorkspaceRole", "WorkspaceRoles"], result)
+
+    def get_roles(self, user: PermissionUser) -> frozenset[WorkspaceRoles]:
+        """
+        Get the effective roles of the user on this workspace.
+
+        If you invoke this method on each result of a whole queryset, you
+        should annotate the queryset using ``with_role_annotations`` to greatly
+        reduce the number of queries.
+        """
+        roles: list[WorkspaceRoles] = []
+        if ((roles_for := getattr(self, "roles_for", None)) is not None) and (
+            (
+                roles_for
+                and user
+                and user.is_authenticated
+                and int(roles_for) == user.pk
+            )
+            # with_role_annotations uses the empty string to indicate that the
+            # annotations are computed for the anonymous user
+            or (roles_for == "" and (not user or not user.is_authenticated))
+        ):
+            # Use roles from annotations
+            for role in WorkspaceRoles:
+                if getattr(self, f"is_{role}", False):
+                    roles.append(role)
+        else:
+            # Fall back on querying each role
+            for role in WorkspaceRoles:
+                if self.has_role(user, role):
+                    roles.append(role)
+        return WorkspaceRoles.from_iterable(roles)
 
     @property
     def expire_at(self) -> datetime | None:
@@ -683,6 +742,11 @@ class Workspace(models.Model):
         # Check for duplicates in the chain before altering the database
         seen: set[int] = set()
         for workspace in chain:
+            if workspace == self:
+                raise ValueError(
+                    "inheritance chain contains the workspace itself"
+                )
+
             if workspace.pk in seen:
                 raise ValueError(
                     f"duplicate workspace {workspace.name!r}"
@@ -703,7 +767,6 @@ class Workspace(models.Model):
         user: Union["User", "AnonymousUser"],
         category: str,
         name: str,
-        visited: set[int] | None = None,
     ) -> "Collection":
         """
         Lookup a collection by category and name.
@@ -714,45 +777,88 @@ class Workspace(models.Model):
         :param user: user to use for permission checking
         :param category: collection category
         :param name: collection name
-        :param visited: for internal use only: state used during graph
-                        traversal
         :raises Collection.DoesNotExist: if the collection was not found
         """
         from debusine.db.models import Collection
 
-        # Ensure that the user can access this workspace
-        if not self.can_display(user):
-            raise Collection.DoesNotExist
+        visible = With(Workspace.objects.can_display(user), name="visible")
 
-        # Lookup in this workspace
-        try:
-            return Collection.objects.get(
-                workspace=self, category=category, name=name
+        def chain_cte(cte: With) -> QuerySet[Any]:
+            """
+            Follow a workspace's inheritance chain.
+
+            The ``path_order`` field allows ordering the results as for a
+            depth-first search.
+            """
+            path_order_field: ArrayField[int, int] = ArrayField(
+                IntegerField(), name="path_order"
             )
-        except Collection.DoesNotExist:
-            pass
-
-        if visited is None:
-            visited = set()
-
-        visited.add(self.pk)
-
-        # Follow the inheritance chain
-        for node in self.chain_parents.order_by("order").select_related(
-            "parent"
-        ):
-            workspace = node.parent
-            # Break inheritance loops
-            if workspace.pk in visited:
-                continue
-            try:
-                return workspace.get_collection(
-                    user=user, category=category, name=name, visited=visited
+            path_field: ArrayField[int, int] = ArrayField(
+                BigIntegerField(), name="path"
+            )
+            recursive = (
+                visible.join(Workspace, id=visible.col.id)
+                .filter(id=self.id)
+                .values(
+                    chain_child=F("id"),
+                    chain_parent=F("id"),
+                    path_order=RawSQL(
+                        "ARRAY[]::integer[]", (), output_field=path_order_field
+                    ),
+                    path=RawSQL(
+                        "ARRAY[db_workspace.id]", (), output_field=path_field
+                    ),
                 )
-            except Collection.DoesNotExist:
-                pass
+                .union(
+                    visible.join(
+                        cte.join(WorkspaceChain, child=cte.col.chain_parent),
+                        parent_id=visible.col.id,
+                    )
+                    # Break inheritance loops.
+                    .annotate(
+                        is_cycle=RawSQL(
+                            "chain.path @> ARRAY[db_workspacechain.parent_id]",
+                            (),
+                        )
+                    )
+                    .filter(is_cycle=False)
+                    .values(
+                        chain_child=F("child_id"),
+                        chain_parent=F("parent_id"),
+                        path_order=Func(
+                            cte.col.path_order,
+                            F("order"),
+                            function="array_append",
+                            output_field=path_order_field,
+                        ),
+                        path=Func(
+                            cte.col.path,
+                            F("parent_id"),
+                            function="array_append",
+                            output_field=path_field,
+                        ),
+                    ),
+                    all=True,
+                )
+            )
+            assert isinstance(recursive, QuerySet)
+            return recursive
 
-        raise Collection.DoesNotExist
+        chain = With.recursive(chain_cte, name="chain")
+        collection = (
+            chain.join(
+                CTEQuerySet(Collection, using=Collection.objects._db),
+                workspace=chain.col.chain_parent,
+            )
+            .with_cte(visible)
+            .with_cte(chain)
+            .filter(category=category, name=name)
+            # Select the first matching collection in depth-first search
+            # order.  This raises Collection.DoesNotExist if there is none.
+            .earliest(chain.col.path_order)
+        )
+        assert isinstance(collection, Collection)
+        return collection
 
     def get_singleton_collection(
         self, *, user: Union["User", "AnonymousUser"], category: str
@@ -768,6 +874,49 @@ class Workspace(models.Model):
         :raises Collection.DoesNotExist: if the collection was not found
         """
         return self.get_collection(user=user, category=category, name="_")
+
+    def list_accessible_collections(
+        self,
+        user: Union["User", "AnonymousUser"],
+        category: CollectionCategory,
+        *,
+        ws_seen: tuple[int, ...] = (),
+        coll_seen: set[int] | None = None,
+    ) -> Generator["Collection", None, None]:
+        """
+        List all collections of a given category accessible from a workspace.
+
+        It recurses up the workspace inheritance chain, breaking loops.
+
+        :param user: user to use for accessibility checks
+        :param category: the category of collections to list
+        :param ws_seen: IDs of workspaces already visited during recursion, used
+          to break loops
+        :param coll_seen: IDs of collections already produced, to remove
+          duplicates when workspaces appear multiple times in
+          the inheritance tree
+        """
+        if self.id in ws_seen:
+            return
+        if not self.can_display(user):
+            return
+        ws_seen = ws_seen + (self.id,)
+        if coll_seen is None:
+            coll_seen = set()
+        for collection in (
+            self.collections.filter(category=category)
+            .order_by("name")
+            .select_related("workspace")
+        ):
+            if collection.id not in coll_seen:
+                yield collection
+                coll_seen.add(collection.id)
+        for chain in self.chain_parents.select_related("parent").order_by(
+            "order"
+        ):
+            yield from chain.parent.list_accessible_collections(
+                user, category, ws_seen=ws_seen, coll_seen=coll_seen
+            )
 
     def __str__(self) -> str:
         """Return basic information of Workspace."""

@@ -13,8 +13,11 @@ from typing import Any
 
 from django.test import TestCase
 
-from debusine.artifacts.models import ArtifactCategory, CollectionCategory
-from debusine.db.context import context
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    CollectionCategory,
+    TaskTypes,
+)
 from debusine.db.models import (
     TaskDatabase,
     WorkRequest,
@@ -24,7 +27,7 @@ from debusine.db.models import (
 from debusine.server.collections.tests.utils import CollectionTestMixin
 from debusine.server.workflows import UpdateEnvironmentsWorkflow
 from debusine.server.workflows.base import orchestrate_workflow
-from debusine.tasks.models import BaseDynamicTaskData, TaskTypes
+from debusine.tasks.models import BaseDynamicTaskData
 
 
 class UpdateEnvironmentsWorkflowTests(CollectionTestMixin, TestCase):
@@ -83,7 +86,7 @@ class UpdateEnvironmentsWorkflowTests(CollectionTestMixin, TestCase):
                     {
                         "codenames": ["trixie"],
                         "codename_aliases": {"trixie": ["sid"]},
-                        "variants": ["autopkgtest", "sbuild"],
+                        "variants": [None, "autopkgtest", "sbuild"],
                         "backends": ["unshare", "incus-lxc"],
                         "architectures": ["amd64", "arm64"],
                         "simplesystemimagebuild_template": {
@@ -122,6 +125,7 @@ class UpdateEnvironmentsWorkflowTests(CollectionTestMixin, TestCase):
                     "category": ArtifactCategory.SYSTEM_TARBALL
                 },
                 "collection": "debian@debian:environments",
+                "created_at": None,
                 "name_template": None,
                 "variables": {"codename": "bookworm"},
             }
@@ -167,18 +171,23 @@ class UpdateEnvironmentsWorkflowTests(CollectionTestMixin, TestCase):
                 "action": "update-collection-with-artifacts",
                 "artifact_filters": {"category": ArtifactCategory.SYSTEM_IMAGE},
                 "collection": "debian@debian:environments",
+                "created_at": None,
                 "name_template": None,
                 "variables": {
                     "codename": codename,
-                    "variant": variant,
                     "backend": backend,
+                    **({} if variant is None else {"variant": variant}),
                 },
             }
             for codename, variant, backend in (
+                ("trixie", None, "unshare"),
+                ("trixie", None, "incus-lxc"),
                 ("trixie", "autopkgtest", "unshare"),
                 ("trixie", "autopkgtest", "incus-lxc"),
                 ("trixie", "sbuild", "unshare"),
                 ("trixie", "sbuild", "incus-lxc"),
+                ("sid", None, "unshare"),
+                ("sid", None, "incus-lxc"),
                 ("sid", "autopkgtest", "unshare"),
                 ("sid", "autopkgtest", "incus-lxc"),
                 ("sid", "sbuild", "unshare"),
@@ -205,7 +214,7 @@ class UpdateEnvironmentsWorkflowTests(CollectionTestMixin, TestCase):
             {
                 "display_name": "Build image for trixie/amd64",
                 "step": "simplesystemimagebuild-trixie-amd64",
-                "group": "trixie [autopkgtest,sbuild]",
+                "group": "trixie [None,autopkgtest,sbuild]",
             },
         )
         self.assert_work_request_event_reactions(
@@ -231,7 +240,7 @@ class UpdateEnvironmentsWorkflowTests(CollectionTestMixin, TestCase):
             {
                 "display_name": "Build image for trixie/arm64",
                 "step": "simplesystemimagebuild-trixie-arm64",
-                "group": "trixie [autopkgtest,sbuild]",
+                "group": "trixie [None,autopkgtest,sbuild]",
             },
         )
         self.assert_work_request_event_reactions(
@@ -269,12 +278,11 @@ class UpdateEnvironmentsWorkflowTests(CollectionTestMixin, TestCase):
         collection = self.playground.create_collection(
             name="debian", category=CollectionCategory.ENVIRONMENTS
         )
-        with context.disable_permission_checks():
-            tarball, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data={"architecture": "amd64"},
-                work_request=child,
-            )
+        tarball, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data={"architecture": "amd64"},
+            work_request=child,
+        )
 
         child.mark_completed(WorkRequest.Results.SUCCESS)
 

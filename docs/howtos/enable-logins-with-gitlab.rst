@@ -109,3 +109,12 @@ All listed restrictions must be met (i.e. they are AND-ed together).
 Example::
 
   restrict=["group:debian", "email-verified"],
+
+
+Provider-specific behaviour
+===========================
+
+If the current options available to control external login providers are not
+sufficient, one can extend the ``Signon`` class and set it as the
+``SIGNON_CLASS`` setting. See ``debusine.server.signon.sites.DebianSignon``
+documentation for an example.

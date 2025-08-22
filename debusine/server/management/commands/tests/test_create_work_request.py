@@ -15,13 +15,13 @@ import yaml
 from django.conf import settings
 from django.core.management import CommandError
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import WorkRequest, default_workspace, system_user
 from debusine.django.management.tests import call_command
 from debusine.tasks.models import (
     ActionSendNotification,
     ActionUpdateCollectionWithArtifacts,
     EventReactions,
-    TaskTypes,
 )
 from debusine.test.django import TestCase
 

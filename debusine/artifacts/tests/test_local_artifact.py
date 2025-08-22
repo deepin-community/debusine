@@ -11,7 +11,6 @@
 
 import json
 import re
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
@@ -32,6 +31,7 @@ from debusine.artifacts import (
     LintianArtifact,
     LocalArtifact,
     PackageBuildLog,
+    RepositoryIndex,
     SigningInputArtifact,
     SigningOutputArtifact,
     SourcePackage,
@@ -45,6 +45,7 @@ from debusine.artifacts.local_artifact import (
     deb822dict_to_dict,
 )
 from debusine.assets import KeyPurpose
+from debusine.client.debusine import serialize_local_artifact
 from debusine.client.models import FileRequest, StrMaxLength255
 from debusine.test import TestCase
 
@@ -65,6 +66,7 @@ class LocalArtifactTests(TestCase):
 
     def setUp(self) -> None:
         """Set up test."""  # noqa: D202
+        super().setUp()
 
         # Register a custom artifact category, taking care that it doesn't
         # pollute other tests.
@@ -249,85 +251,6 @@ class LocalArtifactTests(TestCase):
         ):
             self.local_artifact.add_remote_file(file.name, file_request)
 
-    def test_serialize_for_create(self) -> None:
-        """serialize_for_create_artifact return the expected dictionary."""
-        workspace = "workspace"
-        self.assertEqual(
-            self.local_artifact.serialize_for_create_artifact(
-                workspace=workspace
-            ),
-            {
-                "category": self.category,
-                "data": self.data,
-                "expire_at": None,
-                "files": self.files,
-                "workspace": workspace,
-                "work_request": None,
-            },
-        )
-
-    def test_serialize_for_create_no_workspace(self) -> None:
-        """serialize_for_create_artifact return dictionary without workspace."""
-        self.assertNotIn(
-            "workspace",
-            self.local_artifact.serialize_for_create_artifact(workspace=None),
-        )
-
-    def test_validate_model_on_serialization(self) -> None:
-        """serialize_for_create_artifact raise ValueError: invalid artifact."""
-        file = self.create_temporary_file(suffix=".changes")
-        artifact = Upload(
-            files={file.name: file},
-            category=Upload._category,
-            data=data_models.DebianUpload(
-                type="dpkg",
-                changes_fields={
-                    "Architecture": "amd64",
-                    "Files": [
-                        {"name": "hello_1.0_amd64.deb"},
-                    ],
-                },
-            ),
-        )
-
-        # Remove the only file. The "artifact" object will not validate
-        artifact.files.popitem()
-
-        with self.assertRaisesRegex(ValueError, "^Model validation failed:"):
-            artifact.serialize_for_create_artifact(workspace="System")
-
-    def test_serialize_for_create_with_work_request(self) -> None:
-        """serialize_for_create_artifact include the work_request."""
-        workspace = "workspace"
-        work_request = 5
-
-        serialized = self.local_artifact.serialize_for_create_artifact(
-            workspace=workspace, work_request=work_request
-        )
-
-        self.assertEqual(serialized["work_request"], work_request)
-
-    def test_serialize_for_create_remote_files(self) -> None:
-        """serialize_for_create_artifact() handles remote files."""
-        changes_file = self.create_temporary_file(suffix=".changes")
-        tar_file = self.create_temporary_file(suffix=".tar.xz")
-        self.local_artifact.add_local_file(changes_file)
-        self.local_artifact.add_remote_file(
-            tar_file.name, FileRequest.create_from(tar_file)
-        )
-
-        serialized = self.local_artifact.serialize_for_create_artifact(
-            workspace=None
-        )
-
-        self.assertEqual(
-            serialized["files"],
-            {
-                file.name: FileRequest.create_from(file)
-                for file in (changes_file, tar_file)
-            },
-        )
-
     def test_validate_category(self) -> None:
         """Creating a new artifact validates its category."""
         self.assertRaisesRegex(
@@ -355,22 +278,13 @@ class LocalArtifactTests(TestCase):
         ):
             LocalArtifact._validate_files_length(files, expected)
 
-    def test_serialize_for_create_with_expire_at(self) -> None:
-        """serialize_for_create_artifact include the expire_at."""
-        expire_at = datetime.now() + timedelta(days=1)
-
-        serialized = self.local_artifact.serialize_for_create_artifact(
-            workspace="workspac", expire_at=expire_at
-        )
-
-        self.assertEqual(serialized["expire_at"], expire_at.isoformat())
-
 
 class PackageBuildLogTests(TestCase):
     """Tests for PackageBuildLog."""
 
     def setUp(self) -> None:
         """Set up for the tests."""
+        super().setUp()
         self.file = FileRequest(
             size=10,
             checksums={
@@ -389,21 +303,30 @@ class PackageBuildLogTests(TestCase):
         """create() method return the expected PackageBuildLog."""
         source = "hello"
         version = "2.10-2"
+        architecture = "amd64"
 
         artifact = PackageBuildLog.create(
             file=self.directory / "log.build",
             source=source,
             version=version,
+            architecture=architecture,
         )
 
         expected_data = data_models.DebianPackageBuildLog(
-            source=source, version=version, filename="log.build"
+            source=source,
+            version=version,
+            architecture=architecture,
+            filename="log.build",
         )
         expected_files = {self.build_filename: self.build_file}
+        expected_content_types = {
+            self.build_filename: "text/plain; charset=utf-8"
+        }
 
         expected = PackageBuildLog(
             category=PackageBuildLog._category,
             files=expected_files,
+            content_types=expected_content_types,
             data=expected_data,
         )
         self.assertEqual(artifact, expected)
@@ -446,12 +369,15 @@ class PackageBuildLogTests(TestCase):
     def test_json_serializable(self) -> None:
         """Artifact returned by create is JSON serializable."""
         artifact = PackageBuildLog.create(
-            file=self.build_file, source="hello", version="2.10-2"
+            file=self.build_file,
+            source="hello",
+            version="2.10-2",
+            architecture="amd64",
         )
 
         # No exception is raised
         json.dumps(
-            artifact.serialize_for_create_artifact(workspace="some-workspace")
+            serialize_local_artifact(artifact, workspace="some-workspace")
         )
 
 
@@ -460,6 +386,7 @@ class UploadTests(TestCase):
 
     def setUp(self) -> None:
         """Set up test."""
+        super().setUp()
         self.workspace = "workspace"
 
         self.file = FileRequest(
@@ -490,11 +417,13 @@ class UploadTests(TestCase):
             dsc.name: dsc,
             deb.name: deb,
         }
+        content_types = {changes_filename: "text/plain; charset=utf-8"}
         data = data_models.DebianUpload(changes_fields=changes, type="dpkg")
 
         expected = Upload(
             category=Upload._category,
             files=files,
+            content_types=content_types,
             data=data,
         )
 
@@ -541,6 +470,7 @@ class UploadTests(TestCase):
             category=Upload._category,
             files={changes_file.name: changes_file, dsc.name: dsc},
             remote_files={deb.name: FileRequest.create_from(deb)},
+            content_types={changes_file.name: "text/plain; charset=utf-8"},
             data=data_models.DebianUpload(changes_fields=changes, type="dpkg"),
         )
         deb.unlink()
@@ -560,7 +490,7 @@ class UploadTests(TestCase):
         artifact = Upload.create(changes_file=changes)
 
         json.dumps(
-            artifact.serialize_for_create_artifact(workspace="some workspace")
+            serialize_local_artifact(artifact, workspace="some workspace")
         )
 
     def test_files_no_contain_changes_raise_value_error(self) -> None:
@@ -740,11 +670,11 @@ class BinaryPackageTests(TestCase):
         self.write_deb_file(file)
         artifact = BinaryPackage.create(file=file)
 
-        # This is to verity that serialize_for_create_artifact() is
-        # not returning some object that might raise an exception on
-        # json.dumps. E.g. if it returned (as a value of the dictionary) a set()
+        # This is to verify that serialize_local_artifact() is not returning
+        # some object that might raise an exception on json.dumps, e.g. if
+        # it returned (as a value of the dictionary) a set().
         json.dumps(
-            artifact.serialize_for_create_artifact(workspace="some workspace")
+            serialize_local_artifact(artifact, workspace="some workspace")
         )
 
 
@@ -833,11 +763,11 @@ class BinaryPackagesTests(TestCase):
             files=[file],
         )
 
-        # This is to verify that serialize_for_create_artifact() is
-        # not returning some object that might raise an exception on
-        # json.dumps. E.g. if it returned (as a value of the dictionary) a set()
+        # This is to verify that serialize_local_artifact() is not returning
+        # some object that might raise an exception on json.dumps, e.g. if
+        # it returned (as a value of the dictionary) a set().
         json.dumps(
-            artifact.serialize_for_create_artifact(workspace="some workspace")
+            serialize_local_artifact(artifact, workspace="some workspace")
         )
 
 
@@ -853,11 +783,15 @@ class WorkRequestDebugLogsTests(TestCase):
         expected = WorkRequestDebugLogs(
             category=WorkRequestDebugLogs._category,
             data=data_models.EmptyArtifactData(),
+            files={
+                log_file_1.name: log_file_1,
+                log_file_2.name: log_file_2,
+            },
+            content_types={
+                log_file_1.name: "text/plain; charset=utf-8",
+                log_file_2.name: "text/plain; charset=utf-8",
+            },
         )
-        expected.files = {
-            log_file_1.name: log_file_1,
-            log_file_2.name: log_file_2,
-        }
 
         self.assertEqual(artifact, expected)
 
@@ -867,11 +801,11 @@ class WorkRequestDebugLogsTests(TestCase):
         log_file_2 = self.create_temporary_file()
         artifact = WorkRequestDebugLogs.create(files=[log_file_1, log_file_2])
 
-        # This is to verify that serialize_for_create_artifact() is
-        # not returning some object that might raise an exception on
-        # json.dumps. E.g. if it returned (as a value of the dictionary) a set()
+        # This is to verify that serialize_local_artifact() is not returning
+        # some object that might raise an exception on json.dumps, e.g. if
+        # it returned (as a value of the dictionary) a set().
         json.dumps(
-            artifact.serialize_for_create_artifact(workspace="some workspace")
+            serialize_local_artifact(artifact, workspace="some workspace")
         )
 
 
@@ -965,11 +899,11 @@ class SourcePackageTests(TestCase):
             files.append(dir_ / file["name"])
         package = SourcePackage.create(name=name, version=version, files=files)
 
-        # This is to verify that serialize_for_create_artifact() is
-        # not returning some object that might raise an exception on
-        # json.dumps. E.g. if it returned (as a value of the dictionary) a set()
+        # This is to verify that serialize_local_artifact() is not returning
+        # some object that might raise an exception on json.dumps, e.g. if
+        # it returned (as a value of the dictionary) a set().
         json.dumps(
-            package.serialize_for_create_artifact(workspace="some workspace")
+            serialize_local_artifact(package, workspace="some workspace")
         )
 
 
@@ -983,6 +917,7 @@ class LintianTests(TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         """Set up common data for the tests."""
+        super().setUpClass()
         cls.output_content = (
             b"W: python-ping3 source: missing-license-"
             b"paragraph-in-dep5-copyright gpl-3 [debian/copyright:33]\n"
@@ -1037,12 +972,18 @@ class LintianTests(TestCase):
         )
 
         package = LintianArtifact.create(
-            lintian_output=output, analysis=analysis, summary=self.summary
+            lintian_output=output,
+            analysis=analysis,
+            architecture="i386",
+            summary=self.summary,
         )
 
         self.assertEqual(package._category, LintianArtifact._category)
         self.assertEqual(
-            package.data, data_models.DebianLintian(summary=self.summary)
+            package.data,
+            data_models.DebianLintian(
+                architecture="i386", summary=self.summary
+            ),
         )
         self.assertEqual(
             package.files,
@@ -1082,7 +1023,7 @@ class LintianTests(TestCase):
         self,
     ) -> None:
         """Test validate_required_files: not valid, raise ValueError."""
-        msg = r"^Files required: " r"\['analysis.json', 'lintian.txt'\]$"
+        msg = r"^Files required: \['analysis.json', 'lintian.txt'\]$"
 
         with self.assertRaisesRegex(ValueError, msg):
             LintianArtifact._validate_required_files({"summary.json": ""})
@@ -1096,14 +1037,17 @@ class LintianTests(TestCase):
             suffix=".json", contents=self.analysis_content
         )
         artifact = LintianArtifact.create(
-            lintian_output=output, analysis=analysis, summary=self.summary
+            lintian_output=output,
+            analysis=analysis,
+            architecture="source",
+            summary=self.summary,
         )
 
-        # This is to verify that serialize_for_create_artifact() is
-        # not returning some object that might raise an exception on
-        # json.dumps. E.g. if it returned (as a value of the dictionary) a set()
+        # This is to verify that serialize_local_artifact() is not returning
+        # some object that might raise an exception on json.dumps, e.g. if
+        # it returned (as a value of the dictionary) a set().
         json.dumps(
-            artifact.serialize_for_create_artifact(workspace="some workspace")
+            serialize_local_artifact(artifact, workspace="some workspace")
         )
 
 
@@ -1112,6 +1056,7 @@ class AutopkgtestArtifactTests(TestCase):
 
     def setUp(self) -> None:
         """Set up test."""
+        super().setUp()
         self.data_contents: dict[str, Any] = {
             "results": {
                 "test": {
@@ -1172,11 +1117,11 @@ class AutopkgtestArtifactTests(TestCase):
             directory, data_models.DebianAutopkgtest(**self.data_contents)
         )
 
-        # This is to verify that serialize_for_create_artifact() is
-        # not returning some object that might raise an exception on
-        # json.dumps. E.g. if it returned (as a value of the dictionary) a set()
+        # This is to verify that serialize_local_artifact() is not returning
+        # some object that might raise an exception on json.dumps, e.g. if
+        # it returned (as a value of the dictionary) a set().
         json.dumps(
-            artifact.serialize_for_create_artifact(workspace="some workspace")
+            serialize_local_artifact(artifact, workspace="some workspace")
         )
 
 
@@ -1195,6 +1140,7 @@ class DebianSystemTarballArtifactTests(TestCase):
                 "vendor": "debian",
                 "codename": "bookworm",
                 "mirror": "https://deb.debian.org",
+                "components": ["main"],
                 "variant": "minbase",
                 "pkglist": [],
                 "architecture": "amd64",
@@ -1262,6 +1208,7 @@ class BlhcArtifactTests(TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         """Set up common data for the tests."""
+        super().setUpClass()
         cls.output_content = (
             b"LDFLAGS missing (-fPIE -pie): /usr/bin/c++  -g -O2 -fstack-"
             b"protector-strong -Wformat -Werror=format-security -Wdate-time "
@@ -1299,7 +1246,7 @@ class BlhcArtifactTests(TestCase):
 
         # No exception is raised
         json.dumps(
-            artifact.serialize_for_create_artifact(workspace="some-workspace")
+            serialize_local_artifact(artifact, workspace="some-workspace")
         )
 
 
@@ -1311,6 +1258,7 @@ class DebDiffArtifactTests(TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         """Set up common data for the tests."""
+        super().setUpClass()
         cls.output_content = (
             b"diff -Nru a/debian/patches/series b/debian/patches/series"
             b"--- a/debian/patches/series       2024-03-23 10:37:14.00000 +0100"
@@ -1357,7 +1305,7 @@ class DebDiffArtifactTests(TestCase):
 
         # No exception is raised
         json.dumps(
-            artifact.serialize_for_create_artifact(workspace="some-workspace")
+            serialize_local_artifact(artifact, workspace="some-workspace")
         )
 
 
@@ -1378,6 +1326,7 @@ class DebianSystemImageArtifactTests(TestCase):
                 "vendor": "debian",
                 "codename": "sid",
                 "mirror": "https://deb.debian.org",
+                "components": ["main"],
                 "filesystem": "ext4",
                 "size": 12345,
                 "pkglist": {},
@@ -1404,6 +1353,7 @@ class DebianSystemImageArtifactTests(TestCase):
                 "vendor": "debian",
                 "codename": "sid",
                 "mirror": "https://deb.debian.org",
+                "components": ["main"],
                 "filesystem": "ext4",
                 "size": 12345,
                 "pkglist": {},
@@ -1488,6 +1438,10 @@ class SigningInputArtifactTests(TestCase):
             artifact.data, {"trusted_certs": None, "binary_package_name": None}
         )
         self.assertEqual(artifact.files, {"package/dir/file": unsigned})
+        self.assertEqual(
+            artifact.content_types,
+            {"package/dir/file": "application/octet-stream"},
+        )
 
     def test_create_trusted_certs(self) -> None:
         """Create a SigningInputArtifact with trusted_certs."""
@@ -1515,6 +1469,13 @@ class SigningInputArtifactTests(TestCase):
                 "package/another-dir/another-file": unsigned_2,
             },
         )
+        self.assertEqual(
+            artifact.content_types,
+            {
+                "package/dir/file": "application/octet-stream",
+                "package/another-dir/another-file": "application/octet-stream",
+            },
+        )
 
     def test_create_binary_package_name(self) -> None:
         """Create a valid SigningInputArtifact with a binary package name."""
@@ -1533,6 +1494,10 @@ class SigningInputArtifactTests(TestCase):
             {"trusted_certs": None, "binary_package_name": "hello"},
         )
         self.assertEqual(artifact.files, {"package/dir/file": unsigned})
+        self.assertEqual(
+            artifact.content_types,
+            {"package/dir/file": "application/octet-stream"},
+        )
 
     def test_create_no_files(self) -> None:
         """A SigningInputArtifact must have at least one file."""
@@ -1576,6 +1541,10 @@ class SigningOutputArtifactTests(TestCase):
             },
         )
         self.assertEqual(artifact.files, {"package/dir/file.sig": output_file})
+        self.assertEqual(
+            artifact.content_types,
+            {"package/dir/file.sig": "application/octet-stream"},
+        )
 
     def test_create_binary_package_name(self) -> None:
         """Create a valid SigningOutputArtifact with a binary package name."""
@@ -1607,3 +1576,30 @@ class SigningOutputArtifactTests(TestCase):
             },
         )
         self.assertEqual(artifact.files, {"package/dir/file.sig": output_file})
+        self.assertEqual(
+            artifact.content_types,
+            {"package/dir/file.sig": "application/octet-stream"},
+        )
+
+
+class RepositoryIndexTests(TestCase):
+    """Tests for RepositoryIndex."""
+
+    def test_create(self) -> None:
+        """Create a valid RepositoryIndex."""
+        directory = self.create_temporary_directory()
+        (
+            release := directory / "deb.debian.org_debian_dists_sid_Release"
+        ).write_text("A Release file\n")
+
+        artifact = RepositoryIndex.create(file=release, path="Release")
+
+        artifact.validate_model()
+        self.assertEqual(
+            artifact,
+            RepositoryIndex(
+                category=RepositoryIndex._category,
+                files={"Release": release},
+                data=data_models.DebianRepositoryIndex(path="Release"),
+            ),
+        )

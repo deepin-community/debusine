@@ -2,6 +2,9 @@
 
 set -e
 
+# shellcheck source=/dev/null
+. /usr/share/debconf/confmodule
+
 # shellcheck disable=SC2034
 case "$1" in
 	configure)
@@ -29,8 +32,6 @@ case "$1" in
 		# shellcheck disable=SC2086
 		chown "$user:$group" $directories
 
-		# shellcheck source=/dev/null
-		. /usr/share/debconf/confmodule
 		# shellcheck source=/dev/null
 		. /usr/share/dbconfig-common/dpkg/postinst.pgsql
 

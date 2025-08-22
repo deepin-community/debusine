@@ -216,6 +216,21 @@ class AuthorizationMiddlewareTests(
         self.assertIs(response, MOCK_RESPONSE)
         self.assertEqual(getattr(request, "_debusine_token"), token)
         self.assertIsNone(context.worker_token)
+        self.assertIsNotNone(context.user)
+
+    def test_user_token_inactive_user(self) -> None:
+        """Inactive users are not allowed."""
+        token = self.playground.create_user_token()
+        assert token.user is not None
+        token.user.is_active = False
+        token.user.save()
+        mw = self.get_middleware()
+        request = self.make_request(token=token)
+        response = mw(request)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.content, b"user token has an inactive user")
+        self.assertIsNone(context.user)
+        self.assertIsNone(context.worker_token)
 
     def test_user_token_logged_in(self) -> None:
         """Check handling of user tokens while logged in."""
@@ -229,6 +244,7 @@ class AuthorizationMiddlewareTests(
             b"cannot use both Django and user token authentication",
         )
         self.assertIsNone(context.user)
+        self.assertIsNone(context.worker_token)
 
     def test_user_token_forbidden(self) -> None:
         """Test the forbidden case for user token."""

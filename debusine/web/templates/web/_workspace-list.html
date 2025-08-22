@@ -1,5 +1,6 @@
 {% if workspace_list %}
-    <table class="table table-sm" id="workspace-list-table">
+    <table class="table table-sm table-hover table-striped"
+           id="workspace-list-table">
         <thead>
             <tr>
                 <th>Name</th>
@@ -14,7 +15,7 @@
                     <td>
                         <a href="{{ workspace.get_absolute_url }}">{{ workspace.name }}</a>
                     </td>
-                    <td>{% include "web/_check_icon.html" with value=workspace.public only %}</td>
+                    <td>{{ workspace.public|yesno:"Yes,No" }}</td>
                     <td>{{ workspace.default_expiration_delay.days|default:"Never" }}</td>
                     <td>
                         <a href="{% url "workspaces:work-requests:list" wname=workspace.name %}">Work requests</a>

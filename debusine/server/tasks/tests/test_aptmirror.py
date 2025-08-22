@@ -9,32 +9,30 @@
 
 """Unit tests for the APTMirror task."""
 
+import gzip
 import hashlib
 import logging
+import lzma
 import os
 import re
 import shutil
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePath
 from subprocess import CalledProcessError, CompletedProcess
 from textwrap import dedent
-from typing import Any
+from typing import Any, IO
 from unittest.mock import MagicMock, patch
 
-from debian.deb822 import Packages, Sources
+from debian.deb822 import Deb822, Packages, Release, Sources
 from django.db import connection, connections
 from django_pglocks import advisory_lock
 
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
-from debusine.db.context import context
 from debusine.db.locks import LockError, LockType
 from debusine.db.models import Artifact, ArtifactRelation, Collection, Workspace
 from debusine.db.tests.utils import _calculate_hash_from_data
-from debusine.server.collections.debian_suite import (
-    DebianSuiteManager,
-    make_pool_filename,
-)
+from debusine.server.collections.debian_suite import make_pool_filename
 from debusine.server.tasks import APTMirror
 from debusine.server.tasks.aptmirror import (
     InconsistentMirrorError,
@@ -125,6 +123,18 @@ class APTMirrorTests(TestCase):
         )
         return artifact
 
+    def create_repository_index_artifact(
+        self, path: str, contents: bytes
+    ) -> Artifact:
+        """Create a minimal `debian:repository-index` artifact."""
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.REPOSITORY_INDEX,
+            paths={path: contents},
+            create_files=True,
+            skip_add_files_in_store=True,
+        )
+        return artifact
+
     def write_sample_source_package(
         self,
         temp_path: Path,
@@ -202,9 +212,41 @@ class APTMirrorTests(TestCase):
             }
         )
 
+    def write_sample_sources_file(
+        self, temp_path: Path, sources_file: IO[str], source_names: list[str]
+    ) -> None:
+        """Write a sample ``Sources`` file."""
+        sources_file.write(
+            "".join(
+                self.write_sample_source_package(
+                    temp_path, source_name, "1.0"
+                ).dump()
+                + "\n"
+                for source_name in source_names
+            )
+        )
+
+    def write_sample_packages_file(
+        self,
+        temp_path: Path,
+        packages_file: IO[str],
+        binary_names: list[str],
+        architecture: str = "all",
+    ) -> None:
+        """Write a sample ``Packages`` file."""
+        packages_file.write(
+            "".join(
+                self.write_sample_binary_package(
+                    temp_path, binary_name, "1.0", architecture
+                ).dump()
+                + "\n"
+                for binary_name in binary_names
+            )
+        )
+
     @contextmanager
     def patch_run_indextargets(
-        self, paths_and_components: list[tuple[Path, str]]
+        self, targets: list[dict[str, str]]
     ) -> Generator[MagicMock, None, None]:
         """Temporarily patch the output of `apt-get indextargets`."""
 
@@ -214,8 +256,11 @@ class APTMirrorTests(TestCase):
                 returncode=0,
                 stdout=(
                     "".join(
-                        f"Filename: {path}\nComponent: {component}\n\n"
-                        for path, component in paths_and_components
+                        "".join(
+                            f"{key}: {value}\n" for key, value in target.items()
+                        )
+                        + "\n"
+                        for target in targets
                     )
                 ),
                 stderr="",
@@ -225,13 +270,19 @@ class APTMirrorTests(TestCase):
             yield mock_run
 
     def assert_ran_indextargets(
-        self, mock_run: MagicMock, temp_path: Path, identifier: str
+        self,
+        mock_run: MagicMock,
+        temp_path: Path,
+        identifier: str | None = None,
     ) -> None:
         """Assert that the test ran `apt-get indextargets`."""
+        expected_args = ["apt-get", "indextargets"]
+        if identifier is not None:
+            expected_args.append(f"Identifier: {identifier}")
         expected_env = os.environ.copy()
         expected_env["APT_CONFIG"] = str(temp_path / "etc/apt/apt.conf")
         mock_run.assert_called_with(
-            ["apt-get", "indextargets", f"Identifier: {identifier}"],
+            expected_args,
             cwd=None,
             env=expected_env,
             text=True,
@@ -372,7 +423,54 @@ class APTMirrorTests(TestCase):
                 APT::Architecture "amd64";
                 APT::Architectures "amd64";
                 Dir "{temp_path}";
-                """
+                #clear Acquire::IndexTargets;
+                Acquire::IndexTargets::deb::Packages.xz::MetaKey "$(COMPONENT)/binary-$(ARCHITECTURE)/Packages.xz";
+                Acquire::IndexTargets::deb::Packages.xz::flatMetaKey "Packages.xz";
+                Acquire::IndexTargets::deb::Packages.xz::ShortDescription "Packages.xz";
+                Acquire::IndexTargets::deb::Packages.xz::Description "$(RELEASE)/$(COMPONENT)/binary-$(ARCHITECTURE)/Packages.xz";
+                Acquire::IndexTargets::deb::Packages.xz::flatDescription "$(RELEASE) Packages.xz";
+                Acquire::IndexTargets::deb::Packages.xz::Identifier "Packages";
+                Acquire::IndexTargets::deb::Packages.xz::Optional "0";
+                Acquire::IndexTargets::deb::Packages.gz::MetaKey "$(COMPONENT)/binary-$(ARCHITECTURE)/Packages.gz";
+                Acquire::IndexTargets::deb::Packages.gz::flatMetaKey "Packages.gz";
+                Acquire::IndexTargets::deb::Packages.gz::ShortDescription "Packages.gz";
+                Acquire::IndexTargets::deb::Packages.gz::Description "$(RELEASE)/$(COMPONENT)/binary-$(ARCHITECTURE)/Packages.gz";
+                Acquire::IndexTargets::deb::Packages.gz::flatDescription "$(RELEASE) Packages.gz";
+                Acquire::IndexTargets::deb::Packages.gz::Identifier "Packages";
+                Acquire::IndexTargets::deb::Packages.gz::Optional "0";
+                Acquire::IndexTargets::deb::Packages.gz::Fallback-Of "Packages.xz";
+                Acquire::IndexTargets::deb::Packages::MetaKey "$(COMPONENT)/binary-$(ARCHITECTURE)/Packages";
+                Acquire::IndexTargets::deb::Packages::flatMetaKey "Packages";
+                Acquire::IndexTargets::deb::Packages::ShortDescription "Packages";
+                Acquire::IndexTargets::deb::Packages::Description "$(RELEASE)/$(COMPONENT)/binary-$(ARCHITECTURE)/Packages";
+                Acquire::IndexTargets::deb::Packages::flatDescription "$(RELEASE) Packages";
+                Acquire::IndexTargets::deb::Packages::Identifier "Packages";
+                Acquire::IndexTargets::deb::Packages::Optional "0";
+                Acquire::IndexTargets::deb::Packages::Fallback-Of "Packages.gz";
+                Acquire::IndexTargets::deb-src::Sources.xz::MetaKey "$(COMPONENT)/source/Sources.xz";
+                Acquire::IndexTargets::deb-src::Sources.xz::flatMetaKey "Sources.xz";
+                Acquire::IndexTargets::deb-src::Sources.xz::ShortDescription "Sources.xz";
+                Acquire::IndexTargets::deb-src::Sources.xz::Description "$(RELEASE)/$(COMPONENT)/source/Sources.xz";
+                Acquire::IndexTargets::deb-src::Sources.xz::flatDescription "$(RELEASE) Sources.xz";
+                Acquire::IndexTargets::deb-src::Sources.xz::Identifier "Sources";
+                Acquire::IndexTargets::deb-src::Sources.xz::Optional "0";
+                Acquire::IndexTargets::deb-src::Sources.gz::MetaKey "$(COMPONENT)/source/Sources.gz";
+                Acquire::IndexTargets::deb-src::Sources.gz::flatMetaKey "Sources.gz";
+                Acquire::IndexTargets::deb-src::Sources.gz::ShortDescription "Sources.gz";
+                Acquire::IndexTargets::deb-src::Sources.gz::Description "$(RELEASE)/$(COMPONENT)/source/Sources.gz";
+                Acquire::IndexTargets::deb-src::Sources.gz::flatDescription "$(RELEASE) Sources.gz";
+                Acquire::IndexTargets::deb-src::Sources.gz::Identifier "Sources";
+                Acquire::IndexTargets::deb-src::Sources.gz::Optional "0";
+                Acquire::IndexTargets::deb-src::Sources.gz::Fallback-Of "Sources.xz";
+                Acquire::IndexTargets::deb-src::Sources::MetaKey "$(COMPONENT)/source/Sources";
+                Acquire::IndexTargets::deb-src::Sources::flatMetaKey "Sources";
+                Acquire::IndexTargets::deb-src::Sources::ShortDescription "Sources";
+                Acquire::IndexTargets::deb-src::Sources::Description "$(RELEASE)/$(COMPONENT)/source/Sources";
+                Acquire::IndexTargets::deb-src::Sources::flatDescription "$(RELEASE) Sources";
+                Acquire::IndexTargets::deb-src::Sources::Identifier "Sources";
+                Acquire::IndexTargets::deb-src::Sources::Optional "0";
+                Acquire::IndexTargets::deb-src::Sources::Fallback-Of "Sources.gz";
+                """  # noqa: E501
             ),
         )
         self.assertEqual(
@@ -491,16 +589,25 @@ class APTMirrorTests(TestCase):
                     + "\n"
                 )
 
-        with self.patch_run_indextargets([(sources_path, "main")]) as mock_run:
+        targets = [
+            {
+                "MetaKey": "Sources",
+                "Filename": str(sources_path),
+                "Component": "main",
+                "Identifier": "Sources",
+            }
+        ]
+
+        with self.patch_run_indextargets(targets) as mock_run:
             plan = task.plan_sources(temp_path)
 
         self.assert_ran_indextargets(mock_run, temp_path, "Sources")
         self.assertEqual(len(plan.add), 2)
         self.assertEqual(plan.add[0].name, "pkg1_1.0")
-        self.assertEqual(plan.add[0].package["Package"], "pkg1")
+        self.assertEqual(plan.add[0].contents["Package"], "pkg1")
         self.assertEqual(plan.add[0].component, "main")
         self.assertEqual(plan.add[1].name, "pkg2_2.0")
-        self.assertEqual(plan.add[1].package["Package"], "pkg2")
+        self.assertEqual(plan.add[1].contents["Package"], "pkg2")
         self.assertEqual(plan.add[1].component, "main")
         self.assertEqual(plan.replace, [])
         self.assertEqual(plan.remove, [])
@@ -509,7 +616,6 @@ class APTMirrorTests(TestCase):
         """`plan_sources` plans to replace sources in the collection."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
-        manager = DebianSuiteManager(collection)
         work_request = self.playground.create_work_request()
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
@@ -522,13 +628,14 @@ class APTMirrorTests(TestCase):
             )
             for name, version in (("pkg1", "1.0"), ("pkg1", "1.1"))
         ]
-        for source_package_artifact in source_package_artifacts:
-            manager.add_source_package(
+        items = [
+            collection.manager.add_artifact(
                 source_package_artifact,
                 user=work_request.created_by,
-                component="main",
-                section="devel",
+                variables={"component": "main", "section": "devel"},
             )
+            for source_package_artifact in source_package_artifacts
+        ]
 
         sources_path = temp_path / "Sources"
         with open(sources_path, "w") as sources:
@@ -569,23 +676,31 @@ class APTMirrorTests(TestCase):
                 + "\n"
             )
 
-        with self.patch_run_indextargets([(sources_path, "main")]) as mock_run:
+        targets = [
+            {
+                "MetaKey": "Sources",
+                "Filename": str(sources_path),
+                "Component": "main",
+                "Identifier": "Sources",
+            }
+        ]
+
+        with self.patch_run_indextargets(targets) as mock_run:
             plan = task.plan_sources(temp_path)
 
         self.assert_ran_indextargets(mock_run, temp_path, "Sources")
         self.assertEqual(plan.add, [])
         self.assertEqual(len(plan.replace), 1)
         self.assertEqual(plan.replace[0].name, "pkg1_1.0")
-        self.assertEqual(plan.replace[0].package["Package"], "pkg1")
+        self.assertEqual(plan.replace[0].contents["Package"], "pkg1")
         self.assertEqual(plan.replace[0].component, "main")
-        self.assertEqual(plan.replace[0].artifact, source_package_artifacts[0])
+        self.assertEqual(plan.replace[0].item, items[0])
         self.assertEqual(plan.remove, [])
 
     def test_plan_sources_remove(self) -> None:
         """`plan_sources` plans to remove sources from the collection."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
-        manager = DebianSuiteManager(collection)
         work_request = self.playground.create_work_request()
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
@@ -598,23 +713,33 @@ class APTMirrorTests(TestCase):
             )
             for name, version in (("pkg1", "1.0"), ("pkg2", "2.0"))
         ]
-        for source_package_artifact in source_package_artifacts:
-            manager.add_source_package(
+        items = [
+            collection.manager.add_artifact(
                 source_package_artifact,
                 user=work_request.created_by,
-                component="main",
-                section="devel",
+                variables={"component": "main", "section": "devel"},
             )
+            for source_package_artifact in source_package_artifacts
+        ]
 
         (sources_path := temp_path / "Sources").touch()
 
-        with self.patch_run_indextargets([(sources_path, "main")]) as mock_run:
+        targets = [
+            {
+                "MetaKey": "Sources",
+                "Filename": str(sources_path),
+                "Component": "main",
+                "Identifier": "Sources",
+            }
+        ]
+
+        with self.patch_run_indextargets(targets) as mock_run:
             plan = task.plan_sources(temp_path)
 
         self.assert_ran_indextargets(mock_run, temp_path, "Sources")
         self.assertEqual(plan.add, [])
         self.assertEqual(plan.replace, [])
-        self.assertEqual(plan.remove, source_package_artifacts)
+        self.assertEqual(plan.remove, items)
 
     def test_plan_sources_inconsistent(self) -> None:
         """`plan_sources` fails with the same source in multiple components."""
@@ -622,12 +747,22 @@ class APTMirrorTests(TestCase):
         self.create_suite_collection("bookworm")
         task = self.create_apt_mirror_task("bookworm")
 
-        paths_and_components = [
-            (temp_path / "main_Sources", "main"),
-            (temp_path / "contrib_Sources", "contrib"),
+        targets = [
+            {
+                "MetaKey": "main/source/Sources",
+                "Filename": str(temp_path / "main_Sources"),
+                "Component": "main",
+                "Identifier": "Sources",
+            },
+            {
+                "MetaKey": "contrib/source/Sources",
+                "Filename": str(temp_path / "contrib_Sources"),
+                "Component": "contrib",
+                "Identifier": "Sources",
+            },
         ]
-        for path, _ in paths_and_components:
-            with open(path, "w") as sources:
+        for target in targets:
+            with open(target["Filename"], "w") as sources:
                 sources.write(
                     self.write_sample_source_package(
                         temp_path, "pkg1", "1.0"
@@ -635,7 +770,7 @@ class APTMirrorTests(TestCase):
                     + "\n"
                 )
 
-        with self.patch_run_indextargets(paths_and_components):
+        with self.patch_run_indextargets(targets):
             self.assertRaisesRegex(
                 InconsistentMirrorError,
                 r"pkg1_1\.0 found in multiple components: main and contrib",
@@ -643,12 +778,13 @@ class APTMirrorTests(TestCase):
                 temp_path,
             )
 
-    @context.disable_permission_checks()
     def test_add_source(self) -> None:
         """`add_source` downloads and adds a source package."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
-        work_request = self.playground.create_work_request()
+        work_request = self.playground.create_work_request(
+            assign_contributor_role=True
+        )
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
 
@@ -657,6 +793,7 @@ class APTMirrorTests(TestCase):
         )
         dsc_contents = (temp_path / "hello_1.0.dsc").read_bytes()
         tar_contents = (temp_path / "hello_1.0.tar.xz").read_bytes()
+        work_request.set_current()
         with self.patch_download(
             {
                 "hello=1.0": {
@@ -673,9 +810,7 @@ class APTMirrorTests(TestCase):
             )
 
         self.assert_downloaded_source(mock_run, temp_path, "hello", "1.0")
-        source_item = DebianSuiteManager(collection).lookup(
-            "source-version:hello_1.0"
-        )
+        source_item = collection.manager.lookup("source-version:hello_1.0")
         assert source_item is not None
         assert source_item.artifact is not None
         self.assert_artifact_matches(
@@ -701,15 +836,15 @@ class APTMirrorTests(TestCase):
         self.assertEqual(item.data["component"], "main")
         self.assertEqual(item.data["section"], "devel")
 
-    @context.disable_permission_checks()
     def test_update_sources(self) -> None:
         """`update_sources` executes a plan to update sources."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
         collection.data["may_reuse_versions"] = True
         collection.save()
-        manager = DebianSuiteManager(collection)
-        work_request = self.playground.create_work_request()
+        work_request = self.playground.create_work_request(
+            assign_contributor_role=True
+        )
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
 
@@ -721,13 +856,14 @@ class APTMirrorTests(TestCase):
             )
             for name, version in (("to-replace", "1.0"), ("to-remove", "1.0"))
         ]
-        for source_package_artifact in source_package_artifacts:
-            manager.add_source_package(
+        items = [
+            collection.manager.add_artifact(
                 source_package_artifact,
                 user=work_request.created_by,
-                component="main",
-                section="devel",
+                variables={"component": "main", "section": "devel"},
             )
+            for source_package_artifact in source_package_artifacts
+        ]
 
         to_add_entry = self.write_sample_source_package(
             temp_path, "to-add", "1.0"
@@ -746,20 +882,21 @@ class APTMirrorTests(TestCase):
         plan = Plan[Sources](
             add=[
                 PlanAdd[Sources](
-                    name="to-add", package=to_add_entry, component="main"
+                    name="to-add", contents=to_add_entry, component="main"
                 )
             ],
             replace=[
                 PlanReplace[Sources](
                     name="to-replace",
-                    package=to_replace_entry,
+                    contents=to_replace_entry,
                     component="main",
-                    artifact=source_package_artifacts[0],
+                    item=items[0],
                 )
             ],
-            remove=[source_package_artifacts[1]],
+            remove=[items[1]],
         )
 
+        work_request.set_current()
         with self.patch_download(
             {
                 "to-add=1.0": {
@@ -813,16 +950,25 @@ class APTMirrorTests(TestCase):
                     + "\n"
                 )
 
-        with self.patch_run_indextargets([(packages_path, "main")]) as mock_run:
+        targets = [
+            {
+                "MetaKey": "Packages",
+                "Filename": str(packages_path),
+                "Component": "main",
+                "Identifier": "Packages",
+            }
+        ]
+
+        with self.patch_run_indextargets(targets) as mock_run:
             plan = task.plan_binaries(temp_path)
 
         self.assert_ran_indextargets(mock_run, temp_path, "Packages")
         self.assertEqual(len(plan.add), 2)
         self.assertEqual(plan.add[0].name, "pkg1_1.0_amd64")
-        self.assertEqual(plan.add[0].package["Package"], "pkg1")
+        self.assertEqual(plan.add[0].contents["Package"], "pkg1")
         self.assertEqual(plan.add[0].component, "main")
         self.assertEqual(plan.add[1].name, "pkg2_2.0_amd64")
-        self.assertEqual(plan.add[1].package["Package"], "pkg2")
+        self.assertEqual(plan.add[1].contents["Package"], "pkg2")
         self.assertEqual(plan.add[1].component, "main")
         self.assertEqual(plan.replace, [])
         self.assertEqual(plan.remove, [])
@@ -838,24 +984,34 @@ class APTMirrorTests(TestCase):
         self.create_suite_collection("bookworm")
         task = self.create_apt_mirror_task("bookworm")
 
-        paths_and_components = [
-            (temp_path / "main_Packages_amd64", "main"),
-            (temp_path / "main_Packages_s390x", "main"),
+        targets = [
+            {
+                "MetaKey": "main/binary-amd64/Packages",
+                "Filename": str(temp_path / "main_amd64_Packages"),
+                "Component": "main",
+                "Identifier": "Packages",
+            },
+            {
+                "MetaKey": "main/binary-s390x/Packages",
+                "Filename": str(temp_path / "main_s390x_Packages"),
+                "Component": "main",
+                "Identifier": "Packages",
+            },
         ]
         package_entry = self.write_sample_binary_package(
             temp_path, "pkg1", "1.0", "all"
         )
-        for path, _ in paths_and_components:
-            with open(path, "w") as packages:
+        for target in targets:
+            with open(target["Filename"], "w") as packages:
                 packages.write(package_entry.dump() + "\n")
 
-        with self.patch_run_indextargets(paths_and_components) as mock_run:
+        with self.patch_run_indextargets(targets) as mock_run:
             plan = task.plan_binaries(temp_path)
 
         self.assert_ran_indextargets(mock_run, temp_path, "Packages")
         self.assertEqual(len(plan.add), 1)
         self.assertEqual(plan.add[0].name, "pkg1_1.0_all")
-        self.assertEqual(plan.add[0].package["Package"], "pkg1")
+        self.assertEqual(plan.add[0].contents["Package"], "pkg1")
         self.assertEqual(plan.add[0].component, "main")
         self.assertEqual(plan.replace, [])
         self.assertEqual(plan.remove, [])
@@ -864,7 +1020,6 @@ class APTMirrorTests(TestCase):
         """`plan_binaries` plans to replace binaries in the collection."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
-        manager = DebianSuiteManager(collection)
         work_request = self.playground.create_work_request()
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
@@ -880,14 +1035,18 @@ class APTMirrorTests(TestCase):
             )
             for name, version in (("pkg1", "1.0"), ("pkg1", "1.1"))
         ]
-        for binary_package_artifact in binary_package_artifacts:
-            manager.add_binary_package(
+        items = [
+            collection.manager.add_artifact(
                 binary_package_artifact,
                 user=work_request.created_by,
-                component="main",
-                section="devel",
-                priority="optional",
+                variables={
+                    "component": "main",
+                    "section": "devel",
+                    "priority": "optional",
+                },
             )
+            for binary_package_artifact in binary_package_artifacts
+        ]
 
         packages_path = temp_path / "Packages"
         with open(packages_path, "w") as packages:
@@ -917,23 +1076,31 @@ class APTMirrorTests(TestCase):
                 + "\n"
             )
 
-        with self.patch_run_indextargets([(packages_path, "main")]) as mock_run:
+        targets = [
+            {
+                "MetaKey": "Packages",
+                "Filename": str(packages_path),
+                "Component": "main",
+                "Identifier": "Packages",
+            }
+        ]
+
+        with self.patch_run_indextargets(targets) as mock_run:
             plan = task.plan_binaries(temp_path)
 
         self.assert_ran_indextargets(mock_run, temp_path, "Packages")
         self.assertEqual(plan.add, [])
         self.assertEqual(len(plan.replace), 1)
         self.assertEqual(plan.replace[0].name, "pkg1_1.0_amd64")
-        self.assertEqual(plan.replace[0].package["Package"], "pkg1")
+        self.assertEqual(plan.replace[0].contents["Package"], "pkg1")
         self.assertEqual(plan.replace[0].component, "main")
-        self.assertEqual(plan.replace[0].artifact, binary_package_artifacts[0])
+        self.assertEqual(plan.replace[0].item, items[0])
         self.assertEqual(plan.remove, [])
 
     def test_plan_binaries_remove(self) -> None:
         """`plan_binaries` plans to remove binaries from the collection."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
-        manager = DebianSuiteManager(collection)
         work_request = self.playground.create_work_request()
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
@@ -949,24 +1116,37 @@ class APTMirrorTests(TestCase):
             )
             for name, version in (("pkg1", "1.0"), ("pkg2", "2.0"))
         ]
-        for binary_package_artifact in binary_package_artifacts:
-            manager.add_binary_package(
+        items = [
+            collection.manager.add_artifact(
                 binary_package_artifact,
                 user=work_request.created_by,
-                component="main",
-                section="devel",
-                priority="optional",
+                variables={
+                    "component": "main",
+                    "section": "devel",
+                    "priority": "optional",
+                },
             )
+            for binary_package_artifact in binary_package_artifacts
+        ]
 
         (packages_path := temp_path / "Packages").touch()
 
-        with self.patch_run_indextargets([(packages_path, "main")]) as mock_run:
+        targets = [
+            {
+                "MetaKey": "Packages",
+                "Filename": str(packages_path),
+                "Component": "main",
+                "Identifier": "Packages",
+            }
+        ]
+
+        with self.patch_run_indextargets(targets) as mock_run:
             plan = task.plan_binaries(temp_path)
 
         self.assert_ran_indextargets(mock_run, temp_path, "Packages")
         self.assertEqual(plan.add, [])
         self.assertEqual(plan.replace, [])
-        self.assertEqual(plan.remove, binary_package_artifacts)
+        self.assertEqual(plan.remove, items)
 
     def test_plan_binaries_inconsistent_different_binaries(self) -> None:
         """`plan_binaries` fails with conflicting binaries."""
@@ -974,9 +1154,19 @@ class APTMirrorTests(TestCase):
         self.create_suite_collection("bookworm")
         task = self.create_apt_mirror_task("bookworm")
 
-        paths_and_components = [
-            (temp_path / "main_Packages_amd64", "main"),
-            (temp_path / "main_Packages_s390x", "main"),
+        targets = [
+            {
+                "MetaKey": "main/binary-amd64/Packages",
+                "Filename": str(temp_path / "main_amd64_Packages"),
+                "Component": "main",
+                "Identifier": "Packages",
+            },
+            {
+                "MetaKey": "main/binary-s390x/Packages",
+                "Filename": str(temp_path / "main_s390x_Packages"),
+                "Component": "main",
+                "Identifier": "Packages",
+            },
         ]
         amd64_entry = self.write_sample_binary_package(
             temp_path, "pkg1", "1.0", "all"
@@ -984,12 +1174,12 @@ class APTMirrorTests(TestCase):
         s390x_entry = self.write_sample_binary_package(
             temp_path, "pkg1", "1.0", "all", srcpkg_version="1:1.0"
         )
-        with open(paths_and_components[0][0], "w") as packages:
+        with open(targets[0]["Filename"], "w") as packages:
             packages.write(amd64_entry.dump() + "\n")
-        with open(paths_and_components[1][0], "w") as packages:
+        with open(targets[1]["Filename"], "w") as packages:
             packages.write(s390x_entry.dump() + "\n")
 
-        with self.patch_run_indextargets(paths_and_components):
+        with self.patch_run_indextargets(targets):
             self.assertRaisesRegex(
                 InconsistentMirrorError,
                 r"pkg1_1\.0_all mismatch.  Conflicting Packages entries:\n\n"
@@ -1006,12 +1196,22 @@ class APTMirrorTests(TestCase):
         self.create_suite_collection("bookworm")
         task = self.create_apt_mirror_task("bookworm")
 
-        paths_and_components = [
-            (temp_path / "main_Packages", "main"),
-            (temp_path / "contrib_Packages", "contrib"),
+        targets = [
+            {
+                "MetaKey": "main/binary-amd64/Packages",
+                "Filename": str(temp_path / "main_Packages"),
+                "Component": "main",
+                "Identifier": "Packages",
+            },
+            {
+                "MetaKey": "contrib/binary-amd64/Packages",
+                "Filename": str(temp_path / "contrib_Packages"),
+                "Component": "contrib",
+                "Identifier": "Packages",
+            },
         ]
-        for path, _ in paths_and_components:
-            with open(path, "w") as packages:
+        for target in targets:
+            with open(target["Filename"], "w") as packages:
                 packages.write(
                     self.write_sample_binary_package(
                         temp_path, "pkg1", "1.0", "amd64"
@@ -1019,7 +1219,7 @@ class APTMirrorTests(TestCase):
                     + "\n"
                 )
 
-        with self.patch_run_indextargets(paths_and_components):
+        with self.patch_run_indextargets(targets):
             self.assertRaisesRegex(
                 InconsistentMirrorError,
                 r"pkg1_1\.0_amd64 found in multiple components: "
@@ -1028,12 +1228,13 @@ class APTMirrorTests(TestCase):
                 temp_path,
             )
 
-    @context.disable_permission_checks()
     def test_add_binary(self) -> None:
         """`add_binary` downloads and adds a binary package."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
-        work_request = self.playground.create_work_request()
+        work_request = self.playground.create_work_request(
+            assign_contributor_role=True
+        )
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
 
@@ -1047,6 +1248,7 @@ class APTMirrorTests(TestCase):
             section="libs",
         )
         deb_contents = (temp_path / "libhello1_1.0-1_amd64.deb").read_bytes()
+        work_request.set_current()
         with self.patch_download(
             {
                 "libhello1:amd64=1.0-1": {
@@ -1064,7 +1266,7 @@ class APTMirrorTests(TestCase):
         self.assert_downloaded_binary(
             mock_run, temp_path, "libhello1", "1.0-1", "amd64"
         )
-        binary_item = DebianSuiteManager(collection).lookup(
+        binary_item = collection.manager.lookup(
             "binary-version:libhello1_1.0-1_amd64"
         )
         assert binary_item is not None
@@ -1094,12 +1296,13 @@ class APTMirrorTests(TestCase):
         self.assertEqual(item.data["section"], "libs")
         self.assertEqual(item.data["priority"], "optional")
 
-    @context.disable_permission_checks()
     def test_add_binary_renames(self) -> None:
         """`add_binary` renames downloaded binary packages if necessary."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
-        work_request = self.playground.create_work_request()
+        work_request = self.playground.create_work_request(
+            assign_contributor_role=True
+        )
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
 
@@ -1112,6 +1315,7 @@ class APTMirrorTests(TestCase):
             section="libs",
         )
         deb_contents = (temp_path / "libhello1_1.0-1_amd64.deb").read_bytes()
+        work_request.set_current()
         with self.patch_download(
             {
                 "libhello1:amd64=1:1.0-1": {
@@ -1129,7 +1333,7 @@ class APTMirrorTests(TestCase):
         self.assert_downloaded_binary(
             mock_run, temp_path, "libhello1", "1:1.0-1", "amd64"
         )
-        binary_item = DebianSuiteManager(collection).lookup(
+        binary_item = collection.manager.lookup(
             "binary-version:libhello1_1:1.0-1_amd64"
         )
         assert binary_item is not None
@@ -1159,13 +1363,13 @@ class APTMirrorTests(TestCase):
         self.assertEqual(item.data["section"], "libs")
         self.assertEqual(item.data["priority"], "optional")
 
-    @context.disable_permission_checks()
     def test_add_binary_relates_to_source(self) -> None:
         """`add_binary` adds a relation to a matching source package."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
-        manager = DebianSuiteManager(collection)
-        work_request = self.playground.create_work_request()
+        work_request = self.playground.create_work_request(
+            assign_contributor_role=True
+        )
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
 
@@ -1176,11 +1380,10 @@ class APTMirrorTests(TestCase):
             for version in ("1:1.0-1", "1:1.0-2")
         ]
         for source_package_artifact in source_package_artifacts:
-            manager.add_source_package(
+            collection.manager.add_artifact(
                 source_package_artifact,
                 user=work_request.created_by,
-                component="main",
-                section="devel",
+                variables={"component": "main", "section": "devel"},
             )
 
         packages_entry = self.write_sample_binary_package(
@@ -1193,6 +1396,7 @@ class APTMirrorTests(TestCase):
             section="libs",
         )
         deb_contents = (temp_path / "libhello1_1.0-1_amd64.deb").read_bytes()
+        work_request.set_current()
         with self.patch_download(
             {
                 "libhello1:amd64=1.0-1": {
@@ -1207,7 +1411,7 @@ class APTMirrorTests(TestCase):
                 component="main",
             )
 
-        binary_item = DebianSuiteManager(collection).lookup(
+        binary_item = collection.manager.lookup(
             "binary-version:libhello1_1.0-1_amd64"
         )
         assert binary_item is not None
@@ -1216,26 +1420,25 @@ class APTMirrorTests(TestCase):
         self.assertEqual(relation.target, source_package_artifacts[0])
         self.assertEqual(relation.type, ArtifactRelation.Relations.BUILT_USING)
 
-    @context.disable_permission_checks()
     def test_add_binary_no_source_relation_if_may_reuse_versions(self) -> None:
         """`add_binary` doesn't add source relations if `may_reuse_versions`."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
         collection.data["may_reuse_versions"] = True
         collection.save()
-        manager = DebianSuiteManager(collection)
-        work_request = self.playground.create_work_request()
+        work_request = self.playground.create_work_request(
+            assign_contributor_role=True
+        )
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
 
         source_package_artifact = self.create_source_package_artifact(
             name="hello", version="1:1.0-1", paths=[]
         )
-        manager.add_source_package(
+        collection.manager.add_artifact(
             source_package_artifact,
             user=work_request.created_by,
-            component="main",
-            section="devel",
+            variables={"component": "main", "section": "devel"},
         )
 
         packages_entry = self.write_sample_binary_package(
@@ -1248,6 +1451,7 @@ class APTMirrorTests(TestCase):
             section="libs",
         )
         deb_contents = (temp_path / "libhello1_1.0-1_amd64.deb").read_bytes()
+        work_request.set_current()
         with self.patch_download(
             {
                 "libhello1:amd64=1.0-1": {
@@ -1262,22 +1466,22 @@ class APTMirrorTests(TestCase):
                 component="main",
             )
 
-        binary_item = DebianSuiteManager(collection).lookup(
+        binary_item = collection.manager.lookup(
             "binary-version:libhello1_1.0-1_amd64"
         )
         assert binary_item is not None
         assert binary_item.artifact is not None
         self.assertFalse(binary_item.artifact.relations.exists())
 
-    @context.disable_permission_checks()
     def test_update_binaries(self) -> None:
         """`update_binaries` executes a plan to update binaries."""
         temp_path = self.create_temporary_directory()
         collection = self.create_suite_collection("bookworm")
         collection.data["may_reuse_versions"] = True
         collection.save()
-        manager = DebianSuiteManager(collection)
-        work_request = self.playground.create_work_request()
+        work_request = self.playground.create_work_request(
+            assign_contributor_role=True
+        )
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
 
@@ -1292,14 +1496,18 @@ class APTMirrorTests(TestCase):
             )
             for name, version in (("to-replace", "1.0"), ("to-remove", "1.0"))
         ]
-        for binary_package_artifact in binary_package_artifacts:
-            manager.add_binary_package(
+        items = [
+            collection.manager.add_artifact(
                 binary_package_artifact,
                 user=work_request.created_by,
-                component="main",
-                section="devel",
-                priority="optional",
+                variables={
+                    "component": "main",
+                    "section": "devel",
+                    "priority": "optional",
+                },
             )
+            for binary_package_artifact in binary_package_artifacts
+        ]
 
         to_add_entry = self.write_sample_binary_package(
             temp_path, "to-add", "1.0", "amd64"
@@ -1314,20 +1522,21 @@ class APTMirrorTests(TestCase):
         plan = Plan[Packages](
             add=[
                 PlanAdd[Packages](
-                    name="to-add", package=to_add_entry, component="main"
+                    name="to-add", contents=to_add_entry, component="main"
                 )
             ],
             replace=[
                 PlanReplace[Packages](
                     name="to-replace",
-                    package=to_replace_entry,
+                    contents=to_replace_entry,
                     component="main",
-                    artifact=binary_package_artifacts[0],
+                    item=items[0],
                 )
             ],
-            remove=[binary_package_artifacts[1]],
+            remove=[items[1]],
         )
 
+        work_request.set_current()
         with self.patch_download(
             {
                 "to-add:amd64=1.0": {
@@ -1359,6 +1568,398 @@ class APTMirrorTests(TestCase):
             {"to-replace_1.0_amd64.deb": to_replace_deb_contents},
         )
 
+    def test_plan_indexes_add(self) -> None:
+        """``plan_indexes`` plans to add indexes to the collection."""
+        temp_path = self.create_temporary_directory()
+        self.create_suite_collection("bookworm")
+        task = self.create_apt_mirror_task("bookworm")
+
+        with patch("subprocess.run"):
+            task.fetch_indexes(temp_path)
+
+        lists_path = temp_path / "var/lib/apt/lists"
+        prefix = "deb.debian.org_debian_dists_bookworm"
+        sources_path = lists_path / f"{prefix}_main_source_Sources.xz"
+        with lzma.open(sources_path, "wt", format=lzma.FORMAT_XZ) as sources:
+            self.write_sample_sources_file(temp_path, sources, ["hello"])
+        packages_path = lists_path / f"{prefix}_main_binary-amd64_Packages.xz"
+        with lzma.open(packages_path, "wt", format=lzma.FORMAT_XZ) as packages:
+            self.write_sample_packages_file(temp_path, packages, ["hello"])
+        release_path = lists_path / f"{prefix}_Release"
+        with open(release_path, "w") as release:
+            release.write(Release({"Suite": "example"}).dump() + "\n")
+        contents_path = lists_path / f"{prefix}_main_Contents-amd64"
+
+        targets = [
+            {
+                "MetaKey": "main/source/Sources.xz",
+                "Filename": str(sources_path),
+                "Component": "main",
+                "Identifier": "Sources",
+            },
+            {
+                "MetaKey": "main/source/Sources",
+                "Filename": str(sources_path),
+                "Component": "main",
+                "Identifier": "Sources",
+            },
+            {
+                "MetaKey": "main/binary-amd64/Packages.xz",
+                "Filename": str(packages_path),
+                "Component": "main",
+                "Identifier": "Packages",
+            },
+            {
+                "MetaKey": "main/binary-amd64/Packages",
+                "Filename": str(packages_path),
+                "Component": "main",
+                "Identifier": "Packages",
+            },
+            {
+                "MetaKey": "main/Contents-amd64",
+                "Filename": str(contents_path),
+                "Component": "main",
+                "Identifier": "Contents-deb",
+            },
+        ]
+
+        with self.patch_run_indextargets(targets) as mock_run:
+            plan = task.plan_indexes(temp_path)
+
+        self.assert_ran_indextargets(mock_run, temp_path)
+        self.assertEqual(len(plan.add), 3)
+        self.assertEqual(plan.add[0].name, "Release")
+        self.assertEqual(plan.add[0].contents["Filename"], str(release_path))
+        self.assertEqual(plan.add[0].component, "")
+        self.assertEqual(plan.add[1].name, "main/binary-amd64/Packages.xz")
+        self.assertEqual(plan.add[1].contents["Filename"], str(packages_path))
+        self.assertEqual(plan.add[1].component, "main")
+        self.assertEqual(plan.add[2].name, "main/source/Sources.xz")
+        self.assertEqual(plan.add[2].contents["Filename"], str(sources_path))
+        self.assertEqual(plan.add[2].component, "main")
+        self.assertEqual(plan.replace, [])
+        self.assertEqual(plan.remove, [])
+
+    def test_plan_indexes_add_flat(self) -> None:
+        """``plan_indexes`` handles flat repositories."""
+        temp_path = self.create_temporary_directory()
+        self.create_suite_collection("bookworm")
+        task = self.create_apt_mirror_task(
+            "bookworm", url="https://example.org/flat", suite="./"
+        )
+
+        with patch("subprocess.run"):
+            task.fetch_indexes(temp_path)
+
+        lists_path = temp_path / "var/lib/apt/lists"
+        prefix = "example.org_flat_."
+        sources_path = lists_path / f"{prefix}_Sources.gz"
+        with gzip.open(sources_path, "wt") as sources:
+            self.write_sample_sources_file(temp_path, sources, ["hello"])
+        packages_path = lists_path / f"{prefix}_Packages.gz"
+        with gzip.open(packages_path, "wt") as packages:
+            self.write_sample_packages_file(temp_path, packages, ["hello"])
+        release_path = lists_path / f"{prefix}_Release"
+        with open(release_path, "w") as release:
+            release.write(Release({"Suite": "example"}).dump() + "\n")
+
+        plan = task.plan_indexes(temp_path)
+
+        self.assertEqual(plan.add, [])
+        self.assertEqual(plan.replace, [])
+        self.assertEqual(plan.remove, [])
+
+    def test_plan_indexes_replace(self) -> None:
+        """``plan_indexes`` plans to replace indexes in the collection."""
+        temp_path = self.create_temporary_directory()
+        collection = self.create_suite_collection("bookworm")
+        work_request = self.playground.create_work_request()
+        task = self.create_apt_mirror_task("bookworm")
+        task.set_work_request(work_request)
+
+        with patch("subprocess.run"):
+            task.fetch_indexes(temp_path)
+
+        lists_path = temp_path / "var/lib/apt/lists"
+        prefix = "deb.debian.org_debian_dists_bookworm"
+        sources_path = lists_path / f"{prefix}_main_source_Sources"
+        with open(sources_path, "w") as sources:
+            self.write_sample_sources_file(temp_path, sources, ["hello"])
+        packages_path = lists_path / f"{prefix}_main_binary-amd64_Packages"
+        with open(packages_path, "w") as packages:
+            self.write_sample_packages_file(temp_path, packages, ["hello"])
+        release_path = lists_path / f"{prefix}_Release"
+        with open(release_path, "w") as release:
+            release.write(Release({"Suite": "example"}).dump() + "\n")
+
+        repository_index_artifacts = {
+            path: self.create_repository_index_artifact(
+                PurePath(path).name, contents
+            )
+            for path, contents in (
+                ("main/source/Sources", sources_path.read_bytes()),
+                ("main/binary-amd64/Packages", b"old Packages"),
+                ("Release", b"old Release"),
+            )
+        }
+        items = {
+            path: collection.manager.add_artifact(
+                repository_index_artifact,
+                user=work_request.created_by,
+                variables={"path": path},
+            )
+            for (
+                path,
+                repository_index_artifact,
+            ) in repository_index_artifacts.items()
+        }
+
+        targets = [
+            {
+                "MetaKey": "main/source/Sources",
+                "Filename": str(sources_path),
+                "Component": "main",
+                "Identifier": "Sources",
+            },
+            {
+                "MetaKey": "main/binary-amd64/Packages",
+                "Filename": str(packages_path),
+                "Component": "main",
+                "Identifier": "Packages",
+            },
+        ]
+
+        with self.patch_run_indextargets(targets) as mock_run:
+            plan = task.plan_indexes(temp_path)
+
+        self.assert_ran_indextargets(mock_run, temp_path)
+        self.assertEqual(plan.add, [])
+        self.assertEqual(len(plan.replace), 2)
+        self.assertEqual(plan.replace[0].name, "Release")
+        self.assertEqual(
+            plan.replace[0].contents["Filename"], str(release_path)
+        )
+        self.assertEqual(plan.replace[0].component, "")
+        self.assertEqual(plan.replace[0].item, items["Release"])
+        self.assertEqual(plan.replace[1].name, "main/binary-amd64/Packages")
+        self.assertEqual(
+            plan.replace[1].contents["Filename"], str(packages_path)
+        )
+        self.assertEqual(plan.replace[1].component, "main")
+        self.assertEqual(
+            plan.replace[1].item,
+            items["main/binary-amd64/Packages"],
+        )
+        self.assertEqual(plan.remove, [])
+
+    def test_plan_indexes_remove(self) -> None:
+        """``plan_indexes`` plans to remove indexes from the collection."""
+        temp_path = self.create_temporary_directory()
+        collection = self.create_suite_collection("bookworm")
+        work_request = self.playground.create_work_request()
+        task = self.create_apt_mirror_task("bookworm")
+        task.set_work_request(work_request)
+
+        with patch("subprocess.run"):
+            task.fetch_indexes(temp_path)
+
+        lists_path = temp_path / "var/lib/apt/lists"
+        prefix = "deb.debian.org_debian_dists_bookworm"
+        sources_path = lists_path / f"{prefix}_main_source_Sources"
+        with open(sources_path, "w") as sources:
+            self.write_sample_sources_file(temp_path, sources, ["hello"])
+        packages_path = lists_path / f"{prefix}_main_binary-amd64_Packages"
+        with open(packages_path, "w") as packages:
+            self.write_sample_packages_file(temp_path, packages, ["hello"])
+        release_path = lists_path / f"{prefix}_Release"
+        with open(release_path, "w") as release:
+            release.write(Release({"Suite": "example"}).dump() + "\n")
+
+        repository_index_artifacts = {
+            path: self.create_repository_index_artifact(
+                PurePath(path).name, contents
+            )
+            for path, contents in (
+                ("main/source/Sources", sources_path.read_bytes()),
+                ("main/binary-amd64/Packages", packages_path.read_bytes()),
+                ("Release", release_path.read_bytes()),
+            )
+        }
+        items = {
+            path: collection.manager.add_artifact(
+                repository_index_artifact,
+                user=work_request.created_by,
+                variables={"path": path},
+            )
+            for (
+                path,
+                repository_index_artifact,
+            ) in repository_index_artifacts.items()
+        }
+
+        targets = [
+            {
+                "MetaKey": "main/source/Sources",
+                "Filename": str(sources_path),
+                "Component": "main",
+                "Identifier": "Sources",
+            }
+        ]
+
+        with self.patch_run_indextargets(targets) as mock_run:
+            plan = task.plan_indexes(temp_path)
+
+        self.assert_ran_indextargets(mock_run, temp_path)
+        self.assertEqual(plan.add, [])
+        self.assertEqual(plan.replace, [])
+        self.assertEqual(plan.remove, [items["main/binary-amd64/Packages"]])
+
+    def test_add_index(self) -> None:
+        """``add_index`` adds a repository index."""
+        temp_path = self.create_temporary_directory()
+        collection = self.create_suite_collection("bookworm")
+        work_request = self.playground.create_work_request(
+            assign_contributor_role=True
+        )
+        task = self.create_apt_mirror_task("bookworm")
+        task.set_work_request(work_request)
+
+        prefix = "deb.debian.org_debian_dists_bookworm"
+        sources_path = temp_path / f"{prefix}_main_source_Sources.xz"
+        with lzma.open(sources_path, "wt") as sources:
+            self.write_sample_sources_file(temp_path, sources, ["hello"])
+
+        work_request.set_current()
+        task.add_index(
+            name="main/source/Sources.xz",
+            paragraph=Deb822(
+                {
+                    "MetaKey": "main/source/Sources",
+                    "Filename": str(sources_path),
+                }
+            ),
+        )
+
+        sources_item = collection.manager.lookup("index:main/source/Sources.xz")
+        assert sources_item is not None
+        assert sources_item.artifact is not None
+        self.assert_artifact_matches(
+            sources_item.artifact,
+            ArtifactCategory.REPOSITORY_INDEX,
+            work_request.workspace,
+            {"path": "main/source/Sources.xz"},
+            {"Sources.xz": sources_path.read_bytes()},
+        )
+        self.assertEqual(sources_item.created_by_user, work_request.created_by)
+        self.assertEqual(sources_item.data["path"], "main/source/Sources.xz")
+
+    def test_update_indexes(self) -> None:
+        """``update_indexes`` executes a plan to update repository indexes."""
+        temp_path = self.create_temporary_directory()
+        collection = self.create_suite_collection("bookworm")
+        work_request = self.playground.create_work_request(
+            assign_contributor_role=True
+        )
+        task = self.create_apt_mirror_task("bookworm")
+        task.set_work_request(work_request)
+
+        with patch("subprocess.run"):
+            task.fetch_indexes(temp_path)
+
+        lists_path = temp_path / "var/lib/apt/lists"
+        prefix = "deb.debian.org_debian_dists_bookworm"
+        main_sources_path = lists_path / f"{prefix}_main_source_Sources"
+        with open(main_sources_path, "w") as main_sources:
+            self.write_sample_sources_file(temp_path, main_sources, ["hello"])
+        contrib_sources_path = lists_path / f"{prefix}_contrib_source_Sources"
+        with open(contrib_sources_path, "w") as contrib_sources:
+            self.write_sample_sources_file(
+                temp_path, contrib_sources, ["contrib-hello"]
+            )
+        release_path = lists_path / f"{prefix}_Release"
+        with open(release_path, "w") as release:
+            release.write(Release({"Suite": "example"}).dump() + "\n")
+
+        repository_index_artifacts = {
+            path: self.create_repository_index_artifact(
+                PurePath(path).name, contents
+            )
+            for path, contents in (
+                ("main/source/Sources", main_sources_path.read_bytes()),
+                ("non-free/source/Sources", b"old non-free Sources"),
+                ("Release", b"old Release"),
+            )
+        }
+        items = {
+            path: collection.manager.add_artifact(
+                repository_index_artifact,
+                user=work_request.created_by,
+                variables={"path": path},
+            )
+            for (
+                path,
+                repository_index_artifact,
+            ) in repository_index_artifacts.items()
+        }
+
+        plan = Plan[Deb822](
+            add=[
+                PlanAdd[Deb822](
+                    name="contrib/source/Sources",
+                    contents=Deb822(
+                        {
+                            "MetaKey": "contrib/source/Sources",
+                            "Filename": str(contrib_sources_path),
+                        }
+                    ),
+                    component="contrib",
+                )
+            ],
+            replace=[
+                PlanReplace[Deb822](
+                    name="Release",
+                    contents=Deb822(
+                        {"MetaKey": "Release", "Filename": str(release_path)}
+                    ),
+                    component="",
+                    item=items["Release"],
+                )
+            ],
+            remove=[items["non-free/source/Sources"]],
+        )
+
+        work_request.set_current()
+        task.update_indexes(plan)
+
+        active_items = {
+            item.name: item
+            for item in collection.child_items.all()
+            if item.removed_at is None
+        }
+        self.assertEqual(
+            active_items.keys(),
+            {
+                "index:main/source/Sources",
+                "index:contrib/source/Sources",
+                "index:Release",
+            },
+        )
+        assert active_items["index:main/source/Sources"].artifact is not None
+        self.assert_artifact_files_match(
+            active_items["index:main/source/Sources"].artifact,
+            {"Sources": main_sources_path.read_bytes()},
+        )
+        assert active_items["index:contrib/source/Sources"].artifact is not None
+        self.assert_artifact_files_match(
+            active_items["index:contrib/source/Sources"].artifact,
+            {"Sources": contrib_sources_path.read_bytes()},
+        )
+        assert active_items["index:Release"].artifact is not None
+        self.assert_artifact_files_match(
+            active_items["index:Release"].artifact,
+            {"Release": release_path.read_bytes()},
+        )
+
     def test_execute(self) -> None:
         """
         Executing the task runs through the full sequence.
@@ -1368,22 +1969,20 @@ class APTMirrorTests(TestCase):
         """
         temp_path = self.create_temporary_directory()
         with open(temp_path / "Sources", "w") as sources:
-            sources.write(
-                self.write_sample_source_package(
-                    temp_path, "hello", "1.0"
-                ).dump()
-                + "\n"
-            )
+            self.write_sample_sources_file(temp_path, sources, ["hello"])
         with open(temp_path / "Packages", "w") as packages:
-            packages.write(
-                self.write_sample_binary_package(
-                    temp_path, "hello", "1.0", "amd64"
-                ).dump()
-                + "\n"
+            self.write_sample_packages_file(
+                temp_path, packages, ["hello"], architecture="amd64"
             )
 
         collection = self.create_suite_collection("bookworm")
         work_request = self.playground.create_work_request()
+        self.playground.create_group_role(
+            work_request.workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[work_request.created_by],
+        )
+
         task = self.create_apt_mirror_task("bookworm")
         task.set_work_request(work_request)
 
@@ -1397,24 +1996,51 @@ class APTMirrorTests(TestCase):
                 Path(env["APT_CONFIG"]).parent.parent.parent
                 / "var/lib/apt/lists"
             )
+            prefix = "deb.debian.org_debian_dists_bookworm"
+            sources_path = apt_lists_path / f"{prefix}_main_source_Sources"
+            packages_path = (
+                apt_lists_path / f"{prefix}_main_binary-amd64_Packages"
+            )
             stdout = ""
             match args:
                 case ["apt-get", "update"]:
-                    for name in ("Sources", "Packages"):
-                        shutil.copy(temp_path / name, apt_lists_path / name)
+                    shutil.copy(temp_path / "Sources", sources_path)
+                    shutil.copy(temp_path / "Packages", packages_path)
+                    (apt_lists_path / f"{prefix}_Release").write_text(
+                        "Suite: bookworm\n"
+                    )
                 case ["apt-get", "indextargets", "Identifier: Sources"]:
                     stdout = dedent(
                         f"""\
-                        Filename: {apt_lists_path}/Sources
+                        MetaKey: main/source/Sources
+                        Filename: {sources_path}
                         Component: main
+                        Identifier: Sources
 
                         """
                     )
                 case ["apt-get", "indextargets", "Identifier: Packages"]:
                     stdout = dedent(
                         f"""\
-                        Filename: {apt_lists_path}/Packages
+                        MetaKey: main/binary-amd64/Packages
+                        Filename: {packages_path}
                         Component: main
+                        Identifier: Packages
+
+                        """
+                    )
+                case ["apt-get", "indextargets"]:
+                    stdout = dedent(
+                        f"""\
+                        MetaKey: main/source/Sources
+                        Filename: {sources_path}
+                        Component: main
+                        Identifier: Sources
+
+                        MetaKey: main/binary-amd64/Packages
+                        Filename: {packages_path}
+                        Component: main
+                        Identifier: Packages
 
                         """
                     )
@@ -1437,7 +2063,7 @@ class APTMirrorTests(TestCase):
             )
 
         # Pretend that a lock for another collection is held, to make sure
-        # that that doesn't interfere.
+        # that such a lock doesn't interfere.
         non_conflicting_alias = "non-conflicting-lock"
         non_conflicting_connection = connection.copy(non_conflicting_alias)
         connections[non_conflicting_alias] = non_conflicting_connection
@@ -1458,7 +2084,13 @@ class APTMirrorTests(TestCase):
 
         self.assertQuerySetEqual(
             collection.child_items.values_list("name", flat=True),
-            ["hello_1.0", "hello_1.0_amd64"],
+            [
+                "hello_1.0",
+                "hello_1.0_amd64",
+                "index:Release",
+                "index:main/binary-amd64/Packages",
+                "index:main/source/Sources",
+            ],
             ordered=False,
         )
 

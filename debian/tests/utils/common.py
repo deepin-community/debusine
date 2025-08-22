@@ -6,13 +6,12 @@
 # distribution. No part of Debusine, including this file, may be copied,
 # modified, propagated, or distributed except according to the terms
 # contained in the LICENSE file.
+
 """Common utility methods."""
-import argparse
+
 import logging
 import socket
 import subprocess
-import sys
-import unittest
 from typing import Any
 
 import yaml
@@ -113,22 +112,3 @@ def run(
         completed_process.returncode,
         cmd,
     )
-
-
-def launch_tests(description: str) -> None:
-    """Parse CLI options and call unittest.main()."""
-    parser = argparse.ArgumentParser(description=description)
-
-    parser.add_argument(
-        '--log-level',
-        help='Minimum log level. Overrides log-level (in [General] section) '
-        'from config.ini',
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        default='INFO',
-    )
-
-    debusine_args, unittest_args = parser.parse_known_args()
-
-    logging.basicConfig(level=debusine_args.log_level)
-
-    unittest.main(argv=[sys.argv[0]] + unittest_args)

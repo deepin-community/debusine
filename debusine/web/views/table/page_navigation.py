@@ -21,13 +21,17 @@ if TYPE_CHECKING:
     from debusine.web.views.table.paginator import Paginator
 
 
-class PageNavigation(Widget):
-    """Render the page navigation bar."""
+class PageNavigationWidget(Widget):
+    """Base class for page navigation widgets."""
 
     def __init__(self, paginator: "Paginator[Any]") -> None:
         """Build the PageNavigation widget."""
         self.paginator = paginator
         self.table = paginator.table
+
+
+class PageNavigation(PageNavigationWidget):
+    """Render the page navigation bar."""
 
     def render(self, context: BaseContext) -> str:  # noqa: U100
         """Render the widget."""
@@ -76,3 +80,18 @@ class PageNavigation(Widget):
             chunks.append(SafeString("</ul>"))
             chunks.append(SafeString("</nav>"))
         return mark_safe(SafeString("\n").join(chunks))
+
+
+class PageNavigationPreview(PageNavigationWidget):
+    """Render the page navigation bar in preview mode."""
+
+    def render(self, context: BaseContext) -> str:  # noqa: U100
+        """Render the widget."""
+        paginator = self.paginator
+        if paginator.num_pages > 1:
+            return SafeString(
+                "<div class='text-center'>"
+                f"{paginator.per_page} out of {paginator.count} shown"
+                "</div>"
+            )
+        return SafeString()

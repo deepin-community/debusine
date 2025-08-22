@@ -24,6 +24,8 @@ class MainTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
+
         self.default_sigint_handler = signal.getsignal(signal.SIGINT)
         self.default_sigterm_handler = signal.getsignal(signal.SIGTERM)
 
@@ -33,6 +35,8 @@ class MainTests(TestCase):
         """Restore default signals (__main__.main() changes them)."""
         signal.signal(signal.SIGINT, self.default_sigint_handler)
         signal.signal(signal.SIGTERM, self.default_sigterm_handler)
+
+        super().tearDown()
 
     def patch_config_handler(self) -> None:
         """Mock ConfigHandler to avoid trying to access config.ini."""

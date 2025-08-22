@@ -1,5 +1,5 @@
 {% load debusine %}
-<table class="table table-sm" id="worker-list">
+<table class="table table-sm table-hover table-striped" id="worker-list">
     <thead>
         {% if paginator.table.filters %}
             <tr>
@@ -20,8 +20,6 @@
                 <td>
                     {% if worker.worker_type == "external" %}
                         <i class="bi {% icon "worker_external" %}" title="External"></i>
-                    {% elif worker.worker_type == "celery" %}
-                        <i class="bi {% icon "worker_celery" %}" title="Celery"></i>
                     {% elif worker.worker_type == "signing" %}
                         <i class="bi {% icon "worker_signing" %}" title="Signing"></i>
                     {% else %}
@@ -39,22 +37,16 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if worker.worker_type == WorkerType.CELERY %}
-                        -
-                    {% else %}
-                        {% with last_seen_at=worker.token.last_seen_at %}
-                            {% if last_seen_at %}
-                                {{ last_seen_at|timesince }} ago
-                            {% else %}
-                                Never
-                            {% endif %}
-                        {% endwith %}
-                    {% endif %}
+                    {% with last_seen_at=worker.token.last_seen_at %}
+                        {% if last_seen_at %}
+                            {{ last_seen_at|timesince }} ago
+                        {% else %}
+                            Never
+                        {% endif %}
+                    {% endwith %}
                 </td>
                 <td>
-                    {% if worker.worker_type == WorkerType.CELERY %}
-                        -
-                    {% elif not worker.token.enabled %}
+                    {% if not worker.token.enabled %}
                         {% include "web/_worker-status.html" with status="disabled" %}
                     {% elif not worker.connected %}
                         {% include "web/_worker-status.html" with status="disconnected" %}

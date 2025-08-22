@@ -14,11 +14,11 @@ from typing import TypeVar
 from debusine.server.workflows import Workflow
 from debusine.server.workflows.models import BaseWorkflowData
 from debusine.tasks.models import BaseDynamicTaskData
-from debusine.tasks.tests.helper_mixin import TestBaseTask
+from debusine.tasks.tests.helper_mixin import SampleBaseTask
 
 WD = TypeVar("WD", bound=BaseWorkflowData)
 DTD = TypeVar("DTD", bound=BaseDynamicTaskData)
 
 
-class TestWorkflow(TestBaseTask[WD, DTD], Workflow[WD, DTD]):
+class SampleWorkflow(Workflow[WD, DTD], SampleBaseTask[WD, DTD]):
     """Common test implementation of Workflow methods."""

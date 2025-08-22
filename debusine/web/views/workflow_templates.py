@@ -12,6 +12,7 @@
 from typing import cast
 
 from django.db.models import QuerySet
+from django.shortcuts import get_object_or_404
 
 from debusine.db.models.work_requests import (
     WorkflowTemplate,
@@ -43,7 +44,9 @@ class WorkflowTemplateDetailView(
         assert queryset is None
         queryset = self.get_queryset()
 
-        workflow_template = queryset.get(name=self.kwargs["name"])
+        workflow_template = get_object_or_404(
+            queryset, name=self.kwargs["name"]
+        )
         self.enforce(workflow_template.can_display)
         return workflow_template
 

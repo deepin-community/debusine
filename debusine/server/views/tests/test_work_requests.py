@@ -12,6 +12,7 @@
 import re
 from base64 import b64encode
 from datetime import datetime
+from logging import getLogger
 from typing import Any, ClassVar
 from unittest import mock
 
@@ -29,8 +30,8 @@ from debusine.artifacts.models import (
     ArtifactData,
     DebianSourcePackage,
     DebianUpload,
+    TaskTypes,
 )
-from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
     ArtifactRelation,
@@ -41,6 +42,7 @@ from debusine.db.models import (
     default_workspace,
 )
 from debusine.db.playground import scenarios
+from debusine.server.scopes import urlconf_scope
 from debusine.server.serializers import WorkRequestSerializer
 from debusine.server.tasks.wait.models import ExternalDebsignData
 from debusine.server.views.work_requests import WorkRequestPagination
@@ -48,7 +50,6 @@ from debusine.server.workflows.models import (
     WorkRequestManualUnblockAction,
     WorkRequestWorkflowData,
 )
-from debusine.tasks.models import TaskTypes
 from debusine.test.django import (
     AllowAll,
     DenyAll,
@@ -82,10 +83,14 @@ class WorkRequestTestCase(TestCase):
             .values_list("id", flat=True)
         )
 
+        with urlconf_scope(work_request.workspace.scope.name):
+            work_request_url = work_request.get_absolute_url()
+
         self.assertEqual(
             response.json(),
             {
                 'id': work_request.pk,
+                'url': work_request_url,
                 'task_name': work_request.task_name,
                 'created_at': _timestamp(work_request.created_at),
                 'started_at': _timestamp(work_request.started_at),
@@ -110,8 +115,14 @@ class WorkRequestTestCase(TestCase):
                 'status': work_request.status,
                 'result': work_request.result,
                 'artifacts': artifact_ids,
+                'scope': work_request.workspace.scope.name,
                 'workspace': work_request.workspace.name,
                 'created_by': work_request.created_by.id,
+                'aborted_by': (
+                    None
+                    if work_request.aborted_by is None
+                    else work_request.aborted_by.id
+                ),
             },
         )
 
@@ -168,39 +179,51 @@ class WorkRequestTestCase(TestCase):
                 )
             work_requests = work_requests[start : start + page_size]
 
+        expected_results: list[dict[str, Any]] = []
+        for work_request in work_requests:
+            with urlconf_scope(work_request.workspace.scope.name):
+                work_request_url = work_request.get_absolute_url()
+            expected_results.append(
+                {
+                    'id': work_request.pk,
+                    'url': work_request_url,
+                    'task_name': work_request.task_name,
+                    'created_at': _timestamp(work_request.created_at),
+                    'started_at': _timestamp(work_request.started_at),
+                    'completed_at': _timestamp(work_request.completed_at),
+                    'duration': work_request.duration,
+                    'worker': work_request.worker_id,
+                    'task_type': work_request.task_type,
+                    'task_data': work_request.task_data,
+                    'dynamic_task_data': None,
+                    'priority_base': work_request.priority_base,
+                    'priority_adjustment': work_request.priority_adjustment,
+                    'workflow_data': work_request.workflow_data_json,
+                    'event_reactions': work_request.event_reactions_json,
+                    'status': work_request.status,
+                    'result': work_request.result,
+                    'artifacts': list(
+                        work_request.artifact_set.all()
+                        .order_by("id")
+                        .values_list("id", flat=True)
+                    ),
+                    'scope': work_request.workspace.scope.name,
+                    'workspace': work_request.workspace.name,
+                    'created_by': work_request.created_by.id,
+                    'aborted_by': (
+                        None
+                        if work_request.aborted_by is None
+                        else work_request.aborted_by.id
+                    ),
+                }
+            )
+
         self.assertEqual(
             response.json(),
             {
                 'next': next_url,
                 'previous': previous_url,
-                'results': [
-                    {
-                        'id': work_request.pk,
-                        'task_name': work_request.task_name,
-                        'created_at': _timestamp(work_request.created_at),
-                        'started_at': _timestamp(work_request.started_at),
-                        'completed_at': _timestamp(work_request.completed_at),
-                        'duration': work_request.duration,
-                        'worker': work_request.worker_id,
-                        'task_type': work_request.task_type,
-                        'task_data': work_request.task_data,
-                        'dynamic_task_data': None,
-                        'priority_base': work_request.priority_base,
-                        'priority_adjustment': work_request.priority_adjustment,
-                        'workflow_data': work_request.workflow_data_json,
-                        'event_reactions': work_request.event_reactions_json,
-                        'status': work_request.status,
-                        'result': work_request.result,
-                        'artifacts': list(
-                            work_request.artifact_set.all()
-                            .order_by("id")
-                            .values_list("id", flat=True)
-                        ),
-                        'workspace': work_request.workspace.name,
-                        'created_by': work_request.created_by.id,
-                    }
-                    for work_request in work_requests
-                ],
+                'results': expected_results,
             },
         )
 
@@ -234,7 +257,6 @@ class WorkRequestViewTests(WorkRequestTestCase):
         self.token = self.playground.create_user_token()
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common test data."""
         super().setUpTestData()
@@ -504,9 +526,10 @@ class WorkRequestViewTests(WorkRequestTestCase):
         work_request = WorkRequest.objects.latest('created_at')
 
         # Response contains the serialized WorkRequest
-        self.assertEqual(
-            response.json(), WorkRequestSerializer(work_request).data
-        )
+        with urlconf_scope(work_request.workspace.scope.name):
+            self.assertEqual(
+                response.json(), WorkRequestSerializer(work_request).data
+            )
 
         # Response contains fields that were posted
         self.assertDictContainsAll(response.json(), work_request_serialized)
@@ -525,20 +548,17 @@ class WorkRequestViewTests(WorkRequestTestCase):
     @override_settings(DISABLE_AUTOMATIC_SCHEDULING=False)
     def test_post_success_workspace_testing(self) -> None:
         """Client POST a WorkRequest with a specific workspace."""
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace()
-            workspace.name = "Testing"
-            workspace.save()
-            self.playground.create_group_role(
-                workspace, Workspace.Roles.OWNER, users=[self.scenario.user]
-            )
-            self.playground.create_debian_environment(
-                codename="bookworm", workspace=workspace
-            )
+        workspace = self.playground.create_workspace()
+        workspace.name = "Testing"
+        workspace.save()
+        self.playground.create_group_role(
+            workspace, Workspace.Roles.OWNER, users=[self.scenario.user]
+        )
+        self.playground.create_debian_environment(
+            codename="bookworm", workspace=workspace
+        )
+        artifact = self.playground.create_source_artifact(workspace=workspace)
 
-            artifact = self.playground.create_source_artifact(
-                workspace=workspace
-            )
         self.verify_post_success(
             workspace=workspace, input_artifact_id=artifact.id
         )
@@ -772,6 +792,51 @@ class WorkRequestViewTests(WorkRequestTestCase):
         }
         with self.assert_model_count_unchanged(WorkRequest):
             response = self.post_work_requests(work_request_serialized)
+
+        self.assertResponseProblem(
+            response,
+            "Cannot create work request: error computing dynamic data",
+            detail_pattern="^Task data: .*Error: .*",
+        )
+
+    def test_post_work_request_compute_dynamic_data_assertion_failed(
+        self,
+    ) -> None:
+        """Trigger an AssertionError in compute_dynamic_data_raise."""
+        self.playground.add_user(
+            self.scenario.workspace_owners, self.scenario.user
+        )
+        work_request_serialized = {
+            "task_name": "sbuild",
+            "task_data": {
+                "build_components": ["any", "all"],
+                "host_architecture": "amd64",
+                "input": {"source_artifact": 536},
+                'environment': 'debian/match:codename=bookworm',
+            },
+        }
+        with (
+            self.assert_model_count_unchanged(WorkRequest),
+            mock.patch(
+                "debusine.tasks.sbuild.Sbuild.compute_dynamic_data",
+                side_effect=AssertionError,
+            ),
+            self.assertLogs(
+                logger=getLogger("debusine.server.views.work_requests"),
+            ) as logs,
+        ):
+            response = self.post_work_requests(work_request_serialized)
+
+        self.assertEqual(len(logs.records), 1)
+        record = logs.records[0]
+        self.assertEqual(
+            record.msg,
+            (
+                "Assertion failed computing dynamic data for task %s with "
+                "data %s"
+            ),
+        )
+        self.assertIsNotNone(record.exc_info)
 
         self.assertResponseProblem(
             response,
@@ -1265,6 +1330,11 @@ class WorkRequestRetryViewTests(TestCase):
         """Target work request cannot be retried."""
         with override_permission(WorkRequest, "can_retry", DenyAll):
             self.assertFalse(self.work_request.verify_retry())
+        self.playground.create_group_role(
+            self.scenario.workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
         response = self.post()
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertResponseProblem(
@@ -1301,6 +1371,18 @@ class WorkRequestRetryViewTests(TestCase):
         workspace = self.playground.create_workspace(
             scope=scope1, name="workspace", public=True
         )
+
+        self.playground.create_group_role(
+            self.scenario.workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
+        self.playground.create_group_role(
+            workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
+
         work_request = self.playground.create_work_request(
             workspace=workspace,
             task_name="noop",
@@ -1355,6 +1437,162 @@ class WorkRequestRetryViewTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.work_request.refresh_from_db()
         self.assertTrue(hasattr(self.work_request, "superseded"))
+
+
+class WorkRequestAbortViewTests(WorkRequestTestCase):
+    """Tests for WorkRequestAbortView class."""
+
+    scenario = scenarios.DefaultContextAPI()
+    work_request: ClassVar[WorkRequest]
+    token: ClassVar[Token]
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        """Set up common data."""
+        super().setUpTestData()
+        cls.work_request = cls.playground.create_work_request(
+            task_name="noop", workspace=cls.scenario.workspace
+        )
+
+    def post(
+        self,
+        work_request_id: int | None = None,
+        token: Token | None = None,
+        scope: str | None = None,
+    ) -> TestResponseType:
+        """Post work_request to the endpoint api:work-request-abort."""
+        headers = {"Token": (token or self.scenario.user_token).key}
+        if scope is not None:
+            headers["X-Debusine-Scope"] = scope
+        return self.client.post(
+            reverse(
+                "api:work-request-abort",
+                kwargs={
+                    "work_request_id": (
+                        self.work_request.id
+                        if work_request_id is None
+                        else work_request_id
+                    )
+                },
+            ),
+            data={},
+            headers=headers,
+            content_type="application/json",
+        )
+
+    def test_check_permissions_post_token_must_be_enabled(self) -> None:
+        """An enabled token is needed to abort a WorkRequest."""
+        self.scenario.user_token.disable()
+        self.scenario.user_token.save()
+        response = self.post(token=self.scenario.user_token)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_check_permissions_post_token_must_have_user_associated(
+        self,
+    ) -> None:
+        """The token must have a user for aborting a WorkRequest."""
+        self.scenario.user_token.user = None
+        self.scenario.user_token.save()
+        response = self.post(token=self.scenario.user_token)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_post_work_request_not_found(self) -> None:
+        """Return HTTP 404 if the WorkRequest id does not exist."""
+        max_id = WorkRequest.objects.aggregate(Max("id"))["id__max"]
+        response = self.post(work_request_id=max_id + 1)
+        self.assertResponseProblem(
+            response,
+            "Error",
+            detail_pattern=r"No WorkRequest matches the given query\.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_post_cannot_abort(self) -> None:
+        """Target work request cannot be aborted."""
+        self.work_request.mark_aborted()
+        response = self.post()
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertResponseProblem(
+            response,
+            "Cannot abort work request",
+            detail_pattern=(
+                "Only pending, blocked, or running tasks can be aborted"
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    @override_permission(WorkRequest, "can_abort", AllowAll)
+    def test_post_success(self) -> None:
+        """Client POST aborts the WorkRequest."""
+        self.assertTrue(self.work_request.verify_abort())
+        response = self.post()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.work_request.refresh_from_db()
+        self.assertEqual(self.work_request.aborted_by, self.scenario.user)
+        self.assertEqual(self.work_request.status, WorkRequest.Statuses.ABORTED)
+        self.check_response_for_work_request(response, self.work_request)
+
+    def test_post_honours_scope(self) -> None:
+        """Aborting a work request looks it up in the current scope."""
+        scope1 = self.playground.get_or_create_scope("scope1")
+        scope2 = self.playground.get_or_create_scope("scope2")
+        workspace = self.playground.create_workspace(
+            scope=scope1, name="workspace", public=True
+        )
+        work_request = self.playground.create_work_request(
+            workspace=workspace, task_name="noop"
+        )
+
+        response = self.post(work_request_id=work_request.id, scope=scope2.name)
+
+        self.assertResponseProblem(
+            response,
+            "Error",
+            detail_pattern=r"No WorkRequest matches the given query\.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+        response = self.post(
+            work_request_id=work_request.id,
+            scope=work_request.workspace.scope.name,
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        work_request.refresh_from_db()
+        self.assertEqual(work_request.aborted_by, self.scenario.user)
+        self.assertEqual(work_request.status, WorkRequest.Statuses.ABORTED)
+
+    def test_post_private_workspace_unauthorized(self) -> None:
+        """Aborting in a private workspace 404s without `can_display`."""
+        private_workspace = self.playground.create_workspace(name="Private")
+        self.work_request.workspace = private_workspace
+        self.work_request.save()
+
+        response = self.post()
+
+        self.assertResponseProblem(
+            response,
+            "Error",
+            detail_pattern=r"No WorkRequest matches the given query\.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_post_private_workspace_authorized(self) -> None:
+        """Aborting in a private workspace succeeds with `can_display`."""
+        private_workspace = self.playground.create_workspace(name="Private")
+        self.playground.create_group_role(
+            private_workspace, Workspace.Roles.OWNER, users=[self.scenario.user]
+        )
+        self.work_request.workspace = private_workspace
+        self.work_request.save()
+
+        response = self.post()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.work_request.refresh_from_db()
+        self.assertEqual(self.work_request.aborted_by, self.scenario.user)
+        self.assertEqual(self.work_request.status, WorkRequest.Statuses.ABORTED)
 
 
 class WorkRequestUnblockViewTests(WorkRequestTestCase):
@@ -1728,7 +1966,6 @@ class WorkRequestExternalDebsignViewTests(WorkRequestTestCase):
     token: ClassVar[Token]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data."""
         super().setUpTestData()
@@ -1832,7 +2069,6 @@ class WorkRequestExternalDebsignViewTests(WorkRequestTestCase):
         )
 
     @classmethod
-    @context.disable_permission_checks()
     def create_signed_artifact(
         cls,
         paths: list[str] | dict[str, bytes] | None = None,
@@ -2067,11 +2303,10 @@ class WorkRequestExternalDebsignViewTests(WorkRequestTestCase):
 
     def test_post_wrong_work_request(self) -> None:
         """A `POST` request requires the right kind of work request."""
-        with context.disable_permission_checks():
-            work_request = self.playground.create_work_request(
-                task_type=TaskTypes.WORKER, task_name="noop"
-            )
-            artifact = self.create_signed_artifact()
+        work_request = self.playground.create_work_request(
+            task_type=TaskTypes.WORKER, task_name="noop"
+        )
+        artifact = self.create_signed_artifact()
 
         response = self.post(
             work_request_id=work_request.id,
@@ -2114,12 +2349,11 @@ class WorkRequestExternalDebsignViewTests(WorkRequestTestCase):
 
     def test_post_wrong_user(self) -> None:
         """A `POST` request may only be sent by the user who created the WR."""
-        with context.disable_permission_checks():
-            user = get_user_model().objects.create_user(
-                username="another", email="another@example.org"
-            )
-            token = self.playground.create_user_token(user=user)
-            artifact = self.create_signed_artifact()
+        user = get_user_model().objects.create_user(
+            username="another", email="another@example.org"
+        )
+        token = self.playground.create_user_token(user=user)
+        artifact = self.create_signed_artifact()
 
         response = self.post(token=token, signed=artifact)
 

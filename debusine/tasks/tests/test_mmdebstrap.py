@@ -59,7 +59,14 @@ class MmDebstrapTests(ExternalTaskHelperMixin[MmDebstrap], TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.configure_task()
+
+    def tearDown(self) -> None:
+        """Delete objects."""
+        if self.task._debug_log_files_directory:
+            self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def test_compute_dynamic_data(self) -> None:
         """Test compute_dynamic_data."""
@@ -348,6 +355,7 @@ class MmDebstrapTests(ExternalTaskHelperMixin[MmDebstrap], TestCase):
                 "architecture": bootstrap_options.architecture,
                 "vendor": os_release_data["ID"],
                 "codename": os_release_data["VERSION_CODENAME"],
+                "components": ["main", "contrib"],
                 "pkglist": packages,
                 "with_dev": True,
                 "with_init": True,
@@ -403,6 +411,7 @@ class MmDebstrapTests(ExternalTaskHelperMixin[MmDebstrap], TestCase):
                 "architecture": bootstrap_options.architecture,
                 "vendor": os_release_data["ID"],
                 "codename": "jessie",
+                "components": ["main", "contrib"],
                 "pkglist": packages,
                 "with_dev": True,
                 "with_init": True,
@@ -460,6 +469,7 @@ class MmDebstrapTests(ExternalTaskHelperMixin[MmDebstrap], TestCase):
                 "architecture": bootstrap_options.architecture,
                 "vendor": os_release_data["ID"],
                 "codename": "sid",
+                "components": ["main", "contrib"],
                 "pkglist": packages,
                 "with_dev": True,
                 "with_init": True,
@@ -481,6 +491,72 @@ class MmDebstrapTests(ExternalTaskHelperMixin[MmDebstrap], TestCase):
         """Test upload_artifacts() doing nothing: execution_success=False."""
         self.mock_debusine()
         self.task.upload_artifacts(Path(), execution_success=False)
+
+    def test_upload_no_components_specified(self) -> None:
+        """Test upload_artifacts() falls back to sources_file's components."""
+        directory = self.create_temporary_directory()
+
+        mirror = "http://deb.debian.org/debian"
+        self.configure_task(
+            override={
+                "bootstrap_repositories": [
+                    {"mirror": mirror, "suite": "unstable"}
+                ]
+            }
+        )
+        components = ["main", "contrib"]
+        with mock.patch(
+            "debusine.tasks.systembootstrap.SystemBootstrap."
+            "_list_components_for_suite",
+            return_value=components,
+            autospec=True,
+        ):
+            self.task.configure_for_execution(directory)
+
+        system_tarball = directory / MmDebstrap._OUTPUT_SYSTEM_FILE
+        system_tarball.write_bytes(b"Generated tarball")
+
+        # Debusine.upload_artifact is mocked to verify the call only
+        debusine_mock = self.mock_debusine()
+
+        os_release_data = self.write_os_release(
+            directory / self.task._OS_RELEASE_FILE
+        )
+        (directory / self.task._TEST_SBIN_INIT_RETURN_CODE_FILE).write_text("0")
+
+        packages = self.patch_subprocess_run_pkglist()
+
+        self.task.upload_artifacts(directory, execution_success=True)
+
+        calls = []
+
+        bootstrap_options = MmDebstrapBootstrapOptions.parse_obj(
+            self.SAMPLE_TASK_DATA["bootstrap_options"]
+        )
+        expected_system_artifact = DebianSystemTarballArtifact.create(
+            system_tarball,
+            data={
+                "variant": None,
+                "architecture": bootstrap_options.architecture,
+                "vendor": os_release_data["ID"],
+                "codename": "sid",
+                "components": components,
+                "pkglist": packages,
+                "with_dev": True,
+                "with_init": True,
+                "mirror": mirror,
+            },
+        )
+
+        calls.append(
+            call(
+                expected_system_artifact,
+                workspace=self.task.workspace_name,
+                work_request=self.task.work_request_id,
+            )
+        )
+
+        debusine_mock.upload_artifact.assert_has_calls(calls)
 
     def test_variant_enums(self) -> None:
         """Check MmDebstrap variants enums."""

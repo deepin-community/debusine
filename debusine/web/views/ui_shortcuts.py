@@ -59,20 +59,27 @@ class UIShortcut(Widget):
         )
 
 
+@dataclass(kw_only=True)
 class UIShortcutPOST(UIShortcut):
     """UI shortcut that triggers a POST."""
+
+    #: Button style (from
+    #: https://getbootstrap.com/docs/5.0/components/buttons/, without the
+    #: leading "btn-")
+    button_style: str = "primary"
 
     def render(self, context: BaseContext) -> str:
         """Render the shortcut as a form."""
         return format_html(
             "<form method='post' action='{url}'>{csrf}"
-            "<button type='submit' class='btn btn-primary bi bi-{icon}'"
+            "<button type='submit' class='btn btn-{button_style} bi bi-{icon}'"
             " title='{label}'></button>"
             "</form>",
             csrf=csrf_input(context["request"]),
             label=self.label,
             icon=self.icon,
             url=self.url,
+            button_style=self.button_style,
         )
 
 
@@ -85,12 +92,22 @@ def create_work_request_view(work_request: WorkRequest) -> UIShortcut:
     )
 
 
-def create_work_request_retry(work_request: WorkRequest) -> "UIShortcut":
+def create_work_request_retry(work_request: WorkRequest) -> UIShortcutPOST:
     """Create a shortcut to retry a work request."""
     return UIShortcutPOST(
         label="Retry work request",
         icon=Icons.WORK_REQUEST_RETRY,
         url=work_request.get_absolute_url_retry(),
+    )
+
+
+def create_work_request_abort(work_request: WorkRequest) -> UIShortcutPOST:
+    """Create a shortcut to abort a work request."""
+    return UIShortcutPOST(
+        label="Abort work request",
+        icon=Icons.WORK_REQUEST_ABORT,
+        url=work_request.get_absolute_url_abort(),
+        button_style="danger",
     )
 
 

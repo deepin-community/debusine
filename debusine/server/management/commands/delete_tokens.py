@@ -44,7 +44,9 @@ class Command(DebusineBaseCommand):
     def handle(self, *args: Any, **options: Any) -> None:
         """Delete (if selected and confirmed) tokens."""
         tokens = Token.objects.get_tokens(
-            username=options['username'], key=options['token']
+            username=options["username"],
+            key=options["token"],
+            include_expired=True,
         )
 
         if not tokens:

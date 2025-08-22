@@ -181,6 +181,8 @@ class Context:
 
         This needs to be set *after* ``set_scope``.
         """
+        from debusine.db.models.scopes import ScopeRoles
+
         if (scope := self.scope) is None:
             raise ContextConsistencyError("Cannot set user before scope")
 
@@ -192,7 +194,9 @@ class Context:
         # placeholder
 
         self._user.set(new_user)
-        self._scope_roles.set(frozenset(scope.get_roles(new_user)))
+        self._scope_roles.set(
+            ScopeRoles.from_iterable(scope.get_group_roles(new_user))
+        )
 
     @property
     def worker_token(self) -> Optional["Token"]:

@@ -62,7 +62,7 @@ class ContextMiddlewareTests(TestCase):
         self.assertIsNone(context.scope)
 
 
-class ContextMiddlewareChannelsTests(IsolatedAsyncioTestCase):
+class ContextMiddlewareChannelsTests(IsolatedAsyncioTestCase, TestCase):
     """Test ContextMiddlewareChannels."""
 
     @classmethod
@@ -75,7 +75,7 @@ class ContextMiddlewareChannelsTests(IsolatedAsyncioTestCase):
         """No-op send callback for testing."""
 
     async def test_preserve_context(self) -> None:
-        """Make sure context works as intended on ssync views."""
+        """Make sure context works as intended on async views."""
         mock_scope = cast("Scope", 42)
         mock_scope_old = cast("Scope", 41)
 

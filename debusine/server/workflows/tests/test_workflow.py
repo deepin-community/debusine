@@ -10,7 +10,11 @@
 """Unit tests for the base Workflow classes."""
 import abc
 
-from debusine.artifacts.models import ArtifactCategory, BareDataCategory
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    BareDataCategory,
+    TaskTypes,
+)
 from debusine.client.models import LookupChildType
 from debusine.db.models import CollectionItem, WorkRequest, default_workspace
 from debusine.server.workflows import NoopWorkflow, Workflow
@@ -18,14 +22,13 @@ from debusine.server.workflows.models import (
     BaseWorkflowData,
     WorkRequestWorkflowData,
 )
-from debusine.server.workflows.tests.helpers import TestWorkflow
+from debusine.server.workflows.tests.helpers import SampleWorkflow
 from debusine.signing.tasks.models import DebsignData
 from debusine.tasks import BaseTask
 from debusine.tasks.models import (
     ActionTypes,
     BaseDynamicTaskData,
     LookupMultiple,
-    TaskTypes,
 )
 from debusine.test.django import TestCase
 from debusine.test.test_utils import preserve_task_registry
@@ -39,7 +42,7 @@ class WorkflowTests(TestCase):
         """Test instantiating a Workflow."""
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Concrete workflow instance to use for tests."""
 
@@ -60,7 +63,7 @@ class WorkflowTests(TestCase):
         """Test class subclass registry."""
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Concrete workflow instance to use for tests."""
 
@@ -69,13 +72,13 @@ class WorkflowTests(TestCase):
                 raise NotImplementedError()
 
         class ExampleWorkflowABC(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData],
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData],
             abc.ABC,
         ):
             """Abstract workflow subclass to use for tests."""
 
         class ExampleWorkflowName(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Workflow subclass with a custom name."""
 
@@ -104,7 +107,7 @@ class WorkflowTests(TestCase):
         """Test provides_artifact() update event_reactions.on_creation."""
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Concrete workflow instance to use for tests."""
 
@@ -129,7 +132,7 @@ class WorkflowTests(TestCase):
             child, category, name, data=data, artifact_filters=artifact_filters
         )
 
-        promise = CollectionItem.active_objects.get(
+        promise = CollectionItem.objects.active().get(
             parent_collection=workflow_root.internal_collection, name=name
         )
         self.assertEqual(promise.child_type, CollectionItem.Types.BARE)
@@ -153,6 +156,7 @@ class WorkflowTests(TestCase):
                     **artifact_filters,
                     "category": category,
                 },
+                "created_at": None,
             }
         ]
         self.assert_work_request_event_reactions(child, on_success=on_success)
@@ -173,7 +177,7 @@ class WorkflowTests(TestCase):
             child, category, name, data=data, artifact_filters=artifact_filters
         )
 
-        item = CollectionItem.active_objects.get(
+        item = CollectionItem.objects.active().get(
             parent_collection=workflow_root.internal_collection, name=name
         )
         self.assertEqual(item.child_type, CollectionItem.Types.ARTIFACT)
@@ -186,7 +190,7 @@ class WorkflowTests(TestCase):
         r"""Test requires_artifact() ValueError: name contains a slash."""
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Concrete workflow instance to use for tests."""
 
@@ -212,7 +216,7 @@ class WorkflowTests(TestCase):
         r"""Test requires_artifact() ValueError: key starts with promise\_."""
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Concrete workflow instance to use for tests."""
 
@@ -238,7 +242,7 @@ class WorkflowTests(TestCase):
         """Test requires_artifact() call work_request.add_dependency()."""
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Concrete workflow instance to use for tests."""
 
@@ -290,7 +294,7 @@ class WorkflowTests(TestCase):
         """Test requires_artifact() call work_request.add_dependency()."""
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Concrete workflow instance to use for tests."""
 
@@ -360,7 +364,7 @@ class WorkflowTests(TestCase):
         """Test work_request_ensure_child create or return work request."""
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Concrete workflow instance to use for tests."""
 
@@ -405,3 +409,24 @@ class WorkflowTests(TestCase):
 
         # Returned the same as had been created
         self.assertEqual(wr_created, wr_returned)
+
+    @preserve_task_registry()
+    def test_get_label(self) -> None:
+        workflow_root = self.playground.create_workflow()
+
+        class ExampleWorkflow(
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+        ):
+            """Concrete workflow instance to use for tests."""
+
+            def populate(self) -> None:
+                """Unused abstract method from Workflow."""
+                raise NotImplementedError()
+
+        workflow = ExampleWorkflow(workflow_root)
+
+        self.assertEqual(workflow.get_label(), "noop-template")
+
+        workflow_root.workflow_data_json = {"workflow_template_name": None}
+
+        self.assertEqual(workflow.get_label(), "noop")

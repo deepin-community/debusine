@@ -1,0 +1,45 @@
+{% load artifacts %}
+{% if data %}
+    <p id="description-lintian_run">
+        Lintian run for <code>{{ data.package_name }}</code> package.
+    </p>
+    Additional details:
+    <ul>
+        <li id="description-source_artifacts">
+            Source packages:
+            {% if data.source_artifact_id %}
+                {% artifact_link data.source_artifact_id %}
+            {% else %}
+                No source package used
+            {% endif %}
+        </li>
+        <li id="description-binary_artifacts">
+            Binary packages:
+            {% if data.binary_artifacts_ids %}
+                {% artifact_links data.binary_artifacts_ids %}
+            {% else %}
+                No binary packages used
+            {% endif %}
+        </li>
+        <li id="description-environment">Executed in environment {% artifact_link data.environment_id %}</li>
+        <li id="description-fail_on_severity">Fail on severity: {{ data.fail_on_severity }}</li>
+        <li id="description-host_architecture">Host architecture: {{ data.host_architecture|default:"auto" }}</li>
+        <li id="description-target_distribution">Target distribution: {{ data.target_distribution }}</li>
+        <li id="description-include_tags">
+            Include tags:
+            {% if data.include_tags %}
+                {% include "web/_list_to_code.html" with values=data.include_tags only %}
+            {% else %}
+                none
+            {% endif %}
+        </li>
+        <li id="description-exclude_tags">
+            Exclude tags:
+            {% if data.exclude_tags %}
+                {% include "web/_list_to_code.html" with values=data.exclude_tags only %}
+            {% else %}
+                none
+            {% endif %}
+        </li>
+    </ul>
+{% endif %}

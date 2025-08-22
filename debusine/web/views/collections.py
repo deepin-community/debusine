@@ -25,7 +25,7 @@ from debusine.web.views.base import (
     ListViewBase,
     WorkspaceView,
 )
-from debusine.web.views.base_rightbar import RightbarUIView
+from debusine.web.views.mixins import RightbarUIMixin, UIShortcutsMixin
 from debusine.web.views.table import TableMixin
 from debusine.web.views.tables import CollectionItemTable
 from debusine.web.views.view_utils import format_yaml
@@ -82,7 +82,7 @@ class CollectionCategoryListView(WorkspaceView, ListViewBase[Collection]):
         return context
 
 
-class CollectionViewMixin(WorkspaceView, RightbarUIView):
+class CollectionViewMixin(WorkspaceView, UIShortcutsMixin, RightbarUIMixin):
     """Common functions for collection-specific views."""
 
     @cached_property
@@ -134,9 +134,11 @@ class CollectionDetailView(CollectionViewMixin, DetailViewBase[Collection]):
         if self.object.data:
             context["data"] = format_yaml(self.object.data)
 
-        context["collections"] = CollectionItem.active_objects.filter(
-            parent_collection=self.object, collection__isnull=False
-        ).order_by("category", "name")
+        context["collections"] = (
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.object, collection__isnull=False)
+            .order_by("category", "name")
+        )
 
         context["artifacts"] = (
             CollectionItem.objects.filter(
@@ -152,11 +154,15 @@ class CollectionDetailView(CollectionViewMixin, DetailViewBase[Collection]):
             .order_by("category")
         )
 
-        context["bare"] = CollectionItem.active_objects.filter(
-            parent_collection=self.object,
-            collection__isnull=True,
-            artifact__isnull=True,
-        ).order_by("category", "name")
+        context["bare"] = (
+            CollectionItem.objects.active()
+            .filter(
+                parent_collection=self.object,
+                collection__isnull=True,
+                artifact__isnull=True,
+            )
+            .order_by("category", "name")
+        )
 
         return context
 
@@ -182,11 +188,9 @@ class CollectionSearchView(
             super().get_queryset().filter(parent_collection=self.collection)
         )
         queryset = queryset.select_related(
-            "parent_collection",
-            "parent_collection__workspace",
+            "parent_collection__workspace__scope",
             "collection",
-            "artifact",
-            "artifact__workspace",
+            "artifact__workspace__scope",
         )
         # FIXME: this builds the form twice: if it becomes a problem we can
         # override get_form to cache its result

@@ -29,6 +29,8 @@ from debusine.tasks.models import (
     AutopkgtestTimeout,
     BackendType,
     BaseTaskData,
+    BlhcFlags,
+    DebDiffFlags,
     ExtraRepository,
     LintianFailOnSeverity,
     LintianOutput,
@@ -113,6 +115,10 @@ class WorkRequestWorkflowData(pydantic.BaseModel):
     #: The number of times this task has been retried automatically.
     retry_count: int = pydantic.Field(default=0)
 
+    #: Whether this task should be shown in the visual representation of the
+    #: workflow.
+    visible: bool = pydantic.Field(default=True, allow_mutation=False)
+
 
 class SbuildWorkflowData(BaseWorkflowData):
     """Sbuild workflow data."""
@@ -156,7 +162,9 @@ class UpdateEnvironmentsWorkflowTarget(BaseWorkflowData):
     codename_aliases: dict[str, list[str]] = pydantic.Field(
         default_factory=dict
     )
-    variants: str | list[str] = pydantic.Field(default_factory=list)
+    variants: str | None | list[str | None] = pydantic.Field(
+        default_factory=list
+    )
     backends: str | list[str] = pydantic.Field(default_factory=list)
     architectures: list[str] = pydantic.Field(min_items=1, unique_items=True)
     mmdebstrap_template: dict[str, Any] | None = None
@@ -185,11 +193,13 @@ class PackageUploadWorkflowData(BaseWorkflowData):
     since_version: str | None = None
     target_distribution: str | None = None
     key: str | None = None
+    binary_key: str | None = None
     require_signature: bool = True
     target: PackageUploadTarget
     delayed_days: int | None = None
     vendor: str | None = None
     codename: str | None = None
+    arch_all_host_architecture: str = "amd64"
 
 
 class MakeSignedSourceWorkflowData(BaseWorkflowData):
@@ -208,9 +218,50 @@ class MakeSignedSourceWorkflowData(BaseWorkflowData):
     sbuild_backend: BackendType = BackendType.AUTO
 
 
-class PiupartsWorkflowData(BaseWorkflowData):
+class RegressionTrackingWorkflowData(BaseWorkflowData):
+    """Common data for workflows that handle regression tracking."""
+
+    prefix: str = ""
+    reference_prefix: str = ""
+
+    qa_suite: LookupSingle | None = None
+    reference_qa_results: LookupSingle | None = None
+    enable_regression_tracking: bool = False
+    update_qa_results: bool = False
+
+    @pydantic.root_validator(allow_reuse=True)
+    @classmethod
+    def check_qa_results_consistency(
+        cls, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Check consistency of regression-tracking options."""
+        if values.get("enable_regression_tracking") or values.get(
+            "update_qa_results"
+        ):
+            if values.get("qa_suite") is None:
+                raise ValueError(
+                    '"qa_suite" is required if "enable_regression_tracking" or '
+                    '"update_qa_results" is set'
+                )
+            if values.get("reference_qa_results") is None:
+                raise ValueError(
+                    '"reference_qa_results" is required if '
+                    '"enable_regression_tracking" or "update_qa_results" is set'
+                )
+        if values.get("enable_regression_tracking") and not values.get(
+            "reference_prefix"
+        ):
+            raise ValueError(
+                '"reference_prefix" is required if '
+                '"enable_regression_tracking" is set'
+            )
+        return values
+
+
+class PiupartsWorkflowData(RegressionTrackingWorkflowData):
     """`piuparts` workflow data."""
 
+    source_artifact: LookupSingle
     binary_artifacts: LookupMultiple
 
     vendor: str
@@ -222,10 +273,8 @@ class PiupartsWorkflowData(BaseWorkflowData):
     extra_repositories: list[ExtraRepository] | None = None
 
 
-class AutopkgtestWorkflowData(BaseWorkflowData):
+class AutopkgtestWorkflowData(RegressionTrackingWorkflowData):
     """`autopkgtest` workflow data."""
-
-    prefix: str = ""
 
     source_artifact: LookupSingle
     binary_artifacts: LookupMultiple
@@ -251,7 +300,9 @@ class AutopkgtestWorkflowData(BaseWorkflowData):
     timeout: AutopkgtestTimeout | None = None
 
 
-class ReverseDependenciesAutopkgtestWorkflowData(BaseWorkflowData):
+class ReverseDependenciesAutopkgtestWorkflowData(
+    RegressionTrackingWorkflowData
+):
     """`reverse_dependencies_autopkgtest` workflow data."""
 
     source_artifact: LookupSingle
@@ -259,7 +310,10 @@ class ReverseDependenciesAutopkgtestWorkflowData(BaseWorkflowData):
     context_artifacts: LookupMultiple = pydantic.Field(
         default_factory=empty_lookup_multiple
     )
-    suite_collection: LookupSingle
+
+    # RegressionTrackingWorkflowData declares this as optional, but it's
+    # required here.
+    qa_suite: LookupSingle
 
     vendor: str
     codename: str
@@ -273,7 +327,7 @@ class ReverseDependenciesAutopkgtestWorkflowData(BaseWorkflowData):
     debug_level: int = pydantic.Field(default=0, ge=0, le=3)
 
 
-class LintianWorkflowData(BaseWorkflowData):
+class LintianWorkflowData(RegressionTrackingWorkflowData):
     """`lintian` workflow data."""
 
     source_artifact: LookupSingle
@@ -284,18 +338,42 @@ class LintianWorkflowData(BaseWorkflowData):
     backend: BackendType = BackendType.UNSHARE
 
     architectures: list[str] | None = None
+    arch_all_host_architecture: str = "amd64"
     output: LintianOutput = pydantic.Field(default_factory=LintianOutput)
 
     include_tags: list[str] = pydantic.Field(default_factory=list)
     exclude_tags: list[str] = pydantic.Field(default_factory=list)
-    fail_on_severity: LintianFailOnSeverity = LintianFailOnSeverity.NONE
+    fail_on_severity: LintianFailOnSeverity = LintianFailOnSeverity.ERROR
 
 
-class QAWorkflowData(BaseWorkflowData):
+class DebDiffWorkflowData(BaseWorkflowData):
+    """`debdiff` workflow data."""
+
+    source_artifact: LookupSingle
+    binary_artifacts: LookupMultiple
+
+    original: LookupSingle
+    extra_flags: list[DebDiffFlags] = pydantic.Field(default_factory=list)
+
+    vendor: str
+    codename: str
+
+    arch_all_host_architecture: str = "amd64"
+
+
+class BlhcWorkflowData(BaseWorkflowData):
+    """`blhc` workflow data."""
+
+    package_build_logs: LookupMultiple
+    extra_flags: list[BlhcFlags] = pydantic.Field(default_factory=list)
+
+
+class QAWorkflowData(RegressionTrackingWorkflowData):
     """`qa` workflow data."""
 
     source_artifact: LookupSingle
     binary_artifacts: LookupMultiple
+    package_build_logs: LookupMultiple | None = None
 
     vendor: str
     codename: str
@@ -311,15 +389,19 @@ class QAWorkflowData(BaseWorkflowData):
     autopkgtest_backend: BackendType = BackendType.AUTO
 
     enable_reverse_dependencies_autopkgtest: bool = False
-    reverse_dependencies_autopkgtest_suite: LookupSingle | None = None
 
     enable_lintian: bool = True
     lintian_backend: BackendType = BackendType.AUTO
-    lintian_fail_on_severity: LintianFailOnSeverity = LintianFailOnSeverity.NONE
+    lintian_fail_on_severity: LintianFailOnSeverity = (
+        LintianFailOnSeverity.ERROR
+    )
 
     enable_piuparts: bool = True
     piuparts_backend: BackendType = BackendType.AUTO
     piuparts_environment: LookupSingle | None = None
+
+    enable_debdiff: bool = False
+    enable_blhc: bool = False
 
     @pydantic.root_validator(allow_reuse=True)
     @classmethod
@@ -329,11 +411,36 @@ class QAWorkflowData(BaseWorkflowData):
         """Check consistency of reverse-dependencies-autopkgtest options."""
         if (
             values.get("enable_reverse_dependencies_autopkgtest")
-            and values.get("reverse_dependencies_autopkgtest_suite") is None
+            and values.get("qa_suite") is None
         ):
             raise ValueError(
-                '"reverse_dependencies_autopkgtest_suite" is required if '
+                '"qa_suite" is required if '
                 '"enable_reverse_dependencies_autopkgtest" is set'
+            )
+        return values
+
+    @pydantic.root_validator(allow_reuse=True)
+    @classmethod
+    def enable_debdiff_consistency(
+        cls, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Check consistency of enable_debdiff options."""
+        if values.get("enable_debdiff") and values.get("qa_suite") is None:
+            raise ValueError(
+                '"qa_suite" is required if "enable_debdiff" is set'
+            )
+        return values
+
+    @pydantic.root_validator(allow_reuse=True)
+    @classmethod
+    def enable_blhc_consistency(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Check consistency of enable_blhc options."""
+        if (
+            values.get("enable_blhc")
+            and values.get("package_build_logs") is None
+        ):
+            raise ValueError(
+                '"package_build_logs" is required if "enable_blhc" is set'
             )
         return values
 
@@ -357,19 +464,26 @@ class DebianPipelineWorkflowData(BaseWorkflowData):
     sbuild_backend: BackendType = BackendType.AUTO
     sbuild_environment_variant: str | None = None
 
+    qa_suite: LookupSingle | None = None
+
     enable_autopkgtest: bool = True
     autopkgtest_backend: BackendType = BackendType.AUTO
 
     enable_reverse_dependencies_autopkgtest: bool = False
-    reverse_dependencies_autopkgtest_suite: LookupSingle | None = None
 
     enable_lintian: bool = True
     lintian_backend: BackendType = BackendType.AUTO
-    lintian_fail_on_severity: LintianFailOnSeverity = LintianFailOnSeverity.NONE
+    lintian_fail_on_severity: LintianFailOnSeverity = (
+        LintianFailOnSeverity.ERROR
+    )
 
     enable_piuparts: bool = True
     piuparts_backend: BackendType = BackendType.AUTO
     piuparts_environment: LookupSingle | None = None
+
+    enable_debdiff: bool = False
+
+    enable_blhc: bool = True
 
     enable_make_signed_source: bool = False
     make_signed_source_purpose: KeyPurpose | None = None
@@ -378,6 +492,7 @@ class DebianPipelineWorkflowData(BaseWorkflowData):
     enable_upload: bool = False
 
     upload_key: str | None = None
+    upload_binary_key: str | None = None
     upload_require_signature: bool = True
     upload_include_source: bool = True
     upload_include_binaries: bool = True
@@ -397,11 +512,23 @@ class DebianPipelineWorkflowData(BaseWorkflowData):
         """Check consistency of reverse-dependencies-autopkgtest options."""
         if (
             values.get("enable_reverse_dependencies_autopkgtest")
-            and values.get("reverse_dependencies_autopkgtest_suite") is None
+            and values.get("qa_suite") is None
         ):
             raise ValueError(
-                '"reverse_dependencies_autopkgtest_suite" is required if '
+                '"qa_suite" is required if '
                 '"enable_reverse_dependencies_autopkgtest" is set'
+            )
+        return values
+
+    @pydantic.root_validator(allow_reuse=True)
+    @classmethod
+    def enable_debdiff_consistency(
+        cls, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Check consistency of enable_debdiff options."""
+        if values.get("enable_debdiff") and values.get("qa_suite") is None:
+            raise ValueError(
+                '"qa_suite" is required if "enable_debdiff" is set'
             )
         return values
 
@@ -456,3 +583,9 @@ class ExperimentWorkspaceData(BaseWorkflowData):
         if not re.match(r"^[A-Za-z][A-Za-z0-9+._]*$", data):
             raise ValueError("experiment name contains invalid characters")
         return data
+
+
+class UpdateSuitesData(BaseWorkflowData):
+    """``update_suites`` workflow data."""
+
+    force_basic_indexes: bool = False

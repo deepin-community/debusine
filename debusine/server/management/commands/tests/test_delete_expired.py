@@ -22,7 +22,6 @@ from django.db.models.manager import Manager
 from django.utils import timezone
 
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
-from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
     ArtifactRelation,
@@ -32,6 +31,7 @@ from debusine.db.models import (
     FileInArtifact,
     FileInStore,
     FileStore,
+    FileUpload,
     Group,
     Token,
     WorkRequest,
@@ -62,7 +62,6 @@ class DeleteExpiredCommandTests(TestCase):
     """Tests for delete_expired command."""
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()
@@ -116,36 +115,33 @@ class DeleteExpiredCommandTests(TestCase):
 
     def test_delete_expired_dry_run_verbose(self) -> None:
         """Test delete_expired artifacts dry-run: no deletion."""
-        with context.disable_permission_checks():
-            artifact_id_1, artifact_id_2 = Artifact.objects.all()
+        artifact_id_1, artifact_id_2 = Artifact.objects.all()
 
-            # Add an artifact with a file
-            artifact_id_3, _ = self.playground.create_artifact(
-                paths=["README"], create_files=True, expiration_delay=1
-            )
-            artifact_id_3.created_at = timezone.now() - timedelta(days=2)
-            artifact_id_3.save()
+        # Add an artifact with a file
+        artifact_id_3, _ = self.playground.create_artifact(
+            paths=["README"], create_files=True, expiration_delay=1
+        )
+        artifact_id_3.created_at = timezone.now() - timedelta(days=2)
+        artifact_id_3.save()
 
-            collection_1 = self.playground.create_collection(
-                "internal", CollectionCategory.WORKFLOW_INTERNAL
-            )
-            work_request_1 = self.playground.create_work_request(
-                created_at=timezone.now() - timedelta(days=365),
-                expiration_delay=timedelta(days=1),
-                internal_collection=collection_1,
+        collection_1 = self.playground.create_collection(
+            "internal", CollectionCategory.WORKFLOW_INTERNAL
+        )
+        work_request_1 = self.playground.create_work_request(
+            created_at=timezone.now() - timedelta(days=365),
+            expiration_delay=timedelta(days=1),
+            internal_collection=collection_1,
+        )
+
+        create_time = timezone.now() - timedelta(days=30)
+        with mock.patch("django.utils.timezone.now", return_value=create_time):
+            self.playground.create_workspace(
+                name="ws", expiration_delay=timedelta(days=7)
             )
 
-            create_time = timezone.now() - timedelta(days=30)
-            with mock.patch(
-                "django.utils.timezone.now", return_value=create_time
-            ):
-                self.playground.create_workspace(
-                    name="ws", expiration_delay=timedelta(days=7)
-                )
-
-            self.playground.create_worker_activation_token(
-                expire_at=timezone.now() - timedelta(days=1)
-            )
+        self.playground.create_worker_activation_token(
+            expire_at=timezone.now() - timedelta(days=1)
+        )
 
         num_artifacts = Artifact.objects.count()
         num_artifact_relations = ArtifactRelation.objects.count()
@@ -265,30 +261,31 @@ class DeleteExpiredArtifactsTests(TestCase):
 
     playground_memory_file_store = False
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.out = io.StringIO()
         self.err = io.StringIO()
         self.operation = DeleteOperation(out=self.out, err=self.err)
         self.operation.initial_time = timezone.now()
         self.delete_expired = DeleteExpiredArtifacts(self.operation)
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_artifact_no_expiration_date(self) -> None:
         """One artifact, not expired: keep it."""
         artifact, _ = self.playground.create_artifact(expiration_delay=0)
 
-        self.assertEqual(self.delete_expired._mark_to_keep(), {artifact.id})
+        self.assertQuerySetEqual(
+            self.delete_expired._mark_to_keep(), {artifact}
+        )
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_artifact_expires_tomorrow(self) -> None:
         """One artifact, not expired (expires tomorrow): keep it."""
         artifact, _ = self.playground.create_artifact(expiration_delay=1)
 
-        self.assertEqual(self.delete_expired._mark_to_keep(), {artifact.id})
+        self.assertQuerySetEqual(
+            self.delete_expired._mark_to_keep(), {artifact}
+        )
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_only_artifact_is_expired(self) -> None:
         """One artifact, expired yesterday. No artifacts are kept."""
         artifact_1, _ = self.playground.create_artifact(expiration_delay=1)
@@ -310,9 +307,8 @@ class DeleteExpiredArtifactsTests(TestCase):
             created_by_user=self.playground.get_default_user(),
         )
 
-        self.assertEqual(self.delete_expired._mark_to_keep(), set())
+        self.assertQuerySetEqual(self.delete_expired._mark_to_keep(), set())
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_only_artifact_is_retained(self) -> None:
         """One artifact, expired yesterday. retains_artifacts is set."""
         artifact_1, _ = self.playground.create_artifact(expiration_delay=1)
@@ -333,9 +329,10 @@ class DeleteExpiredArtifactsTests(TestCase):
             created_by_user=self.playground.get_default_user(),
         )
 
-        self.assertEqual(self.delete_expired._mark_to_keep(), {artifact_1.id})
+        self.assertQuerySetEqual(
+            self.delete_expired._mark_to_keep(), {artifact_1}
+        )
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_artifacts_retained_by_workflow(self) -> None:
         """RetainsArtifacts.WORKFLOWS retains while the workflow is active."""
         template = WorkflowTemplate.objects.create(
@@ -367,16 +364,16 @@ class DeleteExpiredArtifactsTests(TestCase):
                 name=str(status),
             )
 
-        self.assertEqual(
+        self.assertQuerySetEqual(
             self.delete_expired._mark_to_keep(),
             {
-                artifacts[WorkRequest.Statuses.PENDING].id,
-                artifacts[WorkRequest.Statuses.RUNNING].id,
-                artifacts[WorkRequest.Statuses.BLOCKED].id,
+                artifacts[WorkRequest.Statuses.PENDING],
+                artifacts[WorkRequest.Statuses.RUNNING],
+                artifacts[WorkRequest.Statuses.BLOCKED],
             },
+            ordered=False,
         )
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_all_artifacts_non_expired_or_targeted(self) -> None:
         """Keep both artifacts: the expired is targeted by the not-expired."""
         artifact_expired, _ = self.playground.create_artifact(
@@ -392,12 +389,12 @@ class DeleteExpiredArtifactsTests(TestCase):
             artifact_not_expired, artifact_expired
         )
 
-        self.assertEqual(
+        self.assertQuerySetEqual(
             self.delete_expired._mark_to_keep(),
-            {artifact_expired.id, artifact_not_expired.id},
+            {artifact_expired, artifact_not_expired},
+            ordered=False,
         )
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_no_artifact_all_expired_two(self) -> None:
         """Two artifacts (related), both expired."""
         artifact_expired_1, _ = self.playground.create_artifact(
@@ -415,9 +412,8 @@ class DeleteExpiredArtifactsTests(TestCase):
             artifact_expired_1, artifact_expired_2
         )
 
-        self.assertEqual(self.delete_expired._mark_to_keep(), set())
+        self.assertQuerySetEqual(self.delete_expired._mark_to_keep(), set())
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_no_artifact_all_expired_three(self) -> None:
         """All artifacts are expired."""
         artifact_1, _ = self.playground.create_artifact(expiration_delay=1)
@@ -433,9 +429,8 @@ class DeleteExpiredArtifactsTests(TestCase):
         self.playground.create_artifact_relation(artifact_2, artifact_1)
         self.playground.create_artifact_relation(artifact_3, artifact_2)
 
-        self.assertEqual(self.delete_expired._mark_to_keep(), set())
+        self.assertQuerySetEqual(self.delete_expired._mark_to_keep(), set())
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_two_artifacts_non_expired_and_targeted(self) -> None:
         """Three artifacts, keep two (non-expired and target of non-expired)."""
         artifact_1, _ = self.playground.create_artifact(expiration_delay=1)
@@ -449,12 +444,12 @@ class DeleteExpiredArtifactsTests(TestCase):
         self.playground.create_artifact_relation(artifact_2, artifact_1)
         self.playground.create_artifact_relation(artifact_3, artifact_2)
 
-        self.assertEqual(
+        self.assertQuerySetEqual(
             self.delete_expired._mark_to_keep(),
-            {artifact_1.id, artifact_2.id},
+            {artifact_1, artifact_2},
+            ordered=False,
         )
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_isolated(self) -> None:
         """Two expired and one non-expired isolated."""
         artifact_1, _ = self.playground.create_artifact(expiration_delay=1)
@@ -468,9 +463,10 @@ class DeleteExpiredArtifactsTests(TestCase):
         self.playground.create_artifact_relation(artifact_2, artifact_1)
         self.playground.create_artifact_relation(artifact_1, artifact_2)
 
-        self.assertEqual(self.delete_expired._mark_to_keep(), {artifact_3.id})
+        self.assertQuerySetEqual(
+            self.delete_expired._mark_to_keep(), {artifact_3}
+        )
 
-    @context.disable_permission_checks()
     def test_mark_to_keep_artifacts_circular_dependency(self) -> None:
         """Artifacts are not expired (keep), have a circular dependency."""
         artifact_1, _ = self.playground.create_artifact(expiration_delay=0)
@@ -479,12 +475,12 @@ class DeleteExpiredArtifactsTests(TestCase):
         self.playground.create_artifact_relation(artifact_2, artifact_1)
         self.playground.create_artifact_relation(artifact_1, artifact_2)
 
-        self.assertEqual(
+        self.assertQuerySetEqual(
             self.delete_expired._mark_to_keep(),
-            {artifact_1.id, artifact_2.id},
+            {artifact_1, artifact_2},
+            ordered=False,
         )
 
-    @context.disable_permission_checks()
     def test_sweep_delete_artifacts(self) -> None:
         """Sweep() delete the artifacts and print progress."""
         artifact_1, _ = self.playground.create_artifact(expiration_delay=1)
@@ -516,29 +512,27 @@ class DeleteExpiredArtifactsTests(TestCase):
             _format_deleted_artifacts({artifact_1, artifact_2}),
         )
 
-    @context.disable_permission_checks()
     def test_sweep_delete_artifacts_no_retains(self) -> None:
         """Sweep() delete the artifacts from the collections."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data={
-                    "codename": "bookworm",
-                    "architecture": "amd64",
-                    "variant": "apt",
-                    "with_dev": True,
-                },
-                expiration_delay=1,
-            )
-            artifact.created_at = timezone.now() - timedelta(days=2)
-            artifact.save()
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data={
+                "codename": "bookworm",
+                "architecture": "amd64",
+                "variant": "apt",
+                "with_dev": True,
+            },
+            expiration_delay=1,
+        )
+        artifact.created_at = timezone.now() - timedelta(days=2)
+        artifact.save()
 
-            collection = Collection.objects.create(
-                name="Debian",
-                category=CollectionCategory.ENVIRONMENTS,
-                workspace=default_workspace(),
-                retains_artifacts=Collection.RetainsArtifacts.NEVER,
-            )
+        collection = Collection.objects.create(
+            name="Debian",
+            category=CollectionCategory.ENVIRONMENTS,
+            workspace=default_workspace(),
+            retains_artifacts=Collection.RetainsArtifacts.NEVER,
+        )
 
         manager = DebianEnvironmentsManager(collection=collection)
         manager.add_artifact(
@@ -559,45 +553,59 @@ class DeleteExpiredArtifactsTests(TestCase):
             _format_deleted_artifacts({artifact}),
         )
 
-    @context.disable_permission_checks()
     def test_delete_artifact_all_related_files(self) -> None:
         """_delete_artifact() deletes all the artifact's related models."""
-        path_in_artifact = "README"
+        uploaded_file_name = "README"
+        uploading_file_name = "uploading"
         artifact, _ = self.playground.create_artifact(
-            paths=[path_in_artifact], create_files=True
+            paths=[uploaded_file_name], create_files=True
+        )
+        FileUpload.objects.create(
+            file_in_artifact=FileInArtifact.objects.create(
+                artifact=artifact,
+                path=uploading_file_name,
+                file=self.playground.create_file(),
+                complete=False,
+            ),
+            path="temp_file_uploading",
         )
 
-        # The file was added in the artifact and in the store
-        self.assertEqual(FileInArtifact.objects.all().count(), 1)
+        # Both files were added in the artifact; one was added in the store,
+        # and the other is uploading
+        self.assertEqual(FileInArtifact.objects.all().count(), 2)
         self.assertEqual(FileInStore.objects.all().count(), 1)
-        self.assertEqual(File.objects.all().count(), 1)
+        self.assertEqual(FileUpload.objects.all().count(), 1)
+        self.assertEqual(File.objects.all().count(), 2)
 
-        # Retrieve the store_backend for the file
-        fileobj = File.objects.latest("id")
-        file_in_store = FileInStore.objects.latest("id")
-        store_backend = file_in_store.store.get_backend_object()
+        # Retrieve the store_backend for the uploaded file
+        uploaded_fileobj = File.objects.get(
+            artifact=artifact, fileinartifact__path=uploaded_file_name
+        )
+        store_backend = FileStore.objects.get(
+            files=uploaded_fileobj
+        ).get_backend_object()
 
         # The file exists
-        filepath = store_backend.get_local_path(fileobj)
+        filepath = store_backend.get_local_path(uploaded_fileobj)
         assert filepath is not None
         self.assertTrue(filepath.exists())
 
-        # The Artifact is going to be deleted and the only file with it
+        # The Artifact is going to be deleted and its two files with it
         self.operation.dry_run = False
         self.delete_expired._delete_artifact(artifact)
 
         self.assertFalse(Artifact.objects.filter(id=artifact.id).exists())
         self.assertEqual(FileInArtifact.objects.all().count(), 0)
+        self.assertEqual(FileUpload.objects.all().count(), 0)
 
         # FileInStore and File are not deleted: they are deleted after
         # the artifact is deleted in a different transaction (done in
         # DeleteExpiredArtifacts.run() )
         self.assertEqual(FileInStore.objects.all().count(), 1)
-        self.assertEqual(File.objects.all().count(), 1)
+        self.assertEqual(File.objects.all().count(), 2)
 
         self.assertTrue(filepath.exists())
 
-    @context.disable_permission_checks()
     def test_delete_artifact_not_related_files(self) -> None:
         """
         Two files created, _delete_artifact() delete the Artifact.
@@ -616,16 +624,15 @@ class DeleteExpiredArtifactsTests(TestCase):
         artifact_to_keep, _ = self.playground.create_artifact()
 
         # Get both files
-        file_to_keep = FileInArtifact.objects.get(
-            artifact=artifact_to_delete, path=file_to_keep_name
-        ).file
-        file_to_delete = FileInArtifact.objects.get(
-            artifact=artifact_to_delete, path=file_to_delete_name
-        ).file
+        fias_to_delete = {
+            fia.path: fia for fia in artifact_to_delete.fileinartifact_set.all()
+        }
+        file_to_keep = fias_to_delete[file_to_keep_name].file
+        file_to_delete = fias_to_delete[file_to_delete_name].file
 
         # Add file_to_keep in the artifact that is not being deleted
         # (so the file is kept)
-        FileInArtifact.objects.create(
+        fia_to_keep = FileInArtifact.objects.create(
             artifact=artifact_to_keep, file=file_to_keep, complete=True
         )
 
@@ -644,18 +651,20 @@ class DeleteExpiredArtifactsTests(TestCase):
 
         self.operation.dry_run = False
 
-        files_to_delete = self.delete_expired._delete_artifact(
-            artifact_to_delete
-        )
+        self.delete_expired._delete_artifact(artifact_to_delete)
 
-        self.assertCountEqual(files_to_delete, [file_to_keep, file_to_delete])
+        # Only the expected FileInArtifact rows are deleted
+        for fia in fias_to_delete.values():
+            self.assertFalse(FileInArtifact.objects.filter(id=fia.id).exists())
+        self.assertTrue(
+            FileInArtifact.objects.filter(id=fia_to_keep.id).exists()
+        )
 
         # Both files still exist on disk (they would be deleted by
         # DeleteExpiredArtifacts._delete_files_from_stores)
         self.assertTrue(file_to_keep_path.exists())
         self.assertTrue(file_to_delete_path.exists())
 
-    @context.disable_permission_checks()
     def test_delete_artifact_dry_run(self) -> None:
         """_delete_artifact() does nothing: running in dry-run."""
         artifact, _ = self.playground.create_artifact(expiration_delay=1)
@@ -665,25 +674,22 @@ class DeleteExpiredArtifactsTests(TestCase):
         # By default DeleteExpiredArtifacts runs in dry-run
         self.assertTrue(self.operation.dry_run)
 
-        callables = self.delete_expired._delete_artifact(artifact)
+        self.delete_expired._delete_artifact(artifact)
 
         # Artifact was not deleted
         self.assertTrue(Artifact.objects.filter(id=artifact.id).exists())
 
-        # No callables to delete files after the transaction returned
-        self.assertEqual(len(callables), 0)
-
     def test_delete_files_from_stores(self) -> None:
-        """_delete_files_from_stores delete the file."""
+        """_delete_files_from_stores deletes the file."""
         fileobj = self.playground.create_file()
         FileInStore.objects.create(store=default_file_store(), file=fileobj)
 
-        self.delete_expired._delete_files_from_stores({fileobj})
+        self.delete_expired._delete_files_from_stores()
 
         self.assertFalse(File.objects.filter(id=fileobj.id).exists())
 
     def test_delete_files_from_multiple_stores(self) -> None:
-        """_delete_files_from_stores delete files from more than one store."""
+        """_delete_files_from_stores deletes files from more than one store."""
         fileobj = self.playground.create_file()
 
         # Add the file in the default_file_store()
@@ -698,12 +704,11 @@ class DeleteExpiredArtifactsTests(TestCase):
         FileInStore.objects.create(store=secondary_store, file=fileobj)
 
         # _delete_files_from_stores should delete the file from multiple stores
-        self.delete_expired._delete_files_from_stores({fileobj})
+        self.delete_expired._delete_files_from_stores()
 
         # And the file is gone...
         self.assertFalse(File.objects.filter(id=fileobj.id).exists())
 
-    @context.disable_permission_checks()
     def test_delete_files_from_stores_file_was_re_added(self) -> None:
         """
         _delete_files_from_stores does not delete the file.
@@ -711,12 +716,11 @@ class DeleteExpiredArtifactsTests(TestCase):
         The file exist in another Artifact: cannot be deleted.
         """
         fileobj = self.playground.create_file()
-        files_to_delete = {fileobj}
 
         artifact, _ = self.playground.create_artifact()
         FileInArtifact.objects.create(artifact=artifact, file=fileobj)
 
-        self.delete_expired._delete_files_from_stores(files_to_delete)
+        self.delete_expired._delete_files_from_stores()
 
         self.assertTrue(File.objects.filter(id=fileobj.id).exists())
 
@@ -726,33 +730,29 @@ class DeleteExpiredArtifactsTransactionTests(TransactionTestCase):
 
     playground_memory_file_store = False
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Initialize test."""
         super().setUp()
-        with context.disable_permission_checks():
-            self.workspace = self.playground.get_default_workspace()
+        self.workspace = self.playground.get_default_workspace()
 
-            self.artifact_1, _ = self.playground.create_artifact(
-                expiration_delay=1, paths=["README"], create_files=True
-            )
-            self.artifact_1.created_at = timezone.now() - timedelta(days=2)
-            self.artifact_1.save()
-            self.artifact_2, _ = self.playground.create_artifact(
-                expiration_delay=1
-            )
-            self.artifact_2.created_at = timezone.now() - timedelta(days=2)
-            self.artifact_2.save()
+        self.artifact_1, _ = self.playground.create_artifact(
+            expiration_delay=1, paths=["README"], create_files=True
+        )
+        self.artifact_1.created_at = timezone.now() - timedelta(days=2)
+        self.artifact_1.save()
+        self.artifact_2, _ = self.playground.create_artifact(expiration_delay=1)
+        self.artifact_2.created_at = timezone.now() - timedelta(days=2)
+        self.artifact_2.save()
 
-            self.artifact_relation = self.playground.create_artifact_relation(
-                self.artifact_1, self.artifact_2
-            )
+        self.artifact_relation = self.playground.create_artifact_relation(
+            self.artifact_1, self.artifact_2
+        )
 
-            self.out = io.StringIO()
-            self.err = io.StringIO()
+        self.out = io.StringIO()
+        self.err = io.StringIO()
 
-            self.operation = DeleteOperation(out=self.out, err=self.err)
-            self.delete_expired = DeleteExpiredArtifacts(self.operation)
+        self.operation = DeleteOperation(out=self.out, err=self.err)
+        self.delete_expired = DeleteExpiredArtifacts(self.operation)
 
     def assert_delete_expired_run_failed(
         self,
@@ -908,9 +908,11 @@ class DeleteExpiredArtifactsTransactionTests(TransactionTestCase):
         # The file does not exist anymore
         self.assertFalse(file_path.exists())
 
+        # Expect two files to be deleted: README from each of
+        # self.artifact_1 and artifact.
         self.assertEqual(
             self.out.getvalue(),
-            message_artifacts_deleted + "Deleting files from the store\n",
+            message_artifacts_deleted + "Deleting 2 files from the store\n",
         )
 
     def test_deleting_files_artifact_table_is_locked(self) -> None:
@@ -930,9 +932,7 @@ class DeleteExpiredArtifactsTransactionTests(TransactionTestCase):
         run_in_thread = RunInThreadAndCloseDBConnections(
             self.check_table_locked_for, Artifact.objects
         )
-        delete_files_mocked.side_effect = (
-            lambda file_objs: run_in_thread.run_and_wait()  # noqa: U100
-        )
+        delete_files_mocked.side_effect = run_in_thread.run_and_wait
         self.addCleanup(patcher.stop)
 
         with self.operation:
@@ -974,6 +974,7 @@ class DeleteExpiredWorkRequestsTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.out = io.StringIO()
         self.err = io.StringIO()
         self.operation = DeleteOperation(
@@ -1070,6 +1071,7 @@ class DeleteExpiredEphemeralGroupsTest(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.out = io.StringIO()
         self.err = io.StringIO()
         self.operation = DeleteOperation(
@@ -1157,6 +1159,7 @@ class DeleteExpiredWorkspacesTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.out = io.StringIO()
         self.err = io.StringIO()
         self.operation = DeleteOperation(
@@ -1261,6 +1264,7 @@ class DeleteExpiredTokensTest(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.out = io.StringIO()
         self.err = io.StringIO()
         self.operation = DeleteOperation(

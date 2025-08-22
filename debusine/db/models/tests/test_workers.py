@@ -26,14 +26,14 @@ class WorkerManagerTests(TestCase):
     def test_connected(self) -> None:
         """WorkerManager.connected() return the connected Workers."""
         worker_connected = Worker.objects.create_with_fqdn(
-            'connected-worker', Token.objects.create()
+            'connected-worker', token=Token.objects.create()
         )
 
         worker_connected.mark_connected()
 
         Worker.objects.create_with_fqdn(
             'not-connected-worker',
-            Token.objects.create(),
+            token=Token.objects.create(),
         )
 
         self.assertQuerySetEqual(Worker.objects.connected(), [worker_connected])
@@ -105,7 +105,7 @@ class WorkerManagerTests(TestCase):
     def test_waiting_for_work_request(self) -> None:
         """Test WorkerManager.waiting_for_work_request() return a Worker."""
         worker = Worker.objects.create_with_fqdn(
-            'worker-a', Token.objects.create(enabled=True)
+            'worker-a', token=Token.objects.create(enabled=True)
         )
 
         # WorkerManagement.waiting_for_work_request: returns no workers because
@@ -179,12 +179,12 @@ class WorkerManagerTests(TestCase):
     def test_waiting_for_work_request_no_return_disabled_workers(self) -> None:
         """Test WorkerManager.waiting_for_work_request() no return disabled."""
         worker_enabled = Worker.objects.create_with_fqdn(
-            "worker-enabled", Token.objects.create(enabled=True)
+            "worker-enabled", token=Token.objects.create(enabled=True)
         )
         worker_enabled.mark_connected()
 
         worker_disabled = Worker.objects.create_with_fqdn(
-            "worker-disabled", Token.objects.create(enabled=False)
+            "worker-disabled", token=Token.objects.create(enabled=False)
         )
         worker_disabled.mark_connected()
 
@@ -195,11 +195,11 @@ class WorkerManagerTests(TestCase):
     def test_waiting_for_work_request_static_first(self) -> None:
         """Ensure waiting_for_work_request() returns static workers first."""
         worker_static = Worker.objects.create_with_fqdn(
-            "worker-static", Token.objects.create(enabled=True)
+            "worker-static", token=Token.objects.create(enabled=True)
         )
 
         worker_cloud = Worker.objects.create_with_fqdn(
-            "worker-cloud", Token.objects.create(enabled=True)
+            "worker-cloud", token=Token.objects.create(enabled=True)
         )
         worker_cloud.worker_pool = WorkerPool.objects.create(
             name="test",
@@ -311,7 +311,7 @@ class WorkerManagerTests(TestCase):
         """WorkerManager.get_worker_by_token_or_none() return the Worker."""
         token = Token.objects.create()
 
-        worker = Worker.objects.create_with_fqdn('worker-a', token)
+        worker = Worker.objects.create_with_fqdn('worker-a', token=token)
 
         self.assertEqual(
             Worker.objects.get_worker_by_token_key_or_none(token.key), worker
@@ -321,7 +321,7 @@ class WorkerManagerTests(TestCase):
         """WorkerManager.get_worker_or_none() return the Worker."""
         token = Token.objects.create()
 
-        worker = Worker.objects.create_with_fqdn('worker-a', token)
+        worker = Worker.objects.create_with_fqdn('worker-a', token=token)
 
         self.assertEqual(Worker.objects.get_worker_or_none('worker-a'), worker)
 
@@ -332,7 +332,7 @@ class WorkerManagerTests(TestCase):
     def test_with_idle_time_no_work_requests_not_connected(self) -> None:
         """Test idle_time with no work requests assigned and never connected."""
         worker = Worker.objects.create_with_fqdn(
-            'worker-a', Token.objects.create(enabled=True)
+            'worker-a', token=Token.objects.create(enabled=True)
         )
         worker.registered_at = timezone.now() - datetime.timedelta(days=1)
         worker.save()
@@ -346,7 +346,7 @@ class WorkerManagerTests(TestCase):
     def test_with_idle_time_no_work_requests_connected(self) -> None:
         """Compute idle_time with no work requests assigned and connected."""
         worker = Worker.objects.create_with_fqdn(
-            'worker-a', Token.objects.create(enabled=True)
+            'worker-a', token=Token.objects.create(enabled=True)
         )
         worker.registered_at = timezone.now() - datetime.timedelta(days=2)
         worker.instance_created_at = timezone.now() - datetime.timedelta(days=1)
@@ -361,7 +361,7 @@ class WorkerManagerTests(TestCase):
     def test_with_idle_time_running_task(self) -> None:
         """Compute idle_time with a running task."""
         worker = Worker.objects.create_with_fqdn(
-            'worker-a', Token.objects.create(enabled=True)
+            'worker-a', token=Token.objects.create(enabled=True)
         )
         worker.registered_at = timezone.now() - datetime.timedelta(days=2)
         worker.instance_created_at = timezone.now() - datetime.timedelta(days=1)
@@ -379,7 +379,7 @@ class WorkerManagerTests(TestCase):
     def test_with_idle_time_completed_task(self) -> None:
         """Compute idle_time with a running task."""
         worker = Worker.objects.create_with_fqdn(
-            'worker-a', Token.objects.create(enabled=True)
+            'worker-a', token=Token.objects.create(enabled=True)
         )
         worker.registered_at = timezone.now() - datetime.timedelta(days=2)
         worker.instance_created_at = timezone.now() - datetime.timedelta(days=1)
@@ -439,7 +439,7 @@ class WorkerTests(TestCase):
         """Set up the Worker for the tests."""
         super().setUpTestData()
         cls.worker = Worker.objects.create_with_fqdn(
-            "computer.lan", Token.objects.create()
+            "computer.lan", token=Token.objects.create()
         )
         cls.worker.static_metadata = {"os": "debian"}
         cls.worker.set_dynamic_metadata({"cpu_cores": "4"})
@@ -498,18 +498,19 @@ class WorkerTests(TestCase):
 
         self.assertFalse(worker.is_busy())
 
-    def test_is_busy_concurrency(self) -> None:
-        """The is_busy method handles workers with concurrency > 1."""
+    def test_is_at_capacity(self) -> None:
+        """The is_at_capacity method handles workers with concurrency > 1."""
         worker = Worker.objects.get_or_create_celery()
         worker.concurrency = 3
         worker.save()
+        self.assertFalse(worker.is_at_capacity())
         for _ in range(3):
-            self.assertFalse(worker.is_busy())
+            self.assertFalse(worker.is_at_capacity())
             work_request = self.playground.create_work_request(worker=worker)
             work_request.assign_worker(worker)
-        self.assertTrue(worker.is_busy())
+        self.assertTrue(worker.is_at_capacity())
         work_request.mark_aborted()
-        self.assertFalse(worker.is_busy())
+        self.assertFalse(worker.is_at_capacity())
 
     def test_running_work_requests(self) -> None:
         """The running_work_requests return expected work requests."""

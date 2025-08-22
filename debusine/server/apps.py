@@ -48,7 +48,7 @@ class ServerConfig(AppConfig):
         #
         # The reason of setting DEBUSINE_WORKER_MANAGER is to avoid
         # running the disconnect when a debusine sysadmin runs
-        # commands such as "debusine-admin list_workers"
+        # commands such as "debusine-admin worker list"
 
         if os.environ.get("DEBUSINE_WORKER_MANAGER", "0") != "0":
             try:

@@ -22,7 +22,7 @@ from debian.deb822 import Deb822, Release
 
 from debusine.client.client_utils import get_url_contents_sha256sum
 from debusine.client.exceptions import ContentValidationError
-from debusine.tasks import RunCommandTask
+from debusine.tasks import DefaultDynamicData, RunCommandTask
 from debusine.tasks.models import (
     BaseDynamicTaskData,
     SystemBootstrapData,
@@ -36,7 +36,10 @@ SBD = TypeVar("SBD", bound=SystemBootstrapData)
 
 
 class SystemBootstrap(
-    abc.ABC, RunCommandTask[SBD, BaseDynamicTaskData], Generic[SBD]
+    abc.ABC,
+    RunCommandTask[SBD, BaseDynamicTaskData],
+    DefaultDynamicData[SBD],
+    Generic[SBD],
 ):
     """Implement ontology SystemBootstrap."""
 
@@ -305,6 +308,14 @@ class SystemBootstrap(
     def get_label(self) -> str:
         """Return the task label."""
         return "bootstrap a system tarball"
+
+    @staticmethod
+    def _get_source_components(apt_sources: Path) -> list[str]:
+        """Return the components for the first APT source in apt_sources."""
+        for source in Deb822.iter_paragraphs(apt_sources.read_text()):
+            components = cast(str, source.get("Components", ""))
+            return components.split()
+        return []
 
     @staticmethod
     def _get_value_os_release(os_release: Path, key: str) -> str:

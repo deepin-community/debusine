@@ -14,8 +14,14 @@ function copy_logs ()
 	cp -rv /var/log/debusine "$DESTINATION"
 
 	journalctl -u debusine-server-celery.service > "$DESTINATION/debusine-server-celery.log"
+	journalctl -u debusine-server-migrate.service > "$DESTINATION/debusine-server-migrate.log"
 	journalctl -u debusine-server-provisioner.service > "$DESTINATION/debusine-server-provisioner.log"
 	journalctl -u debusine-server-scheduler.service > "$DESTINATION/debusine-server-scheduler.log"
+
+	WR_DESTINATION="$DESTINATION/work-request"
+	mkdir "$WR_DESTINATION"
+	echo "Copying most recent work request's debusine:work-request-debug-logs to $WR_DESTINATION"
+	debian/tests/utils/get-most-recent-debug-logs.py "$WR_DESTINATION"
 }
 
 trap copy_logs EXIT

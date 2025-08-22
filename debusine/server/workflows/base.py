@@ -17,11 +17,13 @@ from abc import ABCMeta, abstractmethod
 from typing import Any, TypeVar, TypedDict, cast
 
 from django.contrib.auth.models import AnonymousUser
+from django.db.models import Q
 
 from debusine.artifacts.models import (
     ArtifactCategory,
     BareDataCategory,
     CollectionCategory,
+    TaskTypes,
 )
 from debusine.client.models import (
     LookupChildType,
@@ -52,7 +54,6 @@ from debusine.tasks.models import (
     LookupSingle,
     OutputData,
     OutputDataError,
-    TaskTypes,
 )
 from debusine.tasks.server import TaskDatabaseInterface
 
@@ -83,7 +84,7 @@ class Workflow(BaseServerTask[WD, DTD], metaclass=ABCMeta):
     """
     Base class for workflow orchestrators.
 
-    This is the base API for running :class:`WorkflowInstance` logic.
+    This is the base API for running :py:class:`WorkflowInstance` logic.
     """
 
     TASK_TYPE = TaskTypes.WORKFLOW
@@ -109,23 +110,6 @@ class Workflow(BaseServerTask[WD, DTD], metaclass=ABCMeta):
     def validate_template_data(cls, data: dict[str, Any]) -> None:
         """Validate WorkflowTemplate data."""
         # By default nothing is enforced
-
-    @classmethod
-    def build_workflow_data(
-        cls, template_data: dict[str, Any], user_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Merge template data and user-provided data."""
-        # Data from the template has priority over user-provided.
-        #
-        # By default, merging of lists and dictionaries is not supported: only
-        # toplevel keys are considered, and if a list or a dict exists both in
-        # the user-provided data and in the template, the user-provided version
-        # is ignored.
-        #
-        # Orchestrator subclasses may implement different merging strategies.
-        data = user_data.copy()
-        data.update(template_data)
-        return data
 
     def validate_input(self) -> None:
         """
@@ -178,8 +162,24 @@ class Workflow(BaseServerTask[WD, DTD], metaclass=ABCMeta):
         This method is required to be idempotent: calling it multiple times
         with the same argument MUST result in the same
         :py:class:`WorkRequest` structure as calling it once.
+
+        Subclasses may provide ``callback_{step.replace('-', '_')}`` methods
+        to implement workflow callbacks with the corresponding ``step`` set
+        in their workflow data.
         """
-        # Do nothing by default
+        step = work_request.workflow_data.step
+        if step is None:
+            raise NotImplementedError(
+                "Workflow callback called without setting `step`"
+            )
+        callback_method = getattr(
+            self, f"callback_{step.replace('-', '_')}", None
+        )
+        if callback_method is None:
+            raise NotImplementedError(
+                f"Unhandled workflow callback step: {step}"
+            )
+        callback_method()
 
     @staticmethod
     def provides_artifact(
@@ -308,22 +308,40 @@ class Workflow(BaseServerTask[WD, DTD], metaclass=ABCMeta):
 
     def work_request_ensure_child(
         self,
+        *,
+        task_type: TaskTypes = TaskTypes.WORKER,
         task_name: str,
         task_data: BaseTaskData,
+        task_data_filter: Q | None = None,
         workflow_data: WorkRequestWorkflowData,
-        task_type: TaskTypes = TaskTypes.WORKER,
+        relative_priority: int = 0,
     ) -> WorkRequest:
         """
-        Create the child if one does not already exist.
+        Create a child work request if one does not already exist.
 
+        :param task_type: the task type for the child work request.
+        :param task_name: the task name for the child work request.
+        :param task_data: the task data for the child work request.
+        :param task_data_filter: if given, use these conditions to test
+          whether an existing work request has matching task data; by
+          default, look for work requests that exactly match the given
+          ``task_data``.
+        :param workflow_data: the workflow data for the child work request.
+        :param relative_priority: if creating a new work request, set the
+          base priority of the child to the effective priority of this
+          workflow plus this relative priority.
         :return: new or existing :py:class:`WorkRequest`.
         """
-        try:
-            return self.work_request.children.get(
-                task_name=task_name,
+        if task_data_filter is None:
+            task_data_filter = Q(
                 task_data=model_to_json_serializable_dict(
                     task_data, exclude_unset=True
-                ),
+                )
+            )
+        try:
+            return self.work_request.children.get(
+                task_data_filter,
+                task_name=task_name,
                 workflow_data_json=workflow_data.dict(exclude_unset=True),
                 task_type=task_type,
             )
@@ -348,6 +366,7 @@ class Workflow(BaseServerTask[WD, DTD], metaclass=ABCMeta):
                     if task_type == TaskTypes.WORKFLOW
                     else WorkRequest.Statuses.BLOCKED
                 ),
+                relative_priority=relative_priority,
             )
 
     def lookup_singleton_collection(
@@ -365,9 +384,21 @@ class Workflow(BaseServerTask[WD, DTD], metaclass=ABCMeta):
             expect_type=LookupChildType.COLLECTION,
         ).collection
 
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        # All workflows use BaseDynamicTaskData
+        return []
+
     def _execute(self) -> bool:
         """Unused abstract method from BaseTask: populate() is used instead."""
         raise NotImplementedError()
+
+    def get_label(self) -> str:
+        """Return the workflow label."""
+        return (
+            self.work_request.workflow_display_name_parameters
+            or self.work_request.workflow_display_name
+        )
 
 
 def orchestrate_workflow(work_request: WorkRequest) -> None:

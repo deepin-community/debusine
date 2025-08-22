@@ -10,6 +10,7 @@
 """Task to use debdiff in debusine."""
 from itertools import chain
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import Any
 
 from debusine import utils
@@ -17,12 +18,13 @@ from debusine.artifacts import DebDiffArtifact
 from debusine.artifacts.models import (
     ArtifactCategory,
     CollectionCategory,
+    DebianBinaryPackage,
     DebianSourcePackage,
     DebianUpload,
     get_source_package_name,
 )
 from debusine.client.models import RelationType
-from debusine.tasks import BaseTaskWithExecutor, RunCommandTask
+from debusine.tasks import BaseTaskWithExecutor, RunCommandTask, TaskConfigError
 from debusine.tasks.models import DebDiffData, DebDiffDynamicData
 from debusine.tasks.server import TaskDatabaseInterface
 
@@ -45,9 +47,29 @@ class DebDiff(
         """Initialize object."""
         super().__init__(task_data, dynamic_task_data)
 
-        # list of packages to be diffed
+        # list of directories that fetch_input() downloaded the artifacts
+        self._original_dirs: list[Path] = []
+        self._new_targets_dirs: list[Path] = []
+
+        # list of files that configure_for_execution() found to pass to debdiff
         self._original_targets: list[Path] = []
         self._new_targets: list[Path] = []
+
+    @staticmethod
+    def _validate_binary_original_new_count(
+        original_count: int, new_count: int
+    ) -> None:
+        """
+        Validate original_count and new_count for binary artifacts.
+
+        Raise TaskConfigError for invalid combinations.
+        """
+        if original_count == 0 or new_count == 0:
+            raise TaskConfigError(
+                f"input.binary_artifacts[0] and input.binary_artifacts[1] "
+                f"cannot have zero artifacts "
+                f"(got {original_count} and {new_count})"
+            )
 
     def build_dynamic_data(
         self, task_database: TaskDatabaseInterface
@@ -68,6 +90,12 @@ class DebDiff(
                 for artifact in self.data.input.source_artifacts
             ]
 
+            if any(artifact is None for artifact in source_artifacts):
+                raise TaskConfigError(
+                    f"Could not look up one of source_artifacts. "
+                    f"Source artifacts lookup result: {source_artifacts}"
+                )
+
             for source_artifact in source_artifacts:
                 # TODO: improve configuration_key including the index?
                 self.ensure_artifact_categories(
@@ -87,30 +115,64 @@ class DebDiff(
         binary_artifacts_ids = []
 
         if self.data.input.binary_artifacts:
-            binary_artifacts = [
-                task_database.lookup_multiple_artifacts(artifact)
-                for artifact in self.data.input.binary_artifacts
-            ]
+            binary_artifacts_original = task_database.lookup_multiple_artifacts(
+                self.data.input.binary_artifacts[0]
+            )
+            binary_artifacts_new = task_database.lookup_multiple_artifacts(
+                self.data.input.binary_artifacts[1]
+            )
+
+            self._validate_binary_original_new_count(
+                len(binary_artifacts_original), len(binary_artifacts_new)
+            )
 
             source_package_names = set()
 
-            for binary_artifact in binary_artifacts:
-                binary_artifacts_ids.append(binary_artifact.get_ids())
+            binary_artifact_category = None
+            for multiple_artifacts in [
+                binary_artifacts_original,
+                binary_artifacts_new,
+            ]:
+                binary_artifacts_ids.append(multiple_artifacts.get_ids())
 
-                for artifact in binary_artifact:
+                for artifact in multiple_artifacts:
                     # TODO: improve configuration_key including the index?
                     self.ensure_artifact_categories(
                         configuration_key="input.binary_artifacts",
                         category=artifact.category,
-                        expected=(ArtifactCategory.UPLOAD,),
+                        expected=(
+                            ArtifactCategory.UPLOAD,
+                            ArtifactCategory.BINARY_PACKAGE,
+                        ),
                     )
 
                     assert isinstance(
                         artifact.data,
-                        (DebianUpload,),
+                        (DebianUpload, DebianBinaryPackage),
                     )
+                    if binary_artifact_category is None:
+                        binary_artifact_category = artifact.category
+
+                    if binary_artifact_category != artifact.category:
+                        raise TaskConfigError(
+                            f'All binary artifacts must have the same '
+                            f'category. Found "{binary_artifact_category}" '
+                            f'and "{artifact.category}"'
+                        )
+
                     source_package_names.add(
                         get_source_package_name(artifact.data)
+                    )
+
+                if (
+                    binary_artifact_category != ArtifactCategory.BINARY_PACKAGE
+                    and len(multiple_artifacts) > 1
+                ):
+                    raise TaskConfigError(
+                        "If binary_artifacts source and new contain more than "
+                        "one artifact all must be of category "
+                        "debian:binary-package. Found: "
+                        f"{binary_artifact_category}"
                     )
 
             if subject is None and len(source_package_names) == 1:
@@ -127,8 +189,8 @@ class DebDiff(
             subject=subject,
         )
 
-    def get_source_artifacts_ids(self) -> list[int]:
-        """Return the list of source artifact IDs used by this task."""
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
         if self.dynamic_data is None:
             return []
 
@@ -147,48 +209,90 @@ class DebDiff(
             "debdiff",
         ]
 
-        if extra_flags := self.data.extra_flags:
-            for flag in extra_flags:
-                # we already checked that the flags are sane...
-                cmd.append(flag)
+        cmd.extend(self.data.extra_flags)
 
-        cmd.extend(str(path) for path in self._original_targets)
-        cmd.extend(str(path) for path in self._new_targets)
+        original_targets = map(str, self._original_targets)
+        new_targets = map(str, self._new_targets)
+
+        use_from_notation = self._original_targets[0].suffix in (
+            ".deb",
+            ".udeb",
+        )
+
+        if use_from_notation:
+            cmd += ["--from", *original_targets, "--to", *new_targets]
+        else:
+            cmd += [*original_targets, *new_targets]
 
         return cmd
+
+    def _fetch_artifact_to_temporary(
+        self, artifact_id: int, directory: Path
+    ) -> Path:
+        artifact_directory = Path(
+            mkdtemp(dir=directory, prefix=f"{artifact_id}_")
+        )
+        self.fetch_artifact(artifact_id, artifact_directory)
+
+        return artifact_directory
 
     def fetch_input(self, destination: Path) -> bool:
         """Download the required artifacts."""
         assert self.dynamic_data
 
-        (original_directory := destination / "original").mkdir()
-        (new_directory := destination / "new").mkdir()
-
         if self.dynamic_data.input_source_artifacts_ids:
             assert len(self.dynamic_data.input_source_artifacts_ids) == 2
-            self.fetch_artifact(
-                self.dynamic_data.input_source_artifacts_ids[0],
-                original_directory,
+            self._original_dirs.append(
+                self._fetch_artifact_to_temporary(
+                    self.dynamic_data.input_source_artifacts_ids[0], destination
+                )
             )
-            self.fetch_artifact(
-                self.dynamic_data.input_source_artifacts_ids[1],
-                new_directory,
+
+            self._new_targets_dirs.append(
+                self._fetch_artifact_to_temporary(
+                    self.dynamic_data.input_source_artifacts_ids[1], destination
+                )
             )
 
         if self.dynamic_data.input_binary_artifacts_ids:
             assert len(self.dynamic_data.input_binary_artifacts_ids) == 2
+
             for artifact_id in self.dynamic_data.input_binary_artifacts_ids[0]:
-                self.fetch_artifact(artifact_id, original_directory)
+                self._original_dirs.append(
+                    self._fetch_artifact_to_temporary(artifact_id, destination)
+                )
+
             for artifact_id in self.dynamic_data.input_binary_artifacts_ids[1]:
-                self.fetch_artifact(artifact_id, new_directory)
+                self._new_targets_dirs.append(
+                    self._fetch_artifact_to_temporary(artifact_id, destination)
+                )
 
         return True
 
-    def configure_for_execution(self, download_directory: Path) -> bool:
+    @staticmethod
+    def _find_file(path: Path) -> Path:
+
+        file = utils.find_file_suffixes(path, [".changes"])
+
+        if file is None:
+            file = utils.find_file_suffixes(path, [".deb", ".udeb", ".dsc"])
+
+        # file cannot be None because we ensure the artifact category and
+        # artifacts are previously validated
+        assert file is not None
+
+        return file
+
+    def configure_for_execution(
+        self, download_directory: Path  # noqa: U100
+    ) -> bool:
         """
         Set self._(original|new)_targets to the relevant files.
 
-        :param download_directory: where to search the files
+        Use self._original_dirs and self._new_dirs for finding the specific
+        targets for debdiff command.
+
+        :param download_directory: unused
         :return: True if valid files were found
         """
         self._prepare_executor_instance()
@@ -202,53 +306,25 @@ class DebDiff(
             ["apt-get", "update"], run_as_root=True, check=True
         )
         self.executor_instance.run(
-            # diffstat needed for the flag --diffstat
-            ["apt-get", "--yes", "install", "devscripts", "diffstat"],
+            [
+                "apt-get",
+                "--yes",
+                "--no-install-recommends",
+                "install",
+                "devscripts",
+                "diffstat",  # for --diffstat
+                "patchutils",  # used to compare .diff.gz files
+                "wdiff",  # for --wdiff-source-control
+            ],
             run_as_root=True,
             check=True,
         )
 
-        file_ending = ".dsc"
-        if self.dynamic_data.input_binary_artifacts_ids:
-            file_ending = ".changes"
+        for original_dir in self._original_dirs:
+            self._original_targets.append(self._find_file(original_dir))
 
-        original_files = utils.find_files_suffixes(
-            download_directory / "original", [file_ending]
-        )
-
-        if len(original_files) == 0:
-            list_of_files = sorted(
-                map(str, (download_directory / "original").iterdir())
-            )
-            self.append_to_log_file(
-                "configure_for_execution.log",
-                [
-                    f"No original *{file_ending} file to be analyzed. "
-                    f"Files: {list_of_files}"
-                ],
-            )
-            return False
-
-        self._original_targets.append(original_files[0])
-
-        new_files = utils.find_files_suffixes(
-            download_directory / "new", [file_ending]
-        )
-
-        if len(new_files) == 0:
-            list_of_files = sorted(
-                map(str, (download_directory / "new").iterdir())
-            )
-            self.append_to_log_file(
-                "configure_for_execution.log",
-                [
-                    f"No new *{file_ending} file to be analyzed. "
-                    f"Files: {list_of_files}"
-                ],
-            )
-            return False
-
-        self._new_targets.append(new_files[0])
+        for target_dir in self._new_targets_dirs:
+            self._new_targets.append(self._find_file(target_dir))
 
         return True
 

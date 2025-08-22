@@ -1,9 +1,11 @@
-<div class="input-group flex-grow-1">
-    <label class="input-group-text" for="{{ filter.filter_prefix }}">{{ filter.label }}:</label>
+{% extends "web/_table_filter_form_dropdown_menu.html" %}
+{% block form %}
+    <label class="form-label me-2"
+           for="{{ filter.dom_id }}-formfield-{{ filter.filter_prefix }}">{{ filter.label }}</label>
     <input type="text"
            class="form-control"
-           id="{{ filter.filter_prefix }}"
+           id="{{ filter.dom_id }}-formfield-{{ filter.filter_prefix }}"
            name="{{ filter.filter_prefix }}"
-           value="{{ filter.value }}"
+           value="{{ filter.value|default:"" }}"
            {% if filter.placeholder %}placeholder="{{ filter.placeholder }}"{% endif %}>
-</div>
+{% endblock %}

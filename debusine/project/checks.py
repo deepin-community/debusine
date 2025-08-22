@@ -27,6 +27,7 @@ def _check_directories_owners(
     setting_names: Iterable[str], *, missing_ok: bool
 ) -> list[Error]:
     current_user = getpass.getuser()
+    acceptable_owners = {'root', current_user}
 
     errors = []
 
@@ -37,7 +38,7 @@ def _check_directories_owners(
             continue
         elif not directory.exists():
             errors.append(Error(f"{directory} must exist"))
-        elif directory.owner() != current_user:
+        elif directory.owner() not in acceptable_owners:
             errors.append(
                 Error(
                     f"{directory} owner ({directory.owner()}) must match "

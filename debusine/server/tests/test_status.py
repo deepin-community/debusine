@@ -13,6 +13,7 @@ from itertools import product
 
 from django.test import override_settings
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import WorkRequest
 from debusine.server.status import (
     QueueStatus,
@@ -24,7 +25,6 @@ from debusine.tasks.models import (
     MmDebstrapBootstrapOptions,
     MmDebstrapData,
     SystemBootstrapRepository,
-    TaskTypes,
     WorkerType,
 )
 from debusine.test.django import TestCase

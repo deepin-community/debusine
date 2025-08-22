@@ -886,11 +886,13 @@ class DNSCheck(Command):
 
     def run(self):  # noqa: C901
         """Run `dns-check` command."""
-        records: dict[str, dict[str, Any]] = defaultdict(dict)
+        records: dict[str, dict[tuple[str, str], dict[str, Any]]] = defaultdict(
+            dict
+        )
         for rec in self.playground.dns.records():
             if rec["type"] not in ("A", "AAAA"):
                 continue
-            records[rec["name"]][rec["type"]] = rec
+            records[rec["name"]][(rec["type"], rec["value"])] = rec
 
         servers: dict[str, hcloud.servers.client.BoundServer] = {}
         for server in self.playground.hetzner.servers.get_all():
@@ -905,12 +907,23 @@ class DNSCheck(Command):
                 address = self.playground.get_address_ipv6(server)
                 log.info("Missing DNS record %s AAAA %s", name, address)
 
-        # Servers with incomplete records
+        # Servers with incorrect records
         recreate: set[str] = set()
         for name in servers.keys() & records.keys():
-            for rec_type in {"AAAA", "A"} - records[name].keys():
+            expected_records = {
+                ("A", self.playground.get_address_ipv4(servers[name])),
+                ("AAAA", self.playground.get_address_ipv6(servers[name])),
+            }
+            for rec_type, rec_value in expected_records - records[name].keys():
                 recreate.add(name)
-                log.info("Missing DNS record %s %s", name, rec_type)
+                log.info(
+                    "Missing DNS record %s %s %s", name, rec_type, rec_value
+                )
+            for rec_type, rec_value in records[name].keys() - expected_records:
+                recreate.add(name)
+                log.info(
+                    "Leftover DNS record %s %s %s", name, rec_type, rec_value
+                )
         if self.args.fix:
             for name in recreate:
                 server = servers[name]
@@ -920,14 +933,14 @@ class DNSCheck(Command):
 
         # Records without servers
         for name in records.keys() - servers.keys():
-            for rec_type, rec in records[name].items():
+            for rec in records[name].values():
                 if self.args.fix:
                     self.playground.delete_server_dns_record(rec)
                 else:
                     log.info(
                         "Leftover DNS record %s %s %s",
                         name,
-                        rec_type,
+                        rec["type"],
                         rec["value"],
                     )
 
@@ -938,11 +951,11 @@ class DNSCheck(Command):
         dns_table.add_column("TTL")
         dns_table.add_column("Value")
         for name in records.keys() & servers.keys():
-            for rec_type, rec in records[name].items():
+            for rec in records[name].values():
                 dns_table.add_row(
                     f"[link=https://{name}.{self.playground.dns.domain}]{name}"
                     f"[/link]",
-                    rec_type,
+                    rec["type"],
                     str(rec["ttl"]),
                     rec["value"],
                 )

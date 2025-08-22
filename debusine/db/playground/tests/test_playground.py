@@ -25,6 +25,7 @@ from debusine.artifacts.models import (
     DebusineSigningInput,
     DebusineSigningOutput,
     SigningResult,
+    TaskTypes,
 )
 from debusine.assets import (
     AWSProviderAccountConfiguration,
@@ -41,6 +42,7 @@ from debusine.db.models import (
     Artifact,
     ArtifactRelation,
     Asset,
+    Collection,
     DEFAULT_FILE_STORE_NAME,
     FileInArtifact,
     FileStore,
@@ -58,10 +60,10 @@ from debusine.server.worker_pools.models import (
 )
 from debusine.server.workflows.models import WorkRequestWorkflowData
 from debusine.tasks.models import (
+    ActionTypes,
     BackendType,
     SbuildBuildComponent,
     SbuildDynamicData,
-    TaskTypes,
 )
 from debusine.test import TestCase
 from debusine.test.playground import Playground
@@ -88,17 +90,21 @@ class PlaygroundTest(django.test.TestCase, TestCase):
 
     def test_defaults(self) -> None:
         """Check default playground configuration."""
-        playground = Playground()
-        user = playground.get_default_user()
-        self.assertEqual(user.username, "playground")
+        with Playground() as playground:
+            user = playground.get_default_user()
+            self.assertEqual(user.username, "playground")
 
-        file_store = playground.get_default_file_store()
-        self.assertEqual(file_store.name, DEFAULT_FILE_STORE_NAME)
-        self.assertEqual(file_store.backend, FileStore.BackendChoices.MEMORY)
+            file_store = playground.get_default_file_store()
+            self.assertEqual(file_store.name, DEFAULT_FILE_STORE_NAME)
+            self.assertEqual(
+                file_store.backend, FileStore.BackendChoices.MEMORY
+            )
 
-        workspace = playground.get_default_workspace()
-        self.assertEqual(workspace.scope.file_stores.get(), file_store)
-        self.assertEqual(workspace.name, settings.DEBUSINE_DEFAULT_WORKSPACE)
+            workspace = playground.get_default_workspace()
+            self.assertEqual(workspace.scope.file_stores.get(), file_store)
+            self.assertEqual(
+                workspace.name, settings.DEBUSINE_DEFAULT_WORKSPACE
+            )
 
     def test_user_password(self) -> None:
         """Check that the default user password is set when requested."""
@@ -119,7 +125,6 @@ class PlaygroundTest(django.test.TestCase, TestCase):
         self.assertTrue(user.has_usable_password())
         self.assertTrue(check_password("test", user.password))
 
-    @context.disable_permission_checks()
     def test_create_workspace_scope(self) -> None:
         """Test setting scope on created workspaces."""
         playground = Playground()
@@ -242,8 +247,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
     def test_create_source_artifact(self) -> None:
         """Test creating a source artifact."""
         playground = Playground()
-        with context.disable_permission_checks():
-            source = playground.create_source_artifact()
+        source = playground.create_source_artifact()
         self.assertEqual(source.category, ArtifactCategory.SOURCE_PACKAGE)
         self.assertEqual(source.workspace, playground.get_default_workspace())
         self.assertEqual(source.files.count(), 0)
@@ -300,8 +304,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
     def test_create_source_artifact_with_files(self) -> None:
         """Test creating a source artifact with its files."""
         playground = Playground()
-        with context.disable_permission_checks():
-            source = playground.create_source_artifact(create_files=True)
+        source = playground.create_source_artifact(create_files=True)
         files = sorted(
             FileInArtifact.objects.filter(artifact=source),
             key=lambda f: f.path,
@@ -425,8 +428,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
     def test_create_build_log_artifact(self) -> None:
         """Test creating a build log artifact."""
         playground = Playground()
-        with context.disable_permission_checks():
-            buildlog = playground.create_build_log_artifact()
+        buildlog = playground.create_build_log_artifact()
         self.assertEqual(buildlog.category, ArtifactCategory.PACKAGE_BUILD_LOG)
         self.assertEqual(buildlog.workspace, playground.get_default_workspace())
         self.assertEqual(buildlog.files.count(), 1)
@@ -454,15 +456,14 @@ class PlaygroundTest(django.test.TestCase, TestCase):
         user = User.objects.create_user(
             username="custom", email="custom@example.org"
         )
-        with context.disable_permission_checks():
-            work_request = playground.create_work_request(created_by=user)
-            buildlog = playground.create_build_log_artifact(
-                source="test",
-                version="2.0",
-                build_arch="arm64",
-                work_request=work_request,
-                contents=test_contents,
-            )
+        work_request = playground.create_work_request(created_by=user)
+        buildlog = playground.create_build_log_artifact(
+            source="test",
+            version="2.0",
+            build_arch="arm64",
+            work_request=work_request,
+            contents=test_contents,
+        )
         self.assertEqual(buildlog.category, ArtifactCategory.PACKAGE_BUILD_LOG)
         self.assertEqual(buildlog.workspace, playground.get_default_workspace())
         self.assertEqual(buildlog.files.count(), 1)
@@ -480,7 +481,6 @@ class PlaygroundTest(django.test.TestCase, TestCase):
         with file_backend.get_stream(file) as fd:
             self.assertEqual(fd.read(), test_contents)
 
-    @context.disable_permission_checks()
     def test_create_build_log_artifact_custom_user(self) -> None:
         """Test creating a build log artifact with custom user."""
         playground = Playground()
@@ -634,7 +634,6 @@ class PlaygroundTest(django.test.TestCase, TestCase):
         self.assertEqual(env.category, CollectionCategory.ENVIRONMENTS)
         self.assertEqual(env.workspace, playground.get_default_workspace())
 
-    @context.disable_permission_checks()
     def test_create_debian_env_collection_custom(self) -> None:
         """Test create_debian_environments_collection."""
         playground = Playground()
@@ -649,8 +648,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
     def test_create_debian_env_defaults(self) -> None:
         """Test create_debian_environment."""
         playground = Playground()
-        with context.disable_permission_checks():
-            env_item = playground.create_debian_environment()
+        env_item = playground.create_debian_environment()
         self.assertEqual(env_item.category, ArtifactCategory.SYSTEM_TARBALL)
         self.assertIsNotNone(env_item.artifact)
         self.assertEqual(
@@ -679,6 +677,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
             {
                 "architecture": "amd64",
                 "codename": "bookworm",
+                "components": ["main"],
                 'filename': 'test',
                 'mirror': 'https://deb.debian.org',
                 'pkglist': [],
@@ -689,7 +688,6 @@ class PlaygroundTest(django.test.TestCase, TestCase):
             },
         )
 
-    @context.disable_permission_checks()
     def test_create_debian_env_custom(self) -> None:
         """Test create_debian_environment with custom args."""
         playground = Playground()
@@ -726,6 +724,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
             {
                 "architecture": "amd64",
                 "codename": "bookworm",
+                "components": ["main"],
                 'filename': 'test',
                 'mirror': 'https://deb.debian.org',
                 'pkglist': [],
@@ -736,7 +735,6 @@ class PlaygroundTest(django.test.TestCase, TestCase):
             },
         )
 
-    @context.disable_permission_checks()
     def test_create_debian_env_reuse(self) -> None:
         """Test object reuse of create_debian_environment."""
         playground = Playground()
@@ -752,10 +750,9 @@ class PlaygroundTest(django.test.TestCase, TestCase):
     def test_create_debian_env_image(self) -> None:
         """Test create_debian_environment for images."""
         playground = Playground()
-        with context.disable_permission_checks():
-            env_item = playground.create_debian_environment(
-                category=ArtifactCategory.SYSTEM_IMAGE
-            )
+        env_item = playground.create_debian_environment(
+            category=ArtifactCategory.SYSTEM_IMAGE
+        )
         self.assertEqual(env_item.category, ArtifactCategory.SYSTEM_IMAGE)
         self.assertIsNotNone(env_item.artifact)
         self.assertEqual(
@@ -781,6 +778,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
             {
                 "architecture": "amd64",
                 "codename": "bookworm",
+                "components": ["main"],
                 'filename': 'test',
                 'mirror': 'https://deb.debian.org',
                 'pkglist': [],
@@ -794,15 +792,14 @@ class PlaygroundTest(django.test.TestCase, TestCase):
     def test_create_sbuild_work_request(self) -> None:
         """Test creating a sbuild work request."""
         playground = Playground()
-        with context.disable_permission_checks():
-            source = playground.create_source_artifact()
-            environment_item = playground.create_debian_environment()
-            assert environment_item.artifact is not None
-            wr = playground.create_sbuild_work_request(
-                source=source,
-                environment=environment_item.artifact,
-                architecture="amd64",
-            )
+        source = playground.create_source_artifact()
+        environment_item = playground.create_debian_environment()
+        assert environment_item.artifact is not None
+        wr = playground.create_sbuild_work_request(
+            source=source,
+            environment=environment_item.artifact,
+            architecture="amd64",
+        )
 
         self.assertEqual(wr.workspace, playground.get_default_workspace())
         self.assertEqual(wr.created_by, playground.get_default_user())
@@ -827,18 +824,25 @@ class PlaygroundTest(django.test.TestCase, TestCase):
     def test_simulate_package_build(self) -> None:
         """Test simulating a whole package build."""
         playground = Playground()
-        with context.disable_permission_checks():
-            source = playground.create_source_artifact()
-            wr = playground.simulate_package_build(source, architecture="amd64")
+        source = playground.create_source_artifact()
+        wr = playground.simulate_package_build(source, architecture="amd64")
+        task_config_collection = Collection.objects.get(
+            workspace=playground.get_default_workspace(),
+            name="default",
+            category=CollectionCategory.TASK_CONFIGURATION,
+        )
 
         binaries: list[Artifact] = []
         buildlogs: list[Artifact] = []
+        uploads: list[Artifact] = []
         for artifact in Artifact.objects.filter(created_by_work_request=wr):
             match artifact.category:
                 case ArtifactCategory.BINARY_PACKAGE:
                     binaries.append(artifact)
                 case ArtifactCategory.PACKAGE_BUILD_LOG:
                     buildlogs.append(artifact)
+                case ArtifactCategory.UPLOAD:
+                    uploads.append(artifact)
                 case _ as unreachable:
                     self.fail(
                         "Work request generated unexpected"
@@ -846,6 +850,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
                     )
         self.assertEqual(len(binaries), 1)
         self.assertEqual(len(buildlogs), 1)
+        self.assertEqual(len(uploads), 1)
 
         self.assertEqual(wr.workspace, playground.get_default_workspace())
         self.assertIsNotNone(wr.started_at)
@@ -881,9 +886,11 @@ class PlaygroundTest(django.test.TestCase, TestCase):
                 subject="hello",
                 runtime_context="any:amd64:amd64",
                 configuration_context="bookworm",
+                task_configuration_id=task_config_collection.id,
             ),
         )
         self.assertIsNone(wr.parent)
+        self.assertEqual(wr.event_reactions_json, {})
 
         # Test environment
         self.assertEqual(environment.category, ArtifactCategory.SYSTEM_TARBALL)
@@ -903,6 +910,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
                 'filename': 'hello_1.0-1_amd64.buildlog',
                 'source': 'hello',
                 'version': '1.0-1',
+                'architecture': 'amd64',
                 'bd_uninstallable': None,
             },
         )
@@ -926,6 +934,14 @@ class PlaygroundTest(django.test.TestCase, TestCase):
             },
         )
 
+        # Test upload
+        upload = uploads[0]
+        self.assertEqual(upload.category, ArtifactCategory.UPLOAD)
+        self.assertEqual(upload.data["changes_fields"]["Architecture"], "amd64")
+        self.assertEqual(upload.data["changes_fields"]["Binary"], "hello")
+        self.assertEqual(upload.data["changes_fields"]["Source"], "hello")
+        self.assertEqual(upload.data["changes_fields"]["Version"], "1.0-1")
+
         # Test artifact relations
         self.assert_artifact_relations(
             buildlog,
@@ -938,14 +954,15 @@ class PlaygroundTest(django.test.TestCase, TestCase):
         self.assert_artifact_relations(
             binary, [(source, ArtifactRelation.Relations.BUILT_USING)]
         )
+        self.assert_artifact_relations(
+            upload, [(binary, ArtifactRelation.Relations.EXTENDS)]
+        )
 
-    @context.disable_permission_checks()
     def test_simulate_package_build_custom(self) -> None:
         """Test simulating a whole package build with custom args."""
         playground = Playground()
 
-        with context.disable_permission_checks():
-            workspace = playground.create_workspace(name="custom", public=True)
+        workspace = playground.create_workspace(name="custom", public=True)
         source = playground.create_source_artifact(
             name="test", version="2.0", workspace=workspace
         )
@@ -965,12 +982,15 @@ class PlaygroundTest(django.test.TestCase, TestCase):
 
         binaries: list[Artifact] = []
         buildlogs: list[Artifact] = []
+        uploads: list[Artifact] = []
         for artifact in Artifact.objects.filter(created_by_work_request=wr):
             match artifact.category:
                 case ArtifactCategory.BINARY_PACKAGE:
                     binaries.append(artifact)
                 case ArtifactCategory.PACKAGE_BUILD_LOG:
                     buildlogs.append(artifact)
+                case ArtifactCategory.UPLOAD:
+                    uploads.append(artifact)
                 case _ as unreachable:
                     self.fail(
                         "Work request generated unexpected"
@@ -1019,6 +1039,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
             ),
         )
         self.assertIsNone(wr.parent)
+        self.assertEqual(wr.event_reactions_json, {})
 
         # Test environment
         self.assertEqual(environment.category, ArtifactCategory.SYSTEM_TARBALL)
@@ -1032,6 +1053,7 @@ class PlaygroundTest(django.test.TestCase, TestCase):
                 'filename': 'test_2.0_amd64.buildlog',
                 'source': 'test',
                 'version': '2.0',
+                'architecture': 'amd64',
                 'bd_uninstallable': None,
             },
         )
@@ -1055,6 +1077,14 @@ class PlaygroundTest(django.test.TestCase, TestCase):
             },
         )
 
+        # Test upload
+        upload = uploads[0]
+        self.assertEqual(upload.category, ArtifactCategory.UPLOAD)
+        self.assertEqual(upload.data["changes_fields"]["Architecture"], "amd64")
+        self.assertEqual(upload.data["changes_fields"]["Binary"], "test")
+        self.assertEqual(upload.data["changes_fields"]["Source"], "test")
+        self.assertEqual(upload.data["changes_fields"]["Version"], "2.0")
+
         # Test artifact relations
         self.assert_artifact_relations(
             buildlog,
@@ -1067,15 +1097,17 @@ class PlaygroundTest(django.test.TestCase, TestCase):
         self.assert_artifact_relations(
             binary, [(source, ArtifactRelation.Relations.BUILT_USING)]
         )
+        self.assert_artifact_relations(
+            upload, [(binary, ArtifactRelation.Relations.EXTENDS)]
+        )
 
     def test_simulate_package_build_workflow(self) -> None:
         """Test simulating a package build in a workflow."""
         playground = Playground()
         template = playground.create_workflow_template("test", "noop")
         workflow = playground.create_workflow(template, task_data={})
-        with context.disable_permission_checks():
-            source = playground.create_source_artifact()
-            wr = playground.simulate_package_build(source, workflow=workflow)
+        source = playground.create_source_artifact()
+        wr = playground.simulate_package_build(source, workflow=workflow)
         self.assertEqual(wr.parent, workflow)
         self.assertEqual(
             wr.workflow_data,
@@ -1083,6 +1115,31 @@ class PlaygroundTest(django.test.TestCase, TestCase):
                 display_name="Build all",
                 step="build-all",
             ),
+        )
+        self.assertEqual(
+            wr.event_reactions_json,
+            {
+                "on_creation": [],
+                "on_unblock": [],
+                "on_assignment": [],
+                "on_success": [
+                    {
+                        "action": ActionTypes.UPDATE_COLLECTION_WITH_ARTIFACTS,
+                        "artifact_filters": {
+                            "category": ArtifactCategory.UPLOAD
+                        },
+                        "collection": "internal@collections",
+                        "created_at": None,
+                        "name_template": "build-all",
+                        "variables": {
+                            "architecture": "all",
+                            "binary_names": ["hello"],
+                            "source_package_name": "hello",
+                        },
+                    }
+                ],
+                "on_failure": [],
+            },
         )
 
     def test_create_workflow(self) -> None:

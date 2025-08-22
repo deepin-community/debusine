@@ -42,6 +42,7 @@ from debusine.db.models.auth import (
     GroupRoles,
     system_user,
 )
+from debusine.db.models.tests.utils import RolesTestCase
 from debusine.db.playground import scenarios
 from debusine.test.django import ChannelsHelpersMixin, TestCase
 
@@ -227,6 +228,16 @@ class TokenManagerTests(TestCase):
             [],
         )
 
+    def test_get_tokens_include_expired(self) -> None:
+        """get_tokens only includes expired tokens if requested."""
+        self.token_john.expire_at = timezone.now() - timedelta(seconds=1)
+        self.token_john.save()
+        self.assertQuerySetEqual(Token.objects.get_tokens(username="John"), [])
+        self.assertQuerySetEqual(
+            Token.objects.get_tokens(username="John", include_expired=True),
+            [self.token_john],
+        )
+
     def test_expired(self) -> None:
         """``expired`` returns only the expired tokens."""
         now = timezone.now()
@@ -321,10 +332,17 @@ class IdentityTests(TestCase):
         self.assertEqual(str(ident), "salsa:test@debian.org")
 
 
-class GroupRolesTests(TestCase):
+class GroupRolesTests(RolesTestCase[GroupRoles]):
     """Tests for the GroupRoles class."""
 
     scenario = scenarios.DefaultContext()
+    roles_class = GroupRoles
+
+    def test_invariants(self) -> None:
+        self.assertRolesInvariants()
+
+    def test_choices(self) -> None:
+        self.assertChoices()
 
     def test_init(self) -> None:
         r = GroupRoleBase("test")
@@ -341,13 +359,8 @@ class GroupRolesTests(TestCase):
         ):
             r._setup()
 
-    def test_choices(self) -> None:
-        self.assertEqual(
-            GroupRoles.choices,
-            [("admin", "Admin"), ("member", "Member")],
-        )
-
-    def test_implications(self) -> None:
+    def test_values(self) -> None:
+        self.assertEqual(Group.Roles.ADMIN.label, "Admin")
         self.assertEqual(
             Group.Roles.ADMIN.implied_by_scope_roles,
             frozenset([Scope.Roles.OWNER]),
@@ -357,6 +370,7 @@ class GroupRolesTests(TestCase):
             frozenset([Group.Roles.ADMIN]),
         )
 
+        self.assertEqual(Group.Roles.MEMBER.label, "Member")
         self.assertEqual(
             Group.Roles.MEMBER.implied_by_scope_roles,
             frozenset([Scope.Roles.OWNER]),
@@ -886,7 +900,7 @@ class GroupTests(TestCase):
 
         self.assertPermission(
             "can_display",
-            users=(None, AnonymousUser(), self.scenario.user),
+            users=[None],
             denied=[self.group, self.other_group],
             token=self.playground.create_worker_token(),
         )
@@ -926,7 +940,7 @@ class GroupTests(TestCase):
 
         self.assertPermission(
             "can_display_audit_log",
-            users=(None, AnonymousUser(), self.scenario.user),
+            users=[None],
             denied=[self.group, self.other_group],
             token=self.playground.create_worker_token(),
         )
@@ -968,7 +982,7 @@ class GroupTests(TestCase):
 
         self.assertPermission(
             "can_manage",
-            users=(None, AnonymousUser(), self.scenario.user),
+            users=[None],
             denied=[self.group, self.other_group],
             token=self.playground.create_worker_token(),
         )

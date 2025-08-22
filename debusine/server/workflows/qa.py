@@ -9,20 +9,22 @@
 
 """qa workflow."""
 
-from debusine.client.models import LookupChildType
-from debusine.server.collections.lookup import lookup_single
-from debusine.server.workflows import Workflow, workflow_utils
-from debusine.server.workflows.base import (
-    WorkflowValidationError,
-    orchestrate_workflow,
-)
+from debusine.artifacts.models import TaskTypes
+from debusine.db.models import WorkRequest
+from debusine.server.workflows import workflow_utils
+from debusine.server.workflows.base import orchestrate_workflow
 from debusine.server.workflows.models import (
     AutopkgtestWorkflowData,
+    BlhcWorkflowData,
+    DebDiffWorkflowData,
     LintianWorkflowData,
     PiupartsWorkflowData,
     QAWorkflowData,
     ReverseDependenciesAutopkgtestWorkflowData,
     WorkRequestWorkflowData,
+)
+from debusine.server.workflows.regression_tracking import (
+    RegressionTrackingWorkflow,
 )
 from debusine.tasks.models import (
     BackendType,
@@ -30,29 +32,16 @@ from debusine.tasks.models import (
     LintianFailOnSeverity,
     LookupMultiple,
     LookupSingle,
-    TaskTypes,
 )
 from debusine.tasks.server import TaskDatabaseInterface
 
 
-class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
+class QAWorkflow(
+    RegressionTrackingWorkflow[QAWorkflowData, BaseDynamicTaskData]
+):
     """QA workflow."""
 
     TASK_NAME = "qa"
-
-    def validate_input(self) -> None:
-        """Thorough validation of input data."""
-        if self.data.reverse_dependencies_autopkgtest_suite is not None:
-            try:
-                lookup_single(
-                    self.data.reverse_dependencies_autopkgtest_suite,
-                    self.workspace,
-                    user=self.work_request.created_by,
-                    workflow_root=self.work_request.get_workflow_root(),
-                    expect_type=LookupChildType.COLLECTION,
-                ).collection
-            except LookupError as e:
-                raise WorkflowValidationError(str(e)) from e
 
     def build_dynamic_data(
         self, task_database: TaskDatabaseInterface  # noqa: U100
@@ -97,8 +86,12 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
 
         if self.data.enable_autopkgtest:
             self._populate_autopkgtest(
+                prefix=self.data.prefix,
                 source_artifact=self.data.source_artifact,
                 binary_artifacts=filtered_binary_artifacts,
+                qa_suite=self.data.qa_suite,
+                reference_qa_results=self.data.reference_qa_results,
+                update_qa_results=self.data.update_qa_results,
                 vendor=self.data.vendor,
                 codename=self.data.codename,
                 backend=self.data.autopkgtest_backend,
@@ -109,13 +102,14 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
         if self.data.enable_reverse_dependencies_autopkgtest:
             # Checked by
             # QAWorkflowData.check_reverse_dependencies_autopkgtest_consistency.
-            assert self.data.reverse_dependencies_autopkgtest_suite is not None
+            assert self.data.qa_suite is not None
             self._populate_reverse_dependencies_autopkgtest(
+                prefix=self.data.prefix,
                 source_artifact=self.data.source_artifact,
                 binary_artifacts=filtered_binary_artifacts,
-                suite_collection=(
-                    self.data.reverse_dependencies_autopkgtest_suite
-                ),
+                qa_suite=self.data.qa_suite,
+                reference_qa_results=self.data.reference_qa_results,
+                update_qa_results=self.data.update_qa_results,
                 vendor=self.data.vendor,
                 codename=self.data.codename,
                 backend=self.data.autopkgtest_backend,
@@ -125,18 +119,28 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
 
         if self.data.enable_lintian:
             self._populate_lintian(
+                prefix=self.data.prefix,
                 source_artifact=self.data.source_artifact,
                 binary_artifacts=filtered_binary_artifacts,
+                qa_suite=self.data.qa_suite,
+                reference_qa_results=self.data.reference_qa_results,
+                update_qa_results=self.data.update_qa_results,
                 vendor=self.data.vendor,
                 codename=self.data.codename,
                 backend=self.data.lintian_backend,
                 architectures=effective_architectures,
+                arch_all_host_architecture=self.data.arch_all_host_architecture,
                 fail_on_severity=self.data.lintian_fail_on_severity,
             )
 
         if self.data.enable_piuparts:
             self._populate_piuparts(
+                prefix=self.data.prefix,
+                source_artifact=self.data.source_artifact,
                 binary_artifacts=filtered_binary_artifacts,
+                qa_suite=self.data.qa_suite,
+                reference_qa_results=self.data.reference_qa_results,
+                update_qa_results=self.data.update_qa_results,
                 vendor=self.data.vendor,
                 codename=self.data.codename,
                 architectures=effective_architectures,
@@ -145,11 +149,35 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
                 arch_all_host_architecture=self.data.arch_all_host_architecture,
             )
 
+        if self.data.enable_debdiff:
+            # Checked by
+            # QAWorkflowData.enable_debdiff_consistency.
+            assert self.data.qa_suite is not None
+            self._populate_debdiff(
+                source_artifact=self.data.source_artifact,
+                binary_artifacts=self.data.binary_artifacts,
+                vendor=self.data.vendor,
+                codename=self.data.codename,
+                original=self.data.qa_suite,
+            )
+
+        if self.data.enable_blhc:
+            # Checked by
+            # QAWorkflowData.enable_blhc_consistency.
+            assert self.data.package_build_logs
+            self._populate_blhc(
+                package_build_logs=self.data.package_build_logs,
+            )
+
     def _populate_autopkgtest(
         self,
         *,
+        prefix: str,
         source_artifact: LookupSingle,
         binary_artifacts: LookupMultiple,
+        qa_suite: LookupSingle | None,
+        reference_qa_results: LookupSingle | None,
+        update_qa_results: bool,
         vendor: str,
         codename: str,
         backend: BackendType,
@@ -161,8 +189,12 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
             task_name="autopkgtest",
             task_type=TaskTypes.WORKFLOW,
             task_data=AutopkgtestWorkflowData(
+                prefix=prefix,
                 source_artifact=source_artifact,
                 binary_artifacts=binary_artifacts,
+                qa_suite=qa_suite,
+                reference_qa_results=reference_qa_results,
+                update_qa_results=update_qa_results,
                 vendor=vendor,
                 codename=codename,
                 backend=backend,
@@ -185,9 +217,12 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
     def _populate_reverse_dependencies_autopkgtest(
         self,
         *,
+        prefix: str,
         source_artifact: LookupSingle,
         binary_artifacts: LookupMultiple,
-        suite_collection: LookupSingle,
+        qa_suite: LookupSingle,
+        reference_qa_results: LookupSingle | None,
+        update_qa_results: bool,
         vendor: str,
         codename: str,
         backend: BackendType,
@@ -199,9 +234,12 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
             task_name="reverse_dependencies_autopkgtest",
             task_type=TaskTypes.WORKFLOW,
             task_data=ReverseDependenciesAutopkgtestWorkflowData(
+                prefix=prefix,
                 source_artifact=source_artifact,
                 binary_artifacts=binary_artifacts,
-                suite_collection=suite_collection,
+                qa_suite=qa_suite,
+                reference_qa_results=reference_qa_results,
+                update_qa_results=update_qa_results,
                 vendor=vendor,
                 codename=codename,
                 backend=backend,
@@ -224,12 +262,17 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
     def _populate_lintian(
         self,
         *,
+        prefix: str,
         source_artifact: LookupSingle,
         binary_artifacts: LookupMultiple,
+        qa_suite: LookupSingle | None,
+        reference_qa_results: LookupSingle | None,
+        update_qa_results: bool,
         vendor: str,
         codename: str,
         backend: BackendType,
         architectures: list[str],
+        arch_all_host_architecture: str,
         fail_on_severity: LintianFailOnSeverity,
     ) -> None:
         """Create work request for lintian workflow."""
@@ -237,12 +280,17 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
             task_name="lintian",
             task_type=TaskTypes.WORKFLOW,
             task_data=LintianWorkflowData(
+                prefix=prefix,
                 source_artifact=source_artifact,
                 binary_artifacts=binary_artifacts,
+                qa_suite=qa_suite,
+                reference_qa_results=reference_qa_results,
+                update_qa_results=update_qa_results,
                 vendor=vendor,
                 codename=codename,
                 backend=backend,
                 architectures=architectures,
+                arch_all_host_architecture=arch_all_host_architecture,
                 fail_on_severity=fail_on_severity,
             ),
             workflow_data=WorkRequestWorkflowData(
@@ -260,7 +308,12 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
     def _populate_piuparts(
         self,
         *,
+        prefix: str,
+        source_artifact: LookupSingle,
         binary_artifacts: LookupMultiple,
+        qa_suite: LookupSingle | None,
+        reference_qa_results: LookupSingle | None,
+        update_qa_results: bool,
         vendor: str,
         codename: str,
         architectures: list[str],
@@ -269,7 +322,12 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
         arch_all_host_architecture: str,
     ) -> None:
         data = PiupartsWorkflowData(
+            prefix=prefix,
+            source_artifact=source_artifact,
             binary_artifacts=binary_artifacts,
+            qa_suite=qa_suite,
+            reference_qa_results=reference_qa_results,
+            update_qa_results=update_qa_results,
             vendor=vendor,
             codename=codename,
             architectures=architectures,
@@ -291,6 +349,59 @@ class QAWorkflow(Workflow[QAWorkflowData, BaseDynamicTaskData]):
         # The piuparts workflow's descendants will have dependencies on the
         # work requests creating binary_artifacts, but the piuparts workflow
         # itself doesn't need that in order to populate itself.
+        wr.mark_running()
+        orchestrate_workflow(wr)
+
+    def _populate_debdiff(
+        self,
+        *,
+        vendor: str,
+        codename: str,
+        source_artifact: LookupSingle,
+        binary_artifacts: LookupMultiple,
+        original: LookupSingle,
+    ) -> None:
+        data = DebDiffWorkflowData(
+            original=original,
+            source_artifact=source_artifact,
+            binary_artifacts=binary_artifacts,
+            vendor=vendor,
+            codename=codename,
+        )
+
+        wr = self.work_request_ensure_child(
+            task_name="debdiff",
+            task_type=TaskTypes.WORKFLOW,
+            task_data=data,
+            workflow_data=WorkRequestWorkflowData(
+                display_name="DebDiff",
+                step="debdiff",
+            ),
+        )
+
+        # Do not mark as running: the status is BLOCKED because the
+        # binary_artifacts do not exist yet and DebDiffWorkflow needs
+        # the binary artifacts in order to create the tasks
+        self.requires_artifact(wr, binary_artifacts)
+
+        if wr.status == WorkRequest.Statuses.PENDING:
+            wr.mark_running()
+            orchestrate_workflow(wr)
+
+    def _populate_blhc(self, *, package_build_logs: LookupMultiple) -> None:
+        data = BlhcWorkflowData(
+            package_build_logs=package_build_logs,
+        )
+
+        wr = self.work_request_ensure_child(
+            task_name="blhc",
+            task_type=TaskTypes.WORKFLOW,
+            task_data=data,
+            workflow_data=WorkRequestWorkflowData(
+                display_name="build log hardening check", step="blhc"
+            ),
+        )
+
         wr.mark_running()
         orchestrate_workflow(wr)
 

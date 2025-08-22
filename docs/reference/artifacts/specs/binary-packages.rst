@@ -1,4 +1,4 @@
-.. _artifact-binary-packages:
+.. artifact:: debian:binary-packages
 
 Category ``debian:binary-packages``
 ===================================
@@ -27,8 +27,8 @@ architecture, listing only the binary packages for that architecture.
 * Files: one or more ``.deb`` files
 * Relationships:
 
-  * built-using: the corresponding ``debian:source-package``
-  * built-using: other ``debian:binary-package`` (for example in the case of
-    signed packages duplicating the content of an unsigned package)
-  * built-using: other ``debian:source-package`` (general case of Debian's
-    ``Built-Using`` field)
+  * built-using: the corresponding :artifact:`debian:source-package`
+  * built-using: other :artifact:`debian:binary-package` (for example in the
+    case of signed packages duplicating the content of an unsigned package)
+  * built-using: other :artifact:`debian:source-package` (general case of
+    Debian's ``Built-Using`` field)

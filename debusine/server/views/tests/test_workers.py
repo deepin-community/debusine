@@ -22,7 +22,6 @@ from rest_framework import status
 
 from debusine.artifacts.models import RuntimeStatistics
 from debusine.client.models import model_to_json_serializable_dict
-from debusine.db.context import context
 from debusine.db.models import Token, WorkRequest, Worker
 from debusine.server.views.rest import IsWorkerAuthenticated
 from debusine.server.views.tests.test_work_requests import WorkRequestTestCase
@@ -82,7 +81,7 @@ class RegisterViewTests(TestCase):
         token_1 = Token()
         token_1.save()
 
-        Worker.objects.create_with_fqdn('worker-lan', token_1)
+        Worker.objects.create_with_fqdn('worker-lan', token=token_1)
 
         token_key = secrets.token_hex(32)
         data = {'token': token_key, 'fqdn': 'worker.lan'}
@@ -202,7 +201,9 @@ class GetNextWorkRequestViewTests(WorkRequestTestCase):
         """Set up common data."""
         super().setUpTestData()
         cls.token = cls.playground.create_bare_token()
-        cls.worker = Worker.objects.create_with_fqdn("worker-test", cls.token)
+        cls.worker = Worker.objects.create_with_fqdn(
+            "worker-test", token=cls.token
+        )
 
     def create_work_request(
         self, status: WorkRequest.Statuses, created_at: datetime
@@ -426,7 +427,9 @@ class UpdateWorkRequestAsCompletedTests(TestCase):
         """Set up common data."""
         super().setUpTestData()
         cls.token = cls.playground.create_bare_token()
-        cls.worker = Worker.objects.create_with_fqdn("worker-test", cls.token)
+        cls.worker = Worker.objects.create_with_fqdn(
+            "worker-test", token=cls.token
+        )
 
         environment_item = cls.playground.create_debian_environment()
         assert environment_item.artifact is not None
@@ -541,7 +544,7 @@ class UpdateWorkRequestAsCompletedTests(TestCase):
     def test_unauthorized(self) -> None:
         """Assert worker cannot modify a task of another worker."""
         another_worker = Worker.objects.create_with_fqdn(
-            "another-worker-test", self.playground.create_bare_token()
+            "another-worker-test", token=self.playground.create_bare_token()
         )
 
         environment_item = self.playground.create_debian_environment()
@@ -578,14 +581,14 @@ class UpdateWorkRequestAsCompletedTests(TestCase):
 class UpdateWorkerDynamicMetadataTests(TestCase):
     """Tests for DynamicMetadata."""
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Set up common objects."""
+        super().setUp()
         self.worker_01 = Worker.objects.create_with_fqdn(
-            'worker-01-lan', self.playground.create_bare_token()
+            'worker-01-lan', token=self.playground.create_bare_token()
         )
         self.worker_02 = Worker.objects.create_with_fqdn(
-            'worker-02-lan', self.playground.create_bare_token()
+            'worker-02-lan', token=self.playground.create_bare_token()
         )
 
     def test_check_permissions(self) -> None:

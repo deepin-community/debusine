@@ -5,13 +5,13 @@ Singleton collections
 
 Some collections are tightly associated with workspaces in such a way that
 it makes sense to have exactly one of them per workspace.  For example,
-:ref:`debusine:task-history <collection-task-history>` retains information
-about old work requests, and is more likely to provide useful statistical
-information if it's used consistently and automatically rather than needing
-to be referenced manually.  Such collections are referred to as
-"singletons": each workspace has at most one of each of them, normally
-created when the workspace is created, and tasks can look them up implicitly
-rather than needing them to be specified explicitly in task data.
+:collection:`debusine:task-history` retains information about old work
+requests, and is more likely to provide useful statistical information if
+it's used consistently and automatically rather than needing to be
+referenced manually.  Such collections are referred to as "singletons": each
+workspace has at most one of each of them, normally created when the
+workspace is created, and tasks can look them up implicitly rather than
+needing them to be specified explicitly in task data.
 
 Collections gain a constraint that their names may not normally begin with
 an underscore (``_``).  Singleton collections are an exception to this.
@@ -36,5 +36,6 @@ creation.
 
 The following collection categories are singletons:
 
-* :ref:`debian:package-build-logs <collection-package-build-logs>`
-* :ref:`debusine:task-history <collection-task-history>`
+* :collection:`debian:archive`
+* :collection:`debian:package-build-logs`
+* :collection:`debusine:task-history`

@@ -9,11 +9,19 @@
 
 """Unit tests for workflow models."""
 
+from abc import ABCMeta, abstractmethod
+from typing import Any, Generic, TypeVar
+
 from debusine.server.workflows.models import (
+    AutopkgtestWorkflowData,
     DebianPipelineWorkflowData,
     ExperimentWorkspaceData,
+    LintianWorkflowData,
     PackagePublishWorkflowData,
+    PiupartsWorkflowData,
     QAWorkflowData,
+    RegressionTrackingWorkflowData,
+    ReverseDependenciesAutopkgtestWorkflowData,
     SbuildWorkflowData,
 )
 from debusine.tasks.models import (
@@ -61,38 +69,199 @@ class SbuildWorkflowDataTests(TestCase):
             )
 
 
-class QAWorkflowDataTests(TestCase):
+WD = TypeVar("WD", bound=RegressionTrackingWorkflowData)
+
+
+class RegressionTrackingWorkflowDataTests(
+    TestCase, Generic[WD], metaclass=ABCMeta
+):
+    """Common tests for models that handle regression tracking."""
+
+    qa_suite_always_required = False
+
+    @abstractmethod
+    def make_data(self, **kwargs: Any) -> WD:
+        """Make a data model of the appropriate type."""
+
+    def test_qa_results_consistency(self) -> None:
+        """Test validation of regression-tracking options."""
+        self.make_data()
+        self.make_data(
+            reference_prefix="reference-qa-result|",
+            qa_suite="sid@debian:suite",
+            reference_qa_results="sid@debian:qa-results",
+            enable_regression_tracking=True,
+        )
+        self.make_data(
+            qa_suite="sid@debian:suite",
+            reference_qa_results="sid@debian:qa-results",
+            update_qa_results=True,
+        )
+
+        if not self.qa_suite_always_required:
+            with self.assertRaisesRegex(
+                ValueError,
+                '"qa_suite" is required if "enable_regression_tracking" or '
+                '"update_qa_results" is set',
+            ):
+                self.make_data(enable_regression_tracking=True)
+            with self.assertRaisesRegex(
+                ValueError,
+                '"qa_suite" is required if "enable_regression_tracking" or '
+                '"update_qa_results" is set',
+            ):
+                self.make_data(update_qa_results=True)
+        with self.assertRaisesRegex(
+            ValueError,
+            '"reference_qa_results" is required if '
+            '"enable_regression_tracking" or "update_qa_results" is set',
+        ):
+            self.make_data(
+                qa_suite="sid@debian:suite", enable_regression_tracking=True
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            '"reference_qa_results" is required if '
+            '"enable_regression_tracking" or "update_qa_results" is set',
+        ):
+            self.make_data(qa_suite="sid@debian:suite", update_qa_results=True)
+        with self.assertRaisesRegex(
+            ValueError,
+            '"reference_prefix" is required if "enable_regression_tracking" '
+            'is set',
+        ):
+            self.make_data(
+                qa_suite="sid@debian:suite",
+                reference_qa_results="sid@debian:qa-results",
+                enable_regression_tracking=True,
+            )
+
+
+class PiupartsWorkflowDataTests(
+    RegressionTrackingWorkflowDataTests[PiupartsWorkflowData]
+):
+    """Tests for :py:class:`PiupartsWorkflowData`."""
+
+    def make_data(self, **kwargs: Any) -> PiupartsWorkflowData:
+        """Make a `PiupartsWorkflowData`."""
+        return PiupartsWorkflowData(
+            source_artifact=1,
+            binary_artifacts=LookupMultiple.parse_obj([2]),
+            vendor="debian",
+            codename="sid",
+            **kwargs,
+        )
+
+
+class AutopkgtestWorkflowDataTests(
+    RegressionTrackingWorkflowDataTests[AutopkgtestWorkflowData]
+):
+    """Tests for :py:class:`AutopkgtestWorkflowData`."""
+
+    def make_data(self, **kwargs: Any) -> AutopkgtestWorkflowData:
+        """Make an `AutopkgtestWorkflowData`."""
+        return AutopkgtestWorkflowData(
+            source_artifact=1,
+            binary_artifacts=LookupMultiple.parse_obj([2]),
+            vendor="debian",
+            codename="sid",
+            **kwargs,
+        )
+
+
+class ReverseDependenciesAutopkgtestWorkflowDataTests(
+    RegressionTrackingWorkflowDataTests[
+        ReverseDependenciesAutopkgtestWorkflowData
+    ]
+):
+    """Tests for :py:class:`ReverseDependenciesAutopkgtestWorkflowData`."""
+
+    qa_suite_always_required = True
+
+    def make_data(
+        self, **kwargs: Any
+    ) -> ReverseDependenciesAutopkgtestWorkflowData:
+        """Make a `ReverseDependenciesAutopkgtestWorkflowData`."""
+        data: dict[str, Any] = {
+            "source_artifact": 1,
+            "binary_artifacts": LookupMultiple.parse_obj([2]),
+            "qa_suite": "sid@debian:suite",
+            "vendor": "debian",
+            "codename": "sid",
+        }
+        data.update(kwargs)
+        return ReverseDependenciesAutopkgtestWorkflowData(**data)
+
+
+class LintianWorkflowDataTests(
+    RegressionTrackingWorkflowDataTests[LintianWorkflowData]
+):
+    """Tests for :py:class:`LintianWorkflowData`."""
+
+    def make_data(self, **kwargs: Any) -> LintianWorkflowData:
+        """Make a `LintianWorkflowData`."""
+        return LintianWorkflowData(
+            source_artifact=1,
+            binary_artifacts=LookupMultiple.parse_obj([2]),
+            vendor="debian",
+            codename="sid",
+            **kwargs,
+        )
+
+
+class QAWorkflowDataTests(RegressionTrackingWorkflowDataTests[QAWorkflowData]):
     """Tests for :py:class:`QAWorkflowData`."""
+
+    def make_data(self, **kwargs: Any) -> QAWorkflowData:
+        """Make a `QAWorkflowData`."""
+        return QAWorkflowData.parse_obj(
+            {
+                "source_artifact": 1,
+                "binary_artifacts": LookupMultiple.parse_obj([2]),
+                "package_build_logs": LookupMultiple.parse_obj([3]),
+                "vendor": "debian",
+                "codename": "sid",
+                **kwargs,
+            },
+        )
 
     def test_reverse_dependencies_autopkgtest_consistency(self) -> None:
         """Test reverse-dependencies-autopkgtest validation."""
-        QAWorkflowData(
-            source_artifact=1,
-            binary_artifacts=LookupMultiple.parse_obj([2]),
-            vendor="debian",
-            codename="sid",
-        )
-        QAWorkflowData(
-            source_artifact=1,
-            binary_artifacts=LookupMultiple.parse_obj([2]),
-            vendor="debian",
-            codename="sid",
+        self.make_data()
+        self.make_data(
+            qa_suite="sid@debian:suite",
             enable_reverse_dependencies_autopkgtest=True,
-            reverse_dependencies_autopkgtest_suite="sid@debian:suite",
         )
 
         with self.assertRaisesRegex(
             ValueError,
-            '"reverse_dependencies_autopkgtest_suite" is required if '
+            '"qa_suite" is required if '
             '"enable_reverse_dependencies_autopkgtest" is set',
         ):
-            QAWorkflowData(
-                source_artifact=1,
-                binary_artifacts=LookupMultiple.parse_obj([2]),
-                vendor="debian",
-                codename="sid",
-                enable_reverse_dependencies_autopkgtest=True,
-            )
+            self.make_data(enable_reverse_dependencies_autopkgtest=True)
+
+    def test_enable_debdiff_consistency(self) -> None:
+        """Test enable_debdiff_consistency validation."""
+        self.make_data()
+        self.make_data(qa_suite="sid@debian:suite", enable_debdiff=True)
+
+        self.make_data()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            '"qa_suite" is required if "enable_debdiff" is set',
+        ):
+            self.make_data(enable_debdiff=True)
+
+    def test_enable_blhc_consistency(self) -> None:
+        """Test enable_blhc_consistency validation."""
+        self.make_data()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            '"package_build_logs" is required if "enable_blhc" is set',
+        ):
+            self.make_data(package_build_logs=None, enable_blhc=True)
 
 
 class DebianPipelineWorkflowDataTests(TestCase):
@@ -107,13 +276,13 @@ class DebianPipelineWorkflowDataTests(TestCase):
             source_artifact=1,
             vendor="debian",
             codename="sid",
+            qa_suite="sid@debian:suite",
             enable_reverse_dependencies_autopkgtest=True,
-            reverse_dependencies_autopkgtest_suite="sid@debian:suite",
         )
 
         with self.assertRaisesRegex(
             ValueError,
-            '"reverse_dependencies_autopkgtest_suite" is required if '
+            '"qa_suite" is required if '
             '"enable_reverse_dependencies_autopkgtest" is set',
         ):
             DebianPipelineWorkflowData(
@@ -121,6 +290,23 @@ class DebianPipelineWorkflowDataTests(TestCase):
                 vendor="debian",
                 codename="sid",
                 enable_reverse_dependencies_autopkgtest=True,
+            )
+
+    def test_enable_debdiff_consistency(self) -> None:
+        """Test enable_debdiff validator."""
+        DebianPipelineWorkflowData(
+            source_artifact=1, vendor="debian", codename="sid"
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            '"qa_suite" is required if "enable_debdiff" is set',
+        ):
+            DebianPipelineWorkflowData(
+                source_artifact=1,
+                enable_debdiff=True,
+                vendor="debian",
+                codename="sid",
             )
 
 
@@ -164,3 +350,7 @@ class ExperimentWorkspaceDataTests(TestCase):
                 ),
             ):
                 ExperimentWorkspaceData(experiment_name="test-test")
+
+
+# Avoid running tests from common base class.
+del RegressionTrackingWorkflowDataTests

@@ -73,15 +73,14 @@ class SimpleSystemImageBuild(SystemBootstrap[SystemImageBuildData]):
         """
         chroot_source = self._chroot_sources_file
         cmd = [
-            "/usr/share/debusine-worker/debefivm-create",
+            "debefivm-create",
             f"--architecture={self.data.bootstrap_options.architecture}",
-            f"--mirror={self.data.bootstrap_repositories[0].mirror}",
             f"--release={self.data.bootstrap_repositories[0].suite}",
             f"--rootsize={self.data.disk_image.partitions[0].size}G",
-            self._OUTPUT_SYSTEM_FILE,  # output file
+            f"--output={self._OUTPUT_SYSTEM_FILE}",  # output file
             "--",
+            f"{self.data.bootstrap_repositories[0].mirror}",
             "--verbose",
-            "--hook-dir=/usr/share/mmdebstrap/hooks/maybe-jessie-or-older",
             # Set "find"'s cwd to "$1". Otherwise, find cwd is the
             # execute_directory as created by RunCommandTask._execute()
             # which is not readable by the mmdebstrap's subuid (find runs
@@ -253,6 +252,14 @@ class SimpleSystemImageBuild(SystemBootstrap[SystemImageBuildData]):
         if main_bootstrap_repository.suite in ("unstable", "sid"):
             codename = "sid"
 
+        components: list[str]
+        if self.data.bootstrap_repositories[0].components:
+            components = self.data.bootstrap_repositories[0].components
+        elif self._chroot_sources_file:
+            components = self._get_source_components(self._chroot_sources_file)
+        else:
+            raise AssertionError("self._chroot_sources_file not set")
+
         os.mkdir(execute_dir / self._VAR_LIB_DPKG)
         subprocess.check_call(
             [
@@ -272,6 +279,7 @@ class SimpleSystemImageBuild(SystemBootstrap[SystemImageBuildData]):
                 "architecture": bootstrap_options.architecture,
                 "vendor": vendor,
                 "codename": codename,
+                "components": components,
                 "pkglist": pkglist,
                 # with_dev: with the current setup (in mmdebstrap),
                 # the devices in /dev are always created

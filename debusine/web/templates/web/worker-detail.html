@@ -2,7 +2,7 @@
 {% load debusine %}
 {% block content %}
     <h1>{{ title }}</h1>
-    <table class="table table-sm">
+    <table class="table table-sm table-hover table-striped">
         <tbody>
             <tr id="row-name">
                 <th>Name</th>
@@ -13,8 +13,6 @@
                 <td>
                     {% if worker.worker_type == "external" %}
                         <i class="bi {% icon "worker_external" %}"></i>
-                    {% elif worker.worker_type == "celery" %}
-                        <i class="bi {% icon "worker_celery" %}"></i>
                     {% elif worker.worker_type == "signing" %}
                         <i class="bi {% icon "worker_signing" %}"></i>
                     {% endif %}
@@ -27,7 +25,7 @@
                     {% if worker.registered_at %}
                         {{ worker.registered_at|date:"Y-m-d H:i" }} ({{ worker.registered_at|timesince }} ago)
                     {% else %}
-                        never
+                        Never
                     {% endif %}
                 </td>
             </tr>
@@ -37,7 +35,7 @@
                     {% if worker.connected_at %}
                         {{ worker.connected_at|date:"Y-m-d H:i" }} ({{ worker.connected_at|timesince }} ago)
                     {% else %}
-                        never
+                        Never
                     {% endif %}
                 </td>
             </tr>
@@ -47,7 +45,7 @@
                     {% if worker.instance_created_at %}
                         {{ worker.instance_created_at|date:"Y-m-d H:i" }} ({{ worker.instance_created_at|timesince }} ago)
                     {% else %}
-                        never
+                        Never
                     {% endif %}
                 </td>
             </tr>

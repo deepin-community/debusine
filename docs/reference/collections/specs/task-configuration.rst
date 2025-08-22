@@ -1,4 +1,4 @@
-.. _collection-task-configuration:
+.. collection:: debusine:task-configuration
 
 Category ``debusine:task-configuration``
 ----------------------------------------
@@ -11,11 +11,15 @@ The collection is looked up via the ``task_configuration`` field in
 allowing to run workflows with different sets of configuration overrides.
 
 
-* Data: none
+* Data:
+
+  * ``git_commit`` (optional): git commit hash of the current collection. This
+    is stored when pushing from git using ``debusine-client task-config-push``,
+    and is removed when the collection is updated by other means.
 
 * Valid items:
 
-  * ``debusine:task-configuration`` bare data (see :ref:`bare-data-task-configuration`)
+  * :bare-data:`debusine:task-configuration` bare data
 
 * Lookup names:
 

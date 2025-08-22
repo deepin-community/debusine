@@ -9,18 +9,16 @@
 
 """debusine-admin command to manage workers."""
 
-from typing import Any
+import warnings
+from typing import Any, NoReturn
 
-from django.core.management import CommandError, CommandParser
-from django.db import transaction
-from django.db.models import Q
+from django.core.management import CommandParser
 
-from debusine.db.models import WorkRequest, Worker
-from debusine.django.management.debusine_base_command import DebusineBaseCommand
+from debusine.server.management.commands import worker
 from debusine.tasks.models import WorkerType
 
 
-class Command(DebusineBaseCommand):
+class Command(worker.Command):
     """Command to manage workers. E.g. enable and disable them."""
 
     help = 'Enables and disables workers'
@@ -45,37 +43,12 @@ class Command(DebusineBaseCommand):
         )
         parser.add_argument('worker', help='Name of the worker to modify')
 
-    def handle(self, *args: Any, **options: Any) -> None:
-        """Enable or disable the worker."""
-        worker = Worker.objects.get_worker_or_none(options['worker'])
-        if worker is None:
-            worker = Worker.objects.get_worker_by_token_key_or_none(
-                options['worker']
-            )
-
-        if worker is None:
-            raise CommandError('Worker not found', returncode=3)
-        if worker.worker_type != options["worker_type"]:
-            raise CommandError(
-                f'Worker "{worker.name}" is of type "{worker.worker_type}", '
-                f'not "{options["worker_type"]}"',
-                returncode=4,
-            )
-        # By this point the worker cannot be a Celery worker, and a database
-        # constraint ensures that all non-Celery workers have a token.
-        assert worker.token is not None
-
-        action = options['action']
-
-        if action == 'enable':
-            worker.token.enable()
-        elif action == 'disable':
-            with transaction.atomic():
-                worker.token.disable()
-                for work_request in worker.assigned_work_requests.filter(
-                    Q(status=WorkRequest.Statuses.RUNNING)
-                    | Q(status=WorkRequest.Statuses.PENDING)
-                ):
-                    work_request.de_assign_worker()
-        else:  # pragma: no cover
-            pass  # Never reached
+    def handle(self, *args: Any, **options: Any) -> NoReturn:
+        """Forward to `debusine-admin worker enable` or `... disable`."""
+        action = options["action"]
+        warnings.warn(
+            f"The `debusine-admin manage_worker {action}` command has been "
+            f"deprecated in favour of `debusine-admin worker {action}`",
+            DeprecationWarning,
+        )
+        super().handle(*args, **options)
