@@ -12,14 +12,15 @@
 import logging
 from unittest import mock
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import WorkRequest
 from debusine.server.workflows.base import (
     WorkflowRunError,
     orchestrate_workflow,
 )
 from debusine.server.workflows.models import BaseWorkflowData
-from debusine.server.workflows.tests.helpers import TestWorkflow
-from debusine.tasks.models import BaseDynamicTaskData, TaskTypes
+from debusine.server.workflows.tests.helpers import SampleWorkflow
+from debusine.tasks.models import BaseDynamicTaskData
 from debusine.tasks.server import TaskDatabaseInterface
 from debusine.test.django import TestCase
 from debusine.test.test_utils import preserve_task_registry
@@ -37,14 +38,43 @@ class OrchestrateWorkflowTests(TestCase):
         )
 
         with mock.patch(
-            "debusine.server.workflows.noop.NoopWorkflow.callback"
-        ) as mock_noop_callback:
+            "debusine.server.workflows.noop.NoopWorkflow.callback_test",
+            create=True,
+        ) as mock_noop_callback_test:
             orchestrate_workflow(wr)
 
-        mock_noop_callback.assert_called_once_with(wr)
+        mock_noop_callback_test.assert_called_once_with()
         wr.refresh_from_db()
         self.assertEqual(wr.status, WorkRequest.Statuses.COMPLETED)
         self.assertEqual(wr.result, WorkRequest.Results.SUCCESS)
+
+    def test_workflow_callback_step_not_implemented(self) -> None:
+        """A workflow callback must have a matching ``callback_*`` method."""
+        parent = self.playground.create_workflow(task_name="noop")
+        parent.mark_running()
+        wr = WorkRequest.objects.create_workflow_callback(
+            parent=parent, step="test"
+        )
+
+        with (
+            mock.patch(
+                "debusine.server.workflows.noop.NoopWorkflow.callback_other",
+                create=True,
+            ) as mock_noop_callback_other,
+            self.assertRaises(WorkflowRunError) as raised,
+        ):
+            orchestrate_workflow(wr)
+
+        mock_noop_callback_other.assert_not_called()
+        self.assertEqual(raised.exception.work_request, wr)
+        self.assertEqual(
+            raised.exception.message,
+            "Orchestrator failed: Unhandled workflow callback step: test",
+        )
+        self.assertEqual(raised.exception.code, "orchestrator-failed")
+        wr.refresh_from_db()
+        self.assertEqual(wr.status, WorkRequest.Statuses.COMPLETED)
+        self.assertEqual(wr.result, WorkRequest.Results.ERROR)
 
     @preserve_task_registry()
     def test_workflow_callback_computes_dynamic_data(self) -> None:
@@ -54,7 +84,7 @@ class OrchestrateWorkflowTests(TestCase):
             dynamic: str
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, ExampleDynamicData]
+            SampleWorkflow[BaseWorkflowData, ExampleDynamicData]
         ):
             TASK_NAME = "example"
 
@@ -91,7 +121,7 @@ class OrchestrateWorkflowTests(TestCase):
             dynamic: str
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, ExampleDynamicData]
+            SampleWorkflow[BaseWorkflowData, ExampleDynamicData]
         ):
             TASK_NAME = "example"
 
@@ -291,7 +321,7 @@ class OrchestrateWorkflowTests(TestCase):
             dynamic: str
 
         class ExampleWorkflow(
-            TestWorkflow[BaseWorkflowData, ExampleDynamicData]
+            SampleWorkflow[BaseWorkflowData, ExampleDynamicData]
         ):
             TASK_NAME = "example"
 

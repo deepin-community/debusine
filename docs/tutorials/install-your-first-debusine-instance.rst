@@ -135,7 +135,8 @@ defaults.
 
    root@debusine:~# apt install \
     debusine-server debusine-worker debusine-signing \
-    python3-django/bookworm-backports postgresql redis nginx \
+    libjs-bootstrap5/bookworm-backports python3-django/bookworm-backports \
+    postgresql redis nginx \
     sbuild uidmap autopkgtest lintian piuparts mmdebstrap qemu-system \
     sbsigntool
    […]
@@ -244,7 +245,7 @@ Finally, you approve the worker on the server side:
 
 .. code-block:: console
 
-   root@debusine:~# sudo -u debusine-server debusine-admin list_workers
+   root@debusine:~# sudo -u debusine-server debusine-admin worker list
                       ╷          ╷                                  ╷                                  ╷                                                                  ╷
     Name              │ Type     │ Registered                       │ Connected                        │ Token hash (do not copy)                                         │ Enabled
    ═══════════════════╪══════════╪══════════════════════════════════╪══════════════════════════════════╪══════════════════════════════════════════════════════════════════╪═════════
@@ -252,7 +253,7 @@ Finally, you approve the worker on the server side:
     debusine-internal │ external │ 2024-10-21T16:38:35.055060+00:00 │ -                                │ f91c098316e728ff90d47ac504179460a0d50501b955b5f9f8a3b72ddfd67dad │ False
                       ╵          ╵                                  ╵                                  ╵                                                                  ╵
    root@debusine:~# sudo -u debusine-server \
-        debusine-admin manage_worker enable debusine-internal
+        debusine-admin worker enable debusine-internal
 
 The recommended worker backend for Debusine is Incus. To use this,
 install Incus on your Debusine worker. For more details, see
@@ -294,7 +295,7 @@ Approve the signing worker on the server side:
 
 .. code-block:: console
 
-   root@debusine:~# sudo -u debusine-server debusine-admin list_workers
+   root@debusine:~# sudo -u debusine-server debusine-admin worker list
                         ╷          ╷                                  ╷                                  ╷                                                                  ╷
     Name                │ Type     │ Registered                       │ Connected                        │ Token hash (do not copy)                                         │ Enabled
    ═════════════════════╪══════════╪══════════════════════════════════╪══════════════════════════════════╪══════════════════════════════════════════════════════════════════╪═════════
@@ -303,7 +304,7 @@ Approve the signing worker on the server side:
     debusine-internal-2 │ signing  │ 2024-10-21T16:39:57.351233+00:00 │ -                                │ 568cd68b5834da9bf223c7760226ff739caf2a461dbff2b524c35da26db2f280 │ False
                         ╵          ╵                                  ╵                                  ╵                                                                  ╵
    root@debusine:~# sudo -u debusine-server \
-        debusine-admin manage_worker --worker-type signing enable debusine-internal-2
+        debusine-admin worker enable --worker-type signing debusine-internal-2
 
 Next steps
 ----------

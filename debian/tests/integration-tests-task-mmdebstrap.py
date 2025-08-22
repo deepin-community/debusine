@@ -14,15 +14,11 @@ Debusine integration tests.
 Test mmdebstrap related code.
 """
 
-import logging
 import unittest
 
-from utils.common import Configuration, launch_tests
+from utils.common import Configuration
 from utils.integration_test_helpers_mixin import IntegrationTestHelpersMixin
 from utils.server import DebusineServer
-from utils.worker import Worker
-
-logger = logging.getLogger(__name__)
 
 
 class IntegrationTaskMmDebstrapTests(
@@ -41,6 +37,7 @@ class IntegrationTaskMmDebstrapTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         # If debusine-server or nginx was launched just before the
         # integration-tests-task-mmdebstrap.py is launched the debusine-server
         # might not be yet available. Let's wait for the debusine-server to be
@@ -52,13 +49,7 @@ class IntegrationTaskMmDebstrapTests(
             f"are run",
         )
 
-        self.worker = Worker()
-
     def test_mmdebstrap(self) -> None:
         """Create a workflow to run mmdebstrap."""
         # This asserts that the workflow succeeds.
         self.create_system_images_mmdebstrap(["bookworm", "trixie"])
-
-
-if __name__ == '__main__':
-    launch_tests("Task mmdebstrap integration tests for debusine")

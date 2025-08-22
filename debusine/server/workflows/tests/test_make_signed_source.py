@@ -17,10 +17,10 @@ from debusine.artifacts.models import (
     ArtifactCategory,
     DebusineSigningInput,
     DebusineSigningOutput,
+    TaskTypes,
 )
 from debusine.assets import KeyPurpose
 from debusine.client.models import LookupChildType
-from debusine.db.context import context
 from debusine.db.models import Artifact, TaskDatabase, WorkRequest
 from debusine.server.collections.lookup import lookup_multiple, lookup_single
 from debusine.server.scheduler import schedule
@@ -32,12 +32,11 @@ from debusine.server.workflows.models import (
     SbuildWorkflowData,
     WorkRequestWorkflowData,
 )
-from debusine.server.workflows.tests.helpers import TestWorkflow
+from debusine.server.workflows.tests.helpers import SampleWorkflow
 from debusine.tasks.models import (
     BaseDynamicTaskData,
     LookupMultiple,
     SbuildInput,
-    TaskTypes,
 )
 from debusine.test.django import TestCase
 from debusine.test.test_utils import preserve_task_registry
@@ -112,7 +111,7 @@ class MakeSignedSourceWorkflowTests(TestCase):
         source_artifact = self.playground.create_source_artifact()
 
         class ExamplePipeline(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Pipeline workflow."""
 
@@ -291,30 +290,26 @@ class MakeSignedSourceWorkflowTests(TestCase):
                     "step": f"extract-for-signing-{arch}-{template_name}",
                 },
             )
-            self.assertEqual(
-                extract_for_signing.event_reactions_json,
-                {
-                    "on_creation": [],
-                    "on_failure": [],
-                    "on_success": [
-                        {
-                            "action": "update-collection-with-artifacts",
-                            "artifact_filters": {
-                                "category": "debusine:signing-input"
-                            },
-                            "collection": "internal@collections",
-                            "name_template": (
-                                "extracted-for-signing-{architecture}-"
-                                "{binary_package_name}"
-                            ),
-                            "variables": {
-                                "$binary_package_name": "binary_package_name",
-                                "architecture": arch,
-                            },
-                        }
-                    ],
-                    "on_unblock": [],
-                },
+            self.assert_work_request_event_reactions(
+                extract_for_signing,
+                on_success=[
+                    {
+                        "action": "update-collection-with-artifacts",
+                        "artifact_filters": {
+                            "category": "debusine:signing-input"
+                        },
+                        "collection": "internal@collections",
+                        "created_at": None,
+                        "name_template": (
+                            "extracted-for-signing-{architecture}-"
+                            "{binary_package_name}"
+                        ),
+                        "variables": {
+                            "$binary_package_name": "binary_package_name",
+                            "architecture": arch,
+                        },
+                    }
+                ],
             )
 
             unsigned = LookupMultiple.parse_obj(
@@ -347,31 +342,27 @@ class MakeSignedSourceWorkflowTests(TestCase):
                 },
             )
 
-            self.assertEqual(
-                sign.event_reactions_json,
-                {
-                    "on_creation": [],
-                    "on_failure": [],
-                    "on_success": [
-                        {
-                            "action": "update-collection-with-artifacts",
-                            "artifact_filters": {
-                                "category": "debusine:signing-output"
-                            },
-                            "collection": "internal@collections",
-                            "name_template": (
-                                "signed-{architecture}-{template_name}-"
-                                "{binary_package_name}"
-                            ),
-                            "variables": {
-                                "$binary_package_name": "binary_package_name",
-                                "architecture": arch,
-                                "template_name": template_name,
-                            },
-                        }
-                    ],
-                    "on_unblock": [],
-                },
+            self.assert_work_request_event_reactions(
+                sign,
+                on_success=[
+                    {
+                        "action": "update-collection-with-artifacts",
+                        "artifact_filters": {
+                            "category": "debusine:signing-output"
+                        },
+                        "collection": "internal@collections",
+                        "created_at": None,
+                        "name_template": (
+                            "signed-{architecture}-{template_name}-"
+                            "{binary_package_name}"
+                        ),
+                        "variables": {
+                            "$binary_package_name": "binary_package_name",
+                            "architecture": arch,
+                            "template_name": template_name,
+                        },
+                    }
+                ],
             )
 
             signed = LookupMultiple.parse_obj(
@@ -410,24 +401,20 @@ class MakeSignedSourceWorkflowTests(TestCase):
                     "step": f"assemble-signed-source-{arch}-{template_name}",
                 },
             )
-            self.assertEqual(
-                assemble_signed_source.event_reactions_json,
-                {
-                    "on_creation": [],
-                    "on_failure": [],
-                    "on_success": [
-                        {
-                            "action": "update-collection-with-artifacts",
-                            "artifact_filters": {"category": "debian:upload"},
-                            "collection": "internal@collections",
-                            "name_template": (
-                                f"signed-source-{arch}-{template_name}"
-                            ),
-                            "variables": None,
-                        }
-                    ],
-                    "on_unblock": [],
-                },
+            self.assert_work_request_event_reactions(
+                assemble_signed_source,
+                on_success=[
+                    {
+                        "action": "update-collection-with-artifacts",
+                        "artifact_filters": {"category": "debian:upload"},
+                        "collection": "internal@collections",
+                        "created_at": None,
+                        "name_template": (
+                            f"signed-source-{arch}-{template_name}"
+                        ),
+                        "variables": None,
+                    }
+                ],
             )
 
             sbuild_workflow = sbuild_workflows.get(
@@ -568,23 +555,22 @@ class MakeSignedSourceWorkflowTests(TestCase):
 
         task_data["architectures"] specifies only one architecture.
         """
-        with context.disable_permission_checks():
-            architectures = ["amd64"]
+        architectures = ["amd64"]
 
-            binary_artifact = (
-                self.playground.create_minimal_binary_package_artifact(
-                    "hello", "1.0.0", "hello", "1.0.0", "amd64"
-                )
-            )
-            upload_artifact = self.playground.create_upload_artifacts(
-                src_name="coreutils", version="9.1"
-            ).upload
-            signing_artifact = self.create_signing_template_artifact("amd64")
-
+        binary_artifact = (
             self.playground.create_minimal_binary_package_artifact(
-                "hello2", "1.0.0", "hello2", "1.0.0", "i386"
+                "hello", "1.0.0", "hello", "1.0.0", "amd64"
             )
-            self.create_signing_template_artifact("i386")
+        )
+        upload_artifact = self.playground.create_upload_artifacts(
+            src_name="coreutils", version="9.1"
+        ).upload
+        signing_artifact = self.create_signing_template_artifact("amd64")
+
+        self.playground.create_minimal_binary_package_artifact(
+            "hello2", "1.0.0", "hello2", "1.0.0", "i386"
+        )
+        self.create_signing_template_artifact("i386")
 
         root = self.orchestrate(
             task_data=MakeSignedSourceWorkflowData(

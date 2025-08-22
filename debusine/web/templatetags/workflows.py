@@ -12,9 +12,9 @@ from django import template
 from django.utils.html import format_html
 from django.utils.safestring import SafeString
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import WorkRequest
 from debusine.db.models.work_requests import workflow_flattened
-from debusine.tasks.models import TaskTypes
 
 register = template.Library()
 

@@ -9,7 +9,7 @@
 
 """Tests for the workflow views."""
 
-from typing import ClassVar, cast
+from typing import ClassVar
 from unittest.mock import patch
 
 import lxml
@@ -50,52 +50,18 @@ class WorkflowListViewTests(ViewTestMixin, TestCase):
         )
 
     def assertWorkflowRow(
-        self, tr: lxml.objectify.ObjectifiedElement, workflow: WorkRequest
+        self, row: lxml.objectify.ObjectifiedElement, workflow: WorkRequest
     ) -> None:
         """Ensure the row shows the given work request."""
-        self.assertTextContentEqual(tr.td[0], str(workflow.id))
-        self.assertEqual(tr.td[0].a.get("href"), workflow.get_absolute_url())
-
+        line1 = row.div[0]
         assert workflow.workflow_display_name_parameters
         self.assertTextContentEqual(
-            tr.td[1], workflow.workflow_display_name_parameters
+            line1.div[0], workflow.workflow_display_name_parameters
         )
 
-        assert workflow.status != WorkRequest.Statuses.RUNNING
-        self.assertTextContentEqual(
-            tr.td[2], cast(WorkRequest.Statuses, workflow.status).label[0]
-        )
-
-        result = WorkRequest.Results(workflow.result)
-        assert result == ""
-        self.assertTextContentEqual(tr.td[3], "")
-
-        if workflow.started_at:
-            self.assertTextContentEqual(
-                tr.td[4], workflow.started_at.strftime("%Y-%m-%d %H:%M")
-            )
-        else:
-            self.assertTextContentEqual(tr.td[4], "")
-
-        if workflow.completed_at:
-            self.assertTextContentEqual(
-                tr.td[5], workflow.completed_at.strftime("%Y-%m-%d %H:%M")
-            )
-        else:
-            self.assertTextContentEqual(tr.td[5], "")
-
-        self.assertTextContentEqual(
-            tr.td[6],
-            f"{workflow.workflow_work_requests_success}-"
-            f"{workflow.workflow_work_requests_failure} "
-            f"{workflow.workflow_work_requests_pending}-"
-            f"{workflow.workflow_work_requests_blocked}",
-        )
-
-        assert not workflow.workflow_last_activity_at
-        self.assertTextContentEqual(tr.td[7], "")
-
-        self.assertTextContentEqual(tr.td[8], workflow.created_by.username)
+        line2 = row.div[1]
+        self.assertTextContentEqual(line2.div.a, f"#{workflow.id}")
+        self.assertEqual(line2.div.a.get("href"), workflow.get_absolute_url())
 
     def test_can_display_used(self) -> None:
         """Permissions are used via can_display()."""
@@ -168,12 +134,13 @@ class WorkflowListViewTests(ViewTestMixin, TestCase):
             html=True,
         )
 
-        table = self.assertHasElement(
-            tree, "//table[@id='workflow-list-table']"
+        table = self.assertHasElement(tree, "//div[@id='workflow-list-table']")
+        rows = self.assertHasElement(
+            table, "div[@id='workflow-list-table-rows']"
         )
 
         # One work request is in a different workspace
-        self.assertEqual(len(table.tbody.tr), 2)
+        self.assertEqual(len(rows.div), 2)
 
-        self.assertWorkflowRow(table.tbody.tr[0], self.workflow_2)
-        self.assertWorkflowRow(table.tbody.tr[1], self.workflow_1)
+        self.assertWorkflowRow(rows.div[0], self.workflow_2)
+        self.assertWorkflowRow(rows.div[1], self.workflow_1)

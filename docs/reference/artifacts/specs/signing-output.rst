@@ -1,9 +1,9 @@
-.. _artifact-signing-output:
+.. artifact:: debusine:signing-output
 
 Category ``debusine:signing-output``
 ====================================
 
-This artifact contains the output of a :ref:`Sign task <task-sign>`.
+This artifact contains the output of a :task:`Sign` task.
 
 * Data:
 
@@ -20,7 +20,7 @@ This artifact contains the output of a :ref:`Sign task <task-sign>`.
 
   * ``binary_package_name``: the name of the binary package that this
     artifact was extracted from, if any (copied from the corresponding
-    :ref:`debusine:signing-input <artifact-signing-input>` artifact)
+    :artifact:`debusine:signing-input` artifact)
 
 * Files:
 
@@ -28,5 +28,5 @@ This artifact contains the output of a :ref:`Sign task <task-sign>`.
 
 * Relationships:
 
-  * ``relates-to``: the corresponding :ref:`debusine:signing-input
-    <artifact-signing-input>` artifact
+  * ``relates-to``: the corresponding :artifact:`debusine:signing-input`
+    artifact

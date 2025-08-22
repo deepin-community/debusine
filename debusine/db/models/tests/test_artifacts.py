@@ -16,7 +16,6 @@ import django.db.utils
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.urls import reverse
 from django.utils import timezone
 
 from debusine.artifacts.local_artifact import WorkRequestDebugLogs
@@ -167,10 +166,7 @@ class ArtifactManagerTests(TestCase):
                 [artifact],
             )
 
-        with context.disable_permission_checks():
-            workspace1 = self.playground.create_workspace(
-                name="other", public=True
-            )
+        workspace1 = self.playground.create_workspace(name="other", public=True)
         with context.local():
             workspace1.set_current()
             self.assertQuerySetEqual(
@@ -216,8 +212,7 @@ class ArtifactTests(TestCase):
 
         self.assertEqual(artifact.data, {})
 
-        with context.disable_permission_checks():
-            artifact.workspace = self.playground.create_workspace(name="test")
+        artifact.workspace = self.playground.create_workspace(name="test")
 
         artifact.clean_fields()
 
@@ -263,8 +258,7 @@ class ArtifactTests(TestCase):
         artifact = Artifact.objects.create(workspace=self.scenario.workspace)
         self.assertIsNone(artifact.expiration_delay)
 
-        with context.disable_permission_checks():
-            expiring_ws = self.playground.create_workspace(name="test")
+        expiring_ws = self.playground.create_workspace(name="test")
         expiring_ws.default_expiration_delay = timedelta(days=7)
         test_creation_time = timezone.now()
         artifact = Artifact.objects.create(workspace=expiring_ws)
@@ -291,13 +285,42 @@ class ArtifactTests(TestCase):
         artifact = Artifact.objects.create(workspace=self.scenario.workspace)
         self.assertEqual(
             artifact.get_absolute_url(),
-            reverse(
-                "workspaces:artifacts:detail",
-                kwargs={
-                    "wname": artifact.workspace.name,
-                    "artifact_id": artifact.pk,
-                },
-            ),
+            f"/{self.scenario.scope.name}/{self.scenario.workspace.name}"
+            f"/artifact/{artifact.pk}/",
+        )
+
+    @context.disable_permission_checks()
+    def test_get_absolute_url_different_scope(self) -> None:
+        """Artifact.get_absolute_url works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        artifact = Artifact.objects.create(workspace=other_workspace)
+        self.assertEqual(
+            artifact.get_absolute_url(),
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/artifact/{artifact.pk}/",
+        )
+
+    @context.disable_permission_checks()
+    def test_get_absolute_url_download(self) -> None:
+        """Test for Artifact.get_absolute_url_download."""
+        artifact = Artifact.objects.create(workspace=self.scenario.workspace)
+        self.assertEqual(
+            artifact.get_absolute_url_download(),
+            f"/{self.scenario.scope.name}/{self.scenario.workspace.name}"
+            f"/artifact/{artifact.pk}/download/",
+        )
+
+    @context.disable_permission_checks()
+    def test_get_absolute_url_download_different_scope(self) -> None:
+        """Artifact.get_absolute_url_download works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        artifact = Artifact.objects.create(workspace=other_workspace)
+        self.assertEqual(
+            artifact.get_absolute_url_download(),
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/artifact/{artifact.pk}/download/",
         )
 
     def test_data_validation_error(self) -> None:
@@ -405,6 +428,7 @@ class FileInArtifactTests(TestCase):
     def create_file_in_artifact(
         self,
         fileobj: File | None = None,
+        workspace: Workspace | None = None,
         artifact: Artifact | None = None,
         path: str | None = None,
     ) -> FileInArtifact:
@@ -413,7 +437,7 @@ class FileInArtifactTests(TestCase):
             fileobj = self.playground.create_file()
 
         if artifact is None:
-            artifact, _ = self.playground.create_artifact()
+            artifact, _ = self.playground.create_artifact(workspace=workspace)
 
         if path is None:
             path = "/usr/bin/test"
@@ -422,7 +446,6 @@ class FileInArtifactTests(TestCase):
             artifact=artifact, file=fileobj, path=path
         )
 
-    @context.disable_permission_checks()
     def test_artifact_path_unique_constraint(self) -> None:
         """Test two FileInArtifact cannot have the same artifact and path."""
         artifact, _ = self.playground.create_artifact()
@@ -430,15 +453,18 @@ class FileInArtifactTests(TestCase):
         file1 = self.playground.create_file(b"contents1")
         file2 = self.playground.create_file(b"contents2")
 
-        self.create_file_in_artifact(file1, artifact, "/usr/bin/test")
+        self.create_file_in_artifact(
+            file1, artifact=artifact, path="/usr/bin/test"
+        )
 
         with self.assertRaisesRegex(
             django.db.utils.IntegrityError,
             "db_fileinartifact_unique_artifact_path",
         ):
-            self.create_file_in_artifact(file2, artifact, "/usr/bin/test")
+            self.create_file_in_artifact(
+                file2, artifact=artifact, path="/usr/bin/test"
+            )
 
-    @context.disable_permission_checks()
     def test_str(self) -> None:
         """Test FileInArtifact.__str__."""
         file_in_artifact = self.create_file_in_artifact()
@@ -451,33 +477,79 @@ class FileInArtifactTests(TestCase):
             f"File: {file_in_artifact.file.id}",
         )
 
-    @context.disable_permission_checks()
     def test_get_absolute_url(self) -> None:
         """Test FileInArtifact.get_absolute_url."""
         file_in_artifact = self.create_file_in_artifact()
         self.assertEqual(
             file_in_artifact.get_absolute_url(),
-            f"/debusine/System/artifact/{file_in_artifact.artifact.id}/file/"
-            f"/usr/bin/test",
+            f"/debusine/System/artifact"
+            f"/{file_in_artifact.artifact.id}/file//usr/bin/test",
         )
 
-    @context.disable_permission_checks()
+    def test_get_absolute_url_different_scope(self) -> None:
+        """FileInArtifact.get_absolute_url works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        file_in_artifact = self.create_file_in_artifact(
+            workspace=other_workspace
+        )
+        self.assertEqual(
+            file_in_artifact.get_absolute_url(),
+            f"/{other_scope.name}/{other_workspace.name}/artifact"
+            f"/{file_in_artifact.artifact.id}/file//usr/bin/test",
+        )
+
     def test_get_absolute_url_raw(self) -> None:
         """Test FileInArtifact.get_absolute_url_raw."""
         file_in_artifact = self.create_file_in_artifact()
         self.assertEqual(
             file_in_artifact.get_absolute_url_raw(),
-            f"/debusine/System/artifact/{file_in_artifact.artifact.id}/raw/"
-            f"/usr/bin/test",
+            f"/debusine/System/artifact"
+            f"/{file_in_artifact.artifact.id}/raw//usr/bin/test",
+        )
+
+    def test_get_absolute_url_raw_different_scope(self) -> None:
+        """FileInArtifact.get_absolute_url_raw works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        file_in_artifact = self.create_file_in_artifact(
+            workspace=other_workspace
+        )
+        self.assertEqual(
+            file_in_artifact.get_absolute_url_raw(),
+            f"/{other_scope.name}/{other_workspace.name}/artifact"
+            f"/{file_in_artifact.artifact.id}/raw//usr/bin/test",
+        )
+
+    def test_get_absolute_url_download(self) -> None:
+        """Test FileInArtifact.get_absolute_url_download."""
+        file_in_artifact = self.create_file_in_artifact()
+        self.assertEqual(
+            file_in_artifact.get_absolute_url_download(),
+            f"/debusine/System/artifact"
+            f"/{file_in_artifact.artifact.id}/download//usr/bin/test",
+        )
+
+    def test_get_absolute_url_download_different_scope(self) -> None:
+        """FileInArtifact.get_absolute_url_download works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        file_in_artifact = self.create_file_in_artifact(
+            workspace=other_workspace
+        )
+        self.assertEqual(
+            file_in_artifact.get_absolute_url_download(),
+            f"/{other_scope.name}/{other_workspace.name}/artifact"
+            f"/{file_in_artifact.artifact.id}/download//usr/bin/test",
         )
 
 
 class FileUploadTests(TestCase):
     """Tests for FileUpload class."""
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Set up basic objects for the tests."""
+        super().setUp()
         self.file_upload = self.playground.create_file_upload()
         self.artifact = self.file_upload.file_in_artifact.artifact
         self.workspace = self.artifact.workspace
@@ -623,13 +695,12 @@ class ArtifactRelationTests(TestCase):
 
     scenario = DefaultContext()
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Initialize test object."""
+        super().setUp()
         self.artifact_1, _ = self.playground.create_artifact()
-        self.artifact_2 = Artifact.objects.create(
-            workspace=self.artifact_1.workspace,
-            category=self.artifact_1.category,
+        self.artifact_2, _ = self.playground.create_artifact(
+            workspace=self.playground.create_workspace(name="other-workspace")
         )
 
     def test_type_not_valid_raise_validation_error(self) -> None:
@@ -666,7 +737,10 @@ class ArtifactRelationTests(TestCase):
             )
         for allowed_artifact in (self.artifact_1, self.artifact_2):
             with override_permission(
-                Workspace, "can_display", ListFilter, include=[allowed_artifact]
+                Workspace,
+                "can_display",
+                ListFilter,
+                include=[allowed_artifact.workspace],
             ):
                 self.assertPermission(
                     "can_display",

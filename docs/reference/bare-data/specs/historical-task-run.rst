@@ -1,15 +1,15 @@
-.. _bare-data-historical-task-run:
+.. bare-data:: debusine:historical-task-run
 
 Category ``debusine:historical-task-run``
 =========================================
 
-This bare data item is added to a :ref:`debusine:task-history
-<collection-task-history>` collection to store statistics about a task run.
+This bare data item is added to a :collection:`debusine:task-history`
+collection to store statistics about a task run.
 
 * Data:
 
   * the mandatory classification fields defined by the
-    :ref:`debusine-task-history <collection-task-history>` collection
+    :collection:`debusine:task-history` collection
   * ``timestamp`` (required): the date and time (as a Unix timestamp — cf.
     ``date +%s``) when the task started
   * ``runtime_statistics`` (required): :ref:`runtime-statistics`, copied

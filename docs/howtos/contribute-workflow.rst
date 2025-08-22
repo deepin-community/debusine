@@ -133,7 +133,7 @@ The ``get_label`` method returns a string used as a label for a workflow
 instance in the web UI.
 
 You may find it helpful to consult some existing implementations for
-inspiration.  The :ref:`lintian <workflow-lintian>` workflow
+inspiration.  The :workflow:`lintian` workflow
 (``debusine/server/workflows/lintian.py``) is a relatively simple example
 that demonstrates some of the points here.
 

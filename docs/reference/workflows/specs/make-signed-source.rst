@@ -1,4 +1,4 @@
-.. _workflow-make-signed-source:
+.. workflow:: make_signed_source
 
 Workflow ``make_signed_source``
 ===============================
@@ -11,11 +11,11 @@ and some binary packages.
 * ``task_data``:
 
   * ``binary_artifacts`` (:ref:`lookup-multiple`, required): the
-    ``debian:binary-package`` or ``debian:upload`` artifacts representing
-    the binary packages to sign
+    :artifact:`debian:binary-package` or :artifact:`debian:upload` artifacts
+    representing the binary packages to sign
   * ``signing_template_artifacts`` (:ref:`lookup-multiple`, required): the
-    ``debian:binary-package`` artifacts representing
-    the binary packages to sign
+    :artifact:`debian:binary-package` artifacts representing the binary
+    packages to sign
 
   * ``vendor`` (string, required): the distribution vendor on which to sign
   * ``codename`` (string, required): the distribution codename on which to
@@ -23,10 +23,10 @@ and some binary packages.
   * ``architectures`` (list of strings): the list of architectures that this
     workflow is running on, plus ``all``
   * ``purpose`` (string, required): the purpose of the key to sign with; see
-    :ref:`task-sign`
+    :task:`Sign`
   * ``key`` (string, required): the fingerprint to sign with; must match
     ``purpose``
-  * ``sbuild_backend`` (string, optional): see :ref:`package-build-task`
+  * ``sbuild_backend`` (string, optional): see :task:`PackageBuild`
 
 The workflow computes dynamic metadata as:
 
@@ -34,7 +34,7 @@ The workflow computes dynamic metadata as:
   :method: debusine.server.workflows.make_signed_source::MakeSignedSourceWorkflow.build_dynamic_data
 
 Any of the lookups in ``binary_artifacts`` or ``signing_template_artifacts``
-may result in :ref:`promises <bare-data-promise>`, and in that case the
+may result in :bare-data:`promises <debusine:promise>`, and in that case the
 workflow adds corresponding dependencies.  Promises must include an
 ``architecture`` field in their data, and signing template promises must
 also include a ``binary_package_name`` field.
@@ -50,7 +50,7 @@ own task data.  Each one has a dependency on the previous one in sequence,
 using event reactions to store output in the workflow's internal collection
 for use by later tasks:
 
-* an :ref:`task-extract-for-signing`, with task data:
+* an :task:`ExtractForSigning` task, with task data:
 
   * ``input.template_artifact``: the subset of the lookup in this workflow's
     ``signing_template_artifacts`` for the concrete architecture in question
@@ -59,14 +59,14 @@ for use by later tasks:
     in question that exist
   * ``environment``: ``{vendor}/match:codename={codename}``
 
-* a :ref:`task-sign`, with task data:
+* a :task:`Sign` task, with task data:
 
   * ``purpose``: ``{purpose}``
   * ``unsigned``: the output of the previous task, from the workflow's
     internal collection
   * ``key``: ``{key}``
 
-* an :ref:`task-assemble-signed-source`, with task data:
+* an :task:`AssembleSignedSource` task, with task data:
 
   * ``environment``: ``{vendor}/match:codename={codename}``
   * ``template``: the subset of the lookup in this workflow's
@@ -74,7 +74,7 @@ for use by later tasks:
   * ``signed``: the output of the previous task, from the workflow's
     internal collection
 
-* an :ref:`sbuild sub-workflow <workflow-sbuild>`, with task data:
+* an :workflow:`sbuild` sub-workflow, with task data:
 
   * ``prefix``: ``signed-source-{architecture}-{signing_template_name}|``
   * ``input.source_artifact``: the output of the previous task, from the
@@ -87,10 +87,10 @@ for use by later tasks:
   * ``architectures``: if ``{architectures}`` is set, then
     ``{architectures}`` plus ``all``
 
-The workflow adds event reactions that cause the ``debian:upload`` artifacts
-in the output for each architecture and signing template name to be provided
-as ``signed-source-{architecture}-{signing_template_name}`` in the
-workflow's internal collection.
+The workflow adds event reactions that cause the :artifact:`debian:upload`
+artifacts in the output for each architecture and signing template name to
+be provided as ``signed-source-{architecture}-{signing_template_name}`` in
+the workflow's internal collection.
 
 .. todo::
 

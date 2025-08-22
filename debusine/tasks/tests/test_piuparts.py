@@ -9,14 +9,14 @@
 
 """Unit tests for the piuparts task support on the worker."""
 import datetime
-import lzma
 import os
 import shlex
 import tarfile
 import textwrap
+from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO
+from subprocess import CalledProcessError
 from unittest import mock
 from unittest.mock import MagicMock, call
 
@@ -39,14 +39,22 @@ from debusine.client.models import (
     StrMaxLength255,
 )
 from debusine.tasks import Piuparts, TaskConfigError
-from debusine.tasks.models import LookupMultiple, PiupartsDynamicData
+from debusine.tasks.executors import InstanceInterface
+from debusine.tasks.models import (
+    BackendType,
+    LookupMultiple,
+    PiupartsDynamicData,
+)
 from debusine.tasks.server import ArtifactInfo
 from debusine.tasks.tests.helper_mixin import (
     ExternalTaskHelperMixin,
     FakeTaskDatabase,
 )
 from debusine.test import TestCase
-from debusine.test.test_utils import create_system_tarball_data
+from debusine.test.test_utils import (
+    create_artifact_response,
+    create_system_tarball_data,
+)
 
 
 class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
@@ -68,7 +76,8 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
         },
     )
 
-    def setUp(self) -> None:  # noqa: D102
+    def setUp(self) -> None:
+        super().setUp()
         self.task = Piuparts(self.SAMPLE_TASK_DATA)
         self.task.dynamic_data = PiupartsDynamicData(
             environment_id=1, input_binary_artifacts_ids=[421], base_tgz_id=44
@@ -78,8 +87,9 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
         """Delete directory to avoid ResourceWarning with python -m unittest."""
         if self.task._debug_log_files_directory is not None:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
-    def test_configure_fails_with_missing_required_data(  # noqa: D102
+    def test_configure_fails_with_missing_required_data(
         self,
     ) -> None:
         with self.assertRaises(TaskConfigError):
@@ -108,7 +118,7 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=piuparts",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -160,7 +170,7 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=piuparts",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -216,7 +226,7 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=piuparts",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -263,7 +273,7 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=piuparts",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -291,9 +301,10 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
 
         with self.assertRaisesRegex(
             TaskConfigError,
-            "^input.binary_artifact: unexpected artifact category: "
+            r"^input.binary_artifacts\[0\]: unexpected artifact category: "
             r"'debian:system-tarball'. Valid categories: "
-            r"\['debian:binary-packages', 'debian:upload'\]$",
+            r"\['debian:binary-package', 'debian:binary-packages', "
+            r"'debian:upload'\]$",
         ):
             self.task.compute_dynamic_data(task_db)
 
@@ -315,15 +326,68 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
                 ["env", "PATH=/usr/sbin:/sbin:/usr/bin:/bin", "piuparts"],
             )
 
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.task.dynamic_data = None
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
+        self.task.dynamic_data = PiupartsDynamicData(
+            environment_id=1,
+            base_tgz_id=2,
+            input_binary_artifacts_ids=[3, 4],
+        )
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2, 3, 4])
+
     def test_cmdline_as_root(self) -> None:
         """_cmdline_as_root() return True."""
         self.assertTrue(self.task._cmdline_as_root())
+
+    def create_basetgz_tarfile(
+        self,
+        destination: Path,
+        directories: Iterable[Path] = (),
+        symlinks: Iterable[tuple[Path, Path]] = (),
+        empty_files: Iterable[Path] = (),
+    ) -> None:
+        """Create a tar file that would make a useful test for base_tgz."""
+        assert destination.suffix == ".xz"
+        with tarfile.open(destination, "w:xz") as tar:
+            tarinfo = tarfile.TarInfo(name="./foo")
+            tarinfo.size = 12
+            tar.addfile(tarinfo, BytesIO(b"A tar member"))
+
+            # Add this even if with_dev=False, so that we can test
+            # whether the preparation step removes it.
+            tarinfo = tarfile.TarInfo(name="./dev/null")
+            tarinfo.type = tarfile.CHRTYPE
+            tarinfo.devmajor = 1
+            tarinfo.devminor = 3
+            tar.addfile(tarinfo)
+
+            # We're skipping parent directories, but that's fine, this will
+            # never be extracted.
+            for path in directories:
+                tarinfo = tarfile.TarInfo(name=f".{path}")
+                tarinfo.type = tarfile.DIRTYPE
+                tar.addfile(tarinfo)
+
+            for src, dst in symlinks:
+                tarinfo = tarfile.TarInfo(name=f".{dst}")
+                tarinfo.type = tarfile.SYMTYPE
+                tarinfo.linkname = str(src)
+                tar.addfile(tarinfo)
+
+            for path in empty_files:
+                tarinfo = tarfile.TarInfo(name=f".{path}")
+                tarinfo.size = 0
+                tar.addfile(tarinfo, BytesIO(b""))
 
     def patch_fetch_artifact_for_basetgz(
         self,
         *,
         with_dev: bool,
         with_resolvconf_symlink: bool = False,
+        with_dpkg_available: bool = True,
         codename: str = "bookworm",
         filename: str = "system.tar.xz",
     ) -> MagicMock:
@@ -336,18 +400,22 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
             destination: Path,
             default_category: CollectionCategory | None = None,  # noqa: U100
         ) -> ArtifactResponse:
-            with tarfile.open(destination / filename, "w:xz") as tar:
-                tarinfo = tarfile.TarInfo(name="./foo")
-                tarinfo.size = 12
-                tar.addfile(tarinfo, BytesIO(b"A tar member"))
-                if with_resolvconf_symlink:
-                    tarinfo = tarfile.TarInfo(name="./etc")
-                    tarinfo.type = tarfile.DIRTYPE
-                    tar.addfile(tarinfo)
-                    tarinfo = tarfile.TarInfo(name="./etc/resolv.conf")
-                    tarinfo.type = tarfile.SYMTYPE
-                    tarinfo.linkname = "../run/systemd/resolve/stub-resolv.conf"
-                    tar.addfile(tarinfo)
+            symlinks: list[tuple[Path, Path]] = []
+            empty_files: list[Path] = []
+            if with_resolvconf_symlink:
+                symlinks.append(
+                    (
+                        Path("../run/systemd/resolve/stub-resolv.conf"),
+                        Path("/etc/resolv.conf"),
+                    )
+                )
+            if with_dpkg_available:
+                empty_files.append(Path("/var/lib/dpkg/available"))
+            self.create_basetgz_tarfile(
+                destination / filename,
+                symlinks=symlinks,
+                empty_files=empty_files,
+            )
 
             fake_url = pydantic.parse_obj_as(
                 pydantic.AnyUrl, "https://not-used"
@@ -357,6 +425,7 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
                 filename=filename,
                 vendor="debian",
                 codename=codename,
+                components=["main"],
                 mirror=fake_url,
                 variant=None,
                 pkglist={},
@@ -376,7 +445,7 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
 
             files = FilesResponseType({"system.tar.xz": file_model})
 
-            return ArtifactResponse(
+            return create_artifact_response(
                 id=artifact_id,
                 workspace="System",
                 category=ArtifactCategory.SYSTEM_TARBALL,
@@ -425,9 +494,14 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
 
         self.patch_prepare_executor_instance()
 
-        with mock.patch.object(
-            self.task, "_prepare_base_tgz", autospec=True
-        ) as prepare_base_tgz_mocked:
+        with (
+            mock.patch.object(
+                self.task, "_prepare_base_tgz", autospec=True
+            ) as prepare_base_tgz_mocked,
+            mock.patch.object(
+                self.task, "_check_piuparts_version", autospec=True
+            ) as check_piuparts_version_mocked,
+        ):
             self.assertTrue(
                 self.task.configure_for_execution(download_directory)
             )
@@ -441,7 +515,7 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
                 stderr=mock.ANY,
             ),
             call(
-                ["apt-get", "--yes", "install", "piuparts", "mmdebstrap"],
+                ["apt-get", "--yes", "install", "piuparts"],
                 run_as_root=True,
                 check=True,
                 stdout=mock.ANY,
@@ -452,6 +526,84 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
         self.task.executor_instance.run.assert_has_calls(run_called_with)
 
         prepare_base_tgz_mocked.assert_called_with(download_directory)
+
+        check_piuparts_version_mocked.assert_called_once()
+
+    def test_check_piuparts_version_stretch(self) -> None:
+        self.task.executor_instance = MagicMock(spec=InstanceInterface)
+        self.task.executor_instance.run.return_value.returncode = 0
+        self.task.executor_instance.run.return_value.stdout = textwrap.dedent(
+            """\
+            Package: piuparts
+            Version: 0.77
+            """
+        )
+        with self.assertRaisesRegex(
+            TaskConfigError,
+            (
+                r"The environment contains a version of piuparts \(0\.77\) "
+                r"that is too old\. Container-based backends require "
+                r"piuparts >= 1\.5\. We recommend a >= trixie environment "
+                r"with an older base_tgz\."
+            ),
+        ):
+            self.task._check_piuparts_version()
+
+    def test_check_piuparts_version_trixie(self) -> None:
+        self.task.executor_instance = MagicMock(spec=InstanceInterface)
+        self.task.executor_instance.run.return_value.returncode = 0
+        self.task.executor_instance.run.return_value.stdout = textwrap.dedent(
+            """\
+            Package: piuparts
+            Version: 1.6.0
+            """
+        )
+        self.task._check_piuparts_version()
+
+    def test_check_piuparts_version_incus_vm(self) -> None:
+        self.task = Piuparts(
+            {
+                **self.SAMPLE_TASK_DATA,
+                "backend": BackendType.INCUS_VM,
+            }
+        )
+        self.task.executor_instance = MagicMock(spec=InstanceInterface)
+
+        self.task._check_piuparts_version()
+        self.task.executor_instance.run.assert_not_called()
+
+    def test_check_piuparts_version_apt_cache_error(self) -> None:
+        self.task.executor_instance = MagicMock(spec=InstanceInterface)
+        self.task.executor_instance.run.side_effect = CalledProcessError(
+            returncode=1,
+            cmd=["apt-cache", "show", "piuparts"],
+            output="STDOUT",
+            stderr="STDERR",
+        )
+        with self.assertRaises(CalledProcessError):
+            self.task._check_piuparts_version()
+
+        assert self.task._debug_log_files_directory
+        log_file_contents = (
+            Path(self.task._debug_log_files_directory.name) / "install.log"
+        ).read_text()
+
+        self.assertEqual(
+            log_file_contents,
+            (
+                "Failed to determine available piuparts version.\n"
+                "command: apt-cache show piuparts\n"
+                "exitcode: 1\n"
+                "stdout: STDOUT\n"
+                "stderr: STDERR\n"
+            ),
+        )
+
+    def test_check_piuparts_version_apt_cache_empty(self) -> None:
+        self.task.executor_instance = MagicMock(spec=InstanceInterface)
+        self.task.executor_instance.run.return_value.returncode = 0
+        self.task.executor_instance.run.return_value.stdout = ""
+        self.task._check_piuparts_version()
 
     def test_prepare_base_tgz_raise_assertion_error(self) -> None:
         """_prepare_base_tgz raise AssertionError: executor_instance is None."""
@@ -491,6 +643,12 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
         )
         self.assertEqual(self.task._base_tar, destination_dir / filename)
 
+        with tarfile.open(self.task._base_tar) as tar:
+            self.assertEqual(
+                tar.getnames(),
+                ["./foo", "./dev/null", "./var/lib/dpkg/available"],
+            )
+
     def test_prepare_base_tgz_download_base_tgz_remove_dev_files(self) -> None:
         r"""_prepare_base_tgz download the artifact and remove /dev/\*."""
         # Use mock's side effect to set self.task.executor_instance
@@ -516,33 +674,10 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
         # to system.tar.gz
         self.assertEqual(self.task._base_tar, system_tar)
 
-        assert isinstance(self.task.executor_instance, MagicMock)
-        self.assertEqual(
-            self.task.executor_instance.run.call_args[0][0],
-            [
-                "mmtarfilter",
-                "--path-exclude=/dev/*",
-            ],
-        )
-
-        reading_from_file = self.task.executor_instance.run.call_args[1][
-            "stdin"
-        ]
-        writing_to_file = self.task.executor_instance.run.call_args[1]["stdout"]
-
-        self.assertEqual(reading_from_file.mode, "rb")
-        self.assertEqual(
-            reading_from_file.name, str(destination_dir / "system.tar.xz")
-        )
-
-        self.assertEqual(writing_to_file.mode, "wb")
-        self.assertEqual(
-            writing_to_file.name, str(destination_dir / "system.tar")
-        )
-
-        self.assertEqual(
-            list(destination_dir.iterdir()), [destination_dir / "system.tar.gz"]
-        )
+        with tarfile.open(system_tar, "r:gz") as tar:
+            self.assertEqual(
+                tar.getnames(), ["./foo", "./var/lib/dpkg/available"]
+            )
 
     def test_prepare_base_tgz_download_base_tgz_resolveconf(self) -> None:
         r"""_prepare_base_tgz download the artifact and install resolv.conf."""
@@ -557,27 +692,10 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
             with_dev=False, with_resolvconf_symlink=True
         )
 
-        def fake_mmtarfilter(
-            args: list[str], stdin: BinaryIO, stdout: BinaryIO  # noqa: U100
-        ) -> None:
-            """Fake for run() that decompresses the tar."""
-            stdout.write(lzma.decompress(stdin.read()))
-
-        assert isinstance(self.task.executor_instance, MagicMock)
-        self.task.executor_instance.run.side_effect = fake_mmtarfilter
-
         self.task._prepare_base_tgz(download_directory)
 
         fetch_artifact_mocked.assert_called_with(
             self.task.data.base_tgz, destination_dir
-        )
-
-        self.assertEqual(
-            self.task.executor_instance.run.call_args[0][0],
-            [
-                "mmtarfilter",
-                "--path-exclude=/etc/resolv.conf",
-            ],
         )
 
         # Downloaded system.tar.xz, then processed it and wrote the result
@@ -586,7 +704,73 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
         self.assertEqual(self.task._base_tar, system_tar)
 
         with tarfile.open(system_tar, "r:gz") as tar:
+            self.assertEqual(
+                tar.getnames(),
+                [
+                    "./foo",
+                    "./dev/null",
+                    "./var/lib/dpkg/available",
+                    "./etc",
+                    "./etc/resolv.conf",
+                ],
+            )
             self.assertTrue(tar.getmember("./etc/resolv.conf").isreg())
+
+    def test_prepare_base_tgz_download_base_tgz_dpkg_available(self) -> None:
+        r"""_prepare_base_tgz download the artifact and touch dpkg available."""
+        # Use mock's side effect to set self.task.executor_instance
+        self.patch_prepare_executor_instance()
+        self.task._prepare_executor_instance()
+
+        download_directory = self.create_temporary_directory()
+        destination_dir = download_directory / "base_tar"
+
+        fetch_artifact_mocked = self.patch_fetch_artifact_for_basetgz(
+            with_dev=False, with_dpkg_available=False
+        )
+
+        self.task._prepare_base_tgz(download_directory)
+
+        fetch_artifact_mocked.assert_called_with(
+            self.task.data.base_tgz, destination_dir
+        )
+
+        # Downloaded system.tar.xz, then processed it and wrote the result
+        # to system.tar.gz
+        system_tar = destination_dir / "system.tar.gz"
+        self.assertEqual(self.task._base_tar, system_tar)
+
+        with tarfile.open(system_tar, "r:gz") as tar:
+            self.assertEqual(
+                tar.getnames(),
+                [
+                    "./foo",
+                    "./dev/null",
+                    "./var",
+                    "./var/lib",
+                    "./var/lib/dpkg",
+                    "./var/lib/dpkg/available",
+                ],
+            )
+            self.assertTrue(tar.getmember("./var/lib/dpkg/available").isreg())
+
+    def test_filter_tar_existing_directory(self) -> None:
+        directory = self.create_temporary_directory()
+        filename = directory / "input.tar.xz"
+        self.create_basetgz_tarfile(filename, directories=[Path("/var")])
+        output = self.task._filter_tar(
+            filename, create_empty_files=[Path("/var/test")]
+        )
+        with tarfile.open(output, "r:gz") as tar:
+            self.assertEqual(
+                tar.getnames(),
+                [
+                    "./foo",
+                    "./dev/null",
+                    "./var",
+                    "./var/test",
+                ],
+            )
 
     def prepare_scripts(self, codename: str) -> str:
         """Build and read the post_chroot_unpack_debusine script."""
@@ -730,7 +914,14 @@ class PiupartsTests(ExternalTaskHelperMixin[Piuparts], TestCase):
             ""
         )
 
-        self.assertTrue(self.task.configure_for_execution(download_directory))
+        with mock.patch.object(
+            self.task, "_check_piuparts_version", autospec=True
+        ) as check_piuparts_version_mocked:
+            self.assertTrue(
+                self.task.configure_for_execution(download_directory)
+            )
+
+        check_piuparts_version_mocked.assert_called_once()
 
         self.assertEqual(self.task._deb_files, [file1, file2, file3])
         with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):

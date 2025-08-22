@@ -26,6 +26,7 @@ class FileManagerTests(TestCase):
 
     def setUp(self) -> None:
         """Set up File to be used in the tests."""
+        super().setUp()
         self.file_contents = b"test"
         self.file_hash = _calculate_hash_from_data(self.file_contents)
 
@@ -71,6 +72,7 @@ class FileTests(TestCase):
 
     def setUp(self) -> None:
         """Set up File to be used in the tests."""
+        super().setUp()
         self.file_contents = b"test"
         self.file_hash = _calculate_hash_from_data(self.file_contents)
 
@@ -151,6 +153,7 @@ class FileStoreTests(TestCase):
 
     def setUp(self) -> None:
         """Set up FileStore to be used in the tests."""
+        super().setUp()
         self.backend = FileStore.BackendChoices.LOCAL
         self.file_store_name = "nas-01"
 
@@ -299,6 +302,7 @@ class FileInStoreTests(TestCase):
 
     def setUp(self) -> None:
         """Set up FileInStore to be used in the tests."""
+        super().setUp()
         self.file_store_name = "nas-01"
         self.file_store = FileStore.objects.create(
             name="nas-01",

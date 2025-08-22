@@ -14,6 +14,8 @@ import io
 from datetime import datetime, timedelta, timezone
 from unittest import TestCase
 
+from django.test import TestCase as DjangoTestCase
+
 from debusine.db.models import Scope
 from debusine.test import test_utils
 from debusine.test.test_utils import (
@@ -91,6 +93,10 @@ class UtilsTest(TestCase):
             date_time_to_isoformat_rest_framework(value),
             "2023-04-21T13:14:43.999949+01:00",
         )
+
+
+class UtilsDatabaseTest(DjangoTestCase):
+    """Tests for functions in the utils module that need a database."""
 
     def test_print_sql_and_stack(self) -> None:
         """Test print_sql_and_stack."""

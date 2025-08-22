@@ -46,6 +46,14 @@ class ExternalDebsignTaskTests(TestCase):
             ExternalDebsignDynamicData(unsigned_id=1),
         )
 
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        task = ExternalDebsign(task_data={"unsigned": 1})
+        self.assertEqual(task.get_input_artifacts_ids(), [])
+
+        task.dynamic_data = ExternalDebsignDynamicData(unsigned_id=1)
+        self.assertEqual(task.get_input_artifacts_ids(), [1])
+
     def test_execute(self) -> None:
         """Executing the task does nothing, successfully."""
         task = ExternalDebsign(

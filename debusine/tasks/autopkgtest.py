@@ -110,6 +110,12 @@ class Autopkgtest(
         input_source_artifact = task_database.lookup_single_artifact(
             self.data.input.source_artifact
         )
+        input_binary_artifacts = task_database.lookup_multiple_artifacts(
+            self.data.input.binary_artifacts
+        )
+        input_context_artifacts = task_database.lookup_multiple_artifacts(
+            self.data.input.context_artifacts
+        )
 
         self.ensure_artifact_categories(
             configuration_key="input.source_artifact",
@@ -120,6 +126,28 @@ class Autopkgtest(
             input_source_artifact.data, (DebianSourcePackage, DebianUpload)
         )
         package_name = get_source_package_name(input_source_artifact.data)
+
+        for i, binary_artifact in enumerate(input_binary_artifacts):
+            self.ensure_artifact_categories(
+                configuration_key=f"input.binary_artifacts[{i}]",
+                category=binary_artifact.category,
+                expected=(
+                    ArtifactCategory.BINARY_PACKAGE,
+                    ArtifactCategory.BINARY_PACKAGES,
+                    ArtifactCategory.UPLOAD,
+                ),
+            )
+
+        for i, context_artifact in enumerate(input_context_artifacts):
+            self.ensure_artifact_categories(
+                configuration_key=f"input.context_artifacts[{i}]",
+                category=context_artifact.category,
+                expected=(
+                    ArtifactCategory.BINARY_PACKAGE,
+                    ArtifactCategory.BINARY_PACKAGES,
+                    ArtifactCategory.UPLOAD,
+                ),
+            )
 
         environment = self.get_environment(
             task_database,
@@ -141,16 +169,23 @@ class Autopkgtest(
         return AutopkgtestDynamicData(
             environment_id=environment.id,
             input_source_artifact_id=input_source_artifact.id,
-            input_binary_artifacts_ids=task_database.lookup_multiple_artifacts(
-                self.data.input.binary_artifacts
-            ).get_ids(),
-            input_context_artifacts_ids=task_database.lookup_multiple_artifacts(
-                self.data.input.context_artifacts
-            ).get_ids(),
+            input_binary_artifacts_ids=input_binary_artifacts.get_ids(),
+            input_context_artifacts_ids=input_context_artifacts.get_ids(),
             subject=package_name,
             runtime_context=f"{self.host_architecture()}:{self.backend}",
             configuration_context=environment.data.codename,
         )
+
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        if not self.dynamic_data:
+            return []
+        return [
+            self.dynamic_data.environment_id,
+            self.dynamic_data.input_source_artifact_id,
+            *self.dynamic_data.input_binary_artifacts_ids,
+            *self.dynamic_data.input_context_artifacts_ids,
+        ]
 
     def check_directory_for_consistency_errors(
         self, build_directory: Path  # noqa: U100

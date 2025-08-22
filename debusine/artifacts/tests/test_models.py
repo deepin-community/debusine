@@ -18,7 +18,6 @@ except ImportError:
 
 import debusine.artifacts.models as data_models
 from debusine.assets.models import KeyPurpose
-from debusine.tasks.models import TaskTypes
 
 
 class EnumTests(TestCase):
@@ -51,11 +50,13 @@ class DebusineHistoricalTaskRunTests(TestCase):
             "runtime_statistics": data_models.RuntimeStatistics(duration=1),
         }
         data_models.DebusineHistoricalTaskRun(
-            task_type=TaskTypes.WORKER, **kwargs
+            task_type=data_models.TaskTypes.WORKER, **kwargs
         )
-        with self.assertRaisesRegex(ValueError, "is not a valid task type"):
+        with self.assertRaisesRegex(
+            ValueError, "is not a valid enumeration member"
+        ):
             data_models.DebusineHistoricalTaskRun(
-                task_type="does-not-exist", **kwargs
+                task_type="does-not-exist", **kwargs  # type: ignore[arg-type]
             )
 
 
@@ -68,7 +69,7 @@ class DebusineTaskConfigurationTests(TestCase):
         self.assertEqual(data.name(), "template:test")
 
         data = data_models.DebusineTaskConfiguration(
-            task_type=TaskTypes.WORKER,
+            task_type=data_models.TaskTypes.WORKER,
             task_name="noop",
             subject="subject",
             context="sid/amd64",
@@ -76,7 +77,7 @@ class DebusineTaskConfigurationTests(TestCase):
         self.assertEqual(data.name(), "Worker:noop:subject:sid/amd64")
 
         data = data_models.DebusineTaskConfiguration(
-            task_type=TaskTypes.WORKER,
+            task_type=data_models.TaskTypes.WORKER,
             task_name="noop",
             subject="subject",
             context="source:debusine",
@@ -91,11 +92,13 @@ class DebusineTaskConfigurationTests(TestCase):
             "context": "sid/amd64",
         }
         data_models.DebusineTaskConfiguration(
-            task_type=TaskTypes.WORKER, **kwargs
+            task_type=data_models.TaskTypes.WORKER, **kwargs
         )
-        with self.assertRaisesRegex(ValueError, "is not a valid task type"):
+        with self.assertRaisesRegex(
+            ValueError, "is not a valid enumeration member"
+        ):
             data_models.DebusineTaskConfiguration(
-                task_type="does-not-exist", **kwargs
+                task_type="does-not-exist", **kwargs  # type: ignore[arg-type]
             )
         with self.assertRaisesRegex(ValueError, "should be set"):
             data_models.DebusineTaskConfiguration(task_type=None, **kwargs)
@@ -105,7 +108,7 @@ class DebusineTaskConfigurationTests(TestCase):
     def test_task_name_validation(self) -> None:
         """Task names must not contain colons."""
         kwargs: dict[str, Any] = {
-            "task_type": TaskTypes.WORKER,
+            "task_type": data_models.TaskTypes.WORKER,
             "subject": "subject",
             "context": "sid/amd64",
         }
@@ -120,7 +123,7 @@ class DebusineTaskConfigurationTests(TestCase):
     def test_subject_validation(self) -> None:
         """Subject must not contain colons."""
         kwargs: dict[str, Any] = {
-            "task_type": TaskTypes.WORKER,
+            "task_type": data_models.TaskTypes.WORKER,
             "task_name": "noop",
             "context": "sid/amd64",
         }
@@ -133,7 +136,7 @@ class DebusineTaskConfigurationTests(TestCase):
     def test_context_validation(self) -> None:
         """Context must not contain colons."""
         kwargs: dict[str, Any] = {
-            "task_type": TaskTypes.WORKER,
+            "task_type": data_models.TaskTypes.WORKER,
             "task_name": "noop",
             "subject": "subject",
         }
@@ -148,7 +151,7 @@ class DebusineTaskConfigurationTests(TestCase):
     def test_template_excludes_task_match(self) -> None:
         """Template excludes the use of task match fields."""
         for name, value in (
-            ("task_type", TaskTypes.WORKER),
+            ("task_type", data_models.TaskTypes.WORKER),
             ("task_name", "noop"),
             ("subject", "subject"),
             ("context", "sid/amd64"),
@@ -195,7 +198,10 @@ class DebianPackageBuildLogTest(TestCase):
     def test_get_label(self) -> None:
         """get_label returns source."""
         data = data_models.DebianPackageBuildLog(
-            source="test", version="1.0-1", filename="test_1.0-1_amd64.buildlog"
+            source="test",
+            version="1.0-1",
+            architecture="amd64",
+            filename="test_1.0-1_amd64.buildlog",
         )
         self.assertEqual(data.get_label(), "test_1.0-1_amd64.buildlog")
 
@@ -472,6 +478,7 @@ class DebianSystemTarballTest(TestCase):
             filename="bookworm.tar.gz",
             vendor="debian",
             codename="bookworm",
+            components=["main"],
             mirror=pydantic.parse_obj_as(
                 pydantic.AnyUrl, "https://deb.debian.org"
             ),
@@ -493,6 +500,7 @@ class DebianSystemImageTest(TestCase):
             filename="bookworm.qcow2",
             vendor="debian",
             codename="bookworm",
+            components=["main"],
             mirror=pydantic.parse_obj_as(
                 pydantic.AnyUrl, "https://deb.debian.org"
             ),
@@ -517,6 +525,7 @@ class DebianLintianTest(TestCase):
 
         def make_lintian(**kwargs: str) -> data_models.DebianLintian:
             return data_models.DebianLintian(
+                architecture="amd64",
                 summary=data_models.DebianLintianSummary(
                     tags_count_by_severity={},
                     package_filename=kwargs,
@@ -524,7 +533,7 @@ class DebianLintianTest(TestCase):
                     overridden_tags_found=[],
                     lintian_version="1.0",
                     distribution="bookworm",
-                )
+                ),
             )
 
         self.assertEqual(make_lintian().get_label(), "lintian (empty)")
@@ -666,6 +675,14 @@ class DebDiffTest(TestCase):
         self.assertEqual(
             data.get_label(), "debdiff original-package new-package"
         )
+
+
+class DebianRepositoryIndexTests(TestCase):
+    """Test the DebianRepositoryIndex model."""
+
+    def test_get_label(self) -> None:
+        data = data_models.DebianRepositoryIndex(path="main/source/Sources.xz")
+        self.assertEqual(data.get_label(), "main/source/Sources.xz")
 
 
 class GetSourcePackageNameTests(TestCase):

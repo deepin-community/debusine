@@ -9,6 +9,7 @@
 
 """Data models for db work requests."""
 
+import enum
 import logging
 import re
 from collections import defaultdict
@@ -16,7 +17,6 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from enum import Enum, auto
-from functools import cached_property
 from itertools import chain
 from typing import (
     Any,
@@ -31,10 +31,15 @@ from typing import (
     cast,
 )
 
-from django.core.exceptions import FieldError, ValidationError
+from django.core.exceptions import (
+    FieldError,
+    ImproperlyConfigured,
+    ValidationError,
+)
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import connection, models, transaction
 from django.db.models import (
+    Case,
     DateTimeField,
     Exists,
     ExpressionWrapper,
@@ -46,6 +51,8 @@ from django.db.models import (
     Q,
     QuerySet,
     UniqueConstraint,
+    Value,
+    When,
 )
 from django.db.models.functions import Coalesce, Greatest
 from django.urls import reverse
@@ -56,17 +63,19 @@ from debusine.artifacts.models import (
     BareDataCategory,
     CollectionCategory,
     DebusineHistoricalTaskRun,
+    TaskTypes,
+    WorkRequestResults,
 )
 from debusine.client.models import (
     LookupChildType,
     model_to_json_serializable_dict,
 )
 from debusine.db.context import context
-from debusine.db.models import Collection, CollectionItem
+from debusine.db.models import Collection, CollectionItem, Scope, permissions
 from debusine.db.models.permissions import (
-    AllowWorkers,
-    PartialCheckResult,
+    Allow,
     PermissionUser,
+    Role,
     enforce,
     permission_check,
     permission_filter,
@@ -78,6 +87,7 @@ from debusine.tasks import BaseTask, TaskConfigError
 from debusine.tasks.models import (
     ActionRecordInTaskHistory,
     ActionRetryWithDelays,
+    ActionSkipIfLookupResultChanged,
     ActionTypes,
     ActionUpdateCollectionWithArtifacts,
     ActionUpdateCollectionWithData,
@@ -86,7 +96,6 @@ from debusine.tasks.models import (
     EventReactions,
     NotificationDataEmail,
     OutputData,
-    TaskTypes,
 )
 
 if TYPE_CHECKING:
@@ -113,12 +122,20 @@ class CannotRetry(Exception):
     """Exception raised if a work request cannot be retried."""
 
 
+class CannotAbort(Exception):
+    """Exception raised if a work request cannot be aborted."""
+
+
 class CannotUnblock(Exception):
     """Exception raised if a work request cannot be unblocked."""
 
 
 class InternalTaskError(Exception):
     """Exception raised when trying to instantiate an internal task."""
+
+
+class SkipWorkRequest(Exception):
+    """Exception raised when a work request should be skipped."""
 
 
 class WorkRequestRetryReason(Enum):
@@ -140,6 +157,101 @@ class WorkRequestRetryReason(Enum):
     MANUAL = auto()
 
 
+class WorkRequestRoleBase(permissions.RoleBase):
+    """WorkRequest role implementation."""
+
+    implied_by_scope_roles: frozenset[Scope.Roles]
+    implied_by_workspace_roles: frozenset[Workspace.Roles]
+    implied_by_public: bool
+    implied_by_creator: bool
+
+    def _setup(self) -> None:
+        """Set up implications for a newly constructed role."""
+        implied_by_scope_roles: set[Scope.Roles] = set()
+        implied_by_workspace_roles: set[Workspace.Roles] = set()
+        implied_by_public: bool = False
+        implied_by_creator: bool = False
+        for i in self.implied_by:
+            match i:
+                case Workspace.Roles():
+                    implied_by_scope_roles |= i.implied_by_scope_roles
+                    implied_by_workspace_roles |= i.implied_by_workspace_roles
+                    implied_by_public = implied_by_public or i.implied_by_public
+                case Role():
+                    # Resolve a role passed during class definition into its
+                    # enum instance
+                    wr = self.__class__(i.value)
+                    implied_by_scope_roles |= wr.implied_by_scope_roles
+                    implied_by_workspace_roles |= wr.implied_by_workspace_roles
+                    implied_by_public = (
+                        implied_by_public or wr.implied_by_public
+                    )
+                    implied_by_creator = (
+                        implied_by_creator or wr.implied_by_creator
+                    )
+                case "creator":
+                    implied_by_creator = True
+                case _:
+                    raise ImproperlyConfigured(
+                        "WorkRequest roles do not support"
+                        f" implications by {i!r}"
+                    )
+        self.implied_by_scope_roles = frozenset(implied_by_scope_roles)
+        self.implied_by_workspace_roles = frozenset(implied_by_workspace_roles)
+        self.implied_by_public = implied_by_public
+        self.implied_by_creator = implied_by_creator
+
+    def q(self, user: PermissionUser) -> Q:
+        """Return a Q expression to select work requests with this role."""
+        assert user is not None
+        if not user.is_authenticated:
+            if self.implied_by_public:
+                return Q(workspace__public=True)
+            else:
+                return Q(pk__in=())
+
+        workspace_q = Q(
+            roles__group__users=user,
+            roles__role__in=self.implied_by_workspace_roles,
+        ) | Q(
+            scope__in=Scope.objects.filter(
+                roles__group__users=user,
+                roles__role__in=self.implied_by_scope_roles,
+            )
+        )
+        if self.implied_by_public:
+            workspace_q |= Q(public=True)
+        q = Q(workspace__in=Workspace.objects.filter(workspace_q))
+        if self.implied_by_creator:
+            q |= Q(created_by=user)
+
+        return q
+
+    def implies(self, role: "WorkRequestRoles") -> bool:
+        """Check if this role implies the given one."""
+        return (
+            self.implied_by_scope_roles <= role.implied_by_scope_roles
+            and self.implied_by_workspace_roles
+            <= role.implied_by_workspace_roles
+            and self.implied_by_public <= role.implied_by_public
+            and self.implied_by_creator <= role.implied_by_creator
+        )
+
+
+class WorkRequestRoles(permissions.Roles, WorkRequestRoleBase, enum.ReprEnum):
+    """Available roles for a Scope."""
+
+    OWNER = Role("owner", implied_by=[Workspace.Roles.OWNER])
+    CREATOR = Role("creator", implied_by=[OWNER, "creator"])
+    CONTRIBUTOR = Role(
+        "contributor", implied_by=[OWNER, Workspace.Roles.CONTRIBUTOR]
+    )
+    VIEWER = Role("viewer", implied_by=[CONTRIBUTOR, Workspace.Roles.VIEWER])
+
+
+WorkRequestRoles.setup()
+
+
 class WorkflowTemplateQuerySet(QuerySet["WorkflowTemplate", A], Generic[A]):
     """Custom QuerySet for WorkflowTemplate."""
 
@@ -151,21 +263,20 @@ class WorkflowTemplateQuerySet(QuerySet["WorkflowTemplate", A], Generic[A]):
         """Filter to work requests in the current workspace."""
         return self.filter(workspace=context.require_workspace())
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS, anonymous=Allow.PASS)
     def can_display(
         self, user: PermissionUser
     ) -> "WorkflowTemplateQuerySet[A]":
         """Keep only WorkflowTemplates that can be displayed."""
-        # Delegate to workspace can_display check
-        return self.filter(workspace__in=Workspace.objects.can_display(user))
+        return self.filter(
+            workspace__in=Workspace.objects.with_role(
+                user, Workspace.Roles.VIEWER
+            )
+        ).distinct()
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_run(self, user: PermissionUser) -> "WorkflowTemplateQuerySet[A]":
         """Keep only WorkflowTemplates that can be started."""
-        assert user is not None  # Enforced by decorator
-        # Anonymous users are not allowed
-        if not user.is_authenticated:
-            return self.none()
         return self.filter(
             workspace__in=Workspace.objects.with_role(
                 user, Workspace.Roles.CONTRIBUTOR
@@ -237,37 +348,18 @@ class WorkflowTemplate(models.Model):
             raise ValidationError({"task_data": str(exc)})
 
     @permission_check(
-        "{user} cannot display {resource}", workers=AllowWorkers.ALWAYS
+        "{user} cannot display {resource}",
+        workers=Allow.ALWAYS,
+        anonymous=Allow.PASS,
     )
     def can_display(self, user: PermissionUser) -> bool:
         """Check if the workflow template can be displayed."""
-        # Delegate to workspace can_display check
-        return self.workspace.can_display(user)
+        return self.workspace.has_role(user, Workspace.Roles.VIEWER)
 
-    @permission_check(
-        "{user} cannot run {resource}", workers=AllowWorkers.NEVER
-    )
+    @permission_check("{user} cannot run {resource}")
     def can_run(self, user: PermissionUser) -> bool:
         """Check if the workflow template can be run."""
-        assert user is not None  # enforced by decorator
-        # anonymous users are not allowed
-        if not user.is_authenticated:
-            return False
-        # Shortcut to avoid hitting the database for common cases
-        match self.workspace.context_has_role(
-            user, Workspace.Roles.CONTRIBUTOR
-        ):
-            case PartialCheckResult.ALLOW:
-                return True
-            case PartialCheckResult.DENY:
-                return False
-            case PartialCheckResult.PASS:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
-        return (
-            WorkflowTemplate.objects.can_run(user).filter(pk=self.pk).exists()
-        )
+        return self.workspace.has_role(user, Workspace.Roles.CONTRIBUTOR)
 
     def completed_workflows(self) -> int:
         """Count completed workflows for this template in context.workspace."""
@@ -297,10 +389,13 @@ class WorkflowTemplate(models.Model):
 
     def get_absolute_url(self) -> str:
         """Return the canonical display URL."""
-        return reverse(
-            "workspaces:workflow_templates:detail",
-            kwargs={"wname": self.workspace.name, "name": self.name},
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.workspace.scope.name):
+            return reverse(
+                "workspaces:workflow_templates:detail",
+                kwargs={"wname": self.workspace.name, "name": self.name},
+            )
 
 
 class _WorkRequestStatuses(models.TextChoices):
@@ -313,7 +408,11 @@ class _WorkRequestStatuses(models.TextChoices):
     BLOCKED = "blocked", "Blocked"
 
 
-class WorkRequestQuerySet(QuerySet["WorkRequest", A], Generic[A]):
+class WorkRequestQuerySet(
+    CTEQuerySet,  # type: ignore[misc]
+    QuerySet["WorkRequest", A],
+    Generic[A],
+):
     """Custom QuerySet for WorkRequest."""
 
     def in_current_scope(self) -> Self:
@@ -323,6 +422,38 @@ class WorkRequestQuerySet(QuerySet["WorkRequest", A], Generic[A]):
     def in_current_workspace(self) -> Self:
         """Filter to work requests in the current workspace."""
         return self.filter(workspace=context.require_workspace())
+
+    def with_role_annotations(self, user: PermissionUser) -> Self:
+        """
+        Annotate the queryset with a bool for each role, with its presence.
+
+        The returned annotations are in the form ``"is_{role}"`` and are True
+        if the user has the given role on the annotated resource.
+
+        A further ``roles_for`` annotation marks the stringified public key of
+        the user used to compute annotations, or the empty string if the
+        annotations are for the anonymous user.
+        """
+        queryset = self.annotate(
+            roles_for=Value(
+                str(user.pk) if user and user.is_authenticated else ""
+            )
+        )
+        for role in WorkRequestRoles:
+            queryset = queryset.annotate(
+                **{
+                    f"is_{role}": Exists(
+                        WorkRequest.objects.filter(pk=OuterRef("pk")).with_role(
+                            user, role
+                        )
+                    )
+                }
+            )
+        return queryset
+
+    def with_role(self, user: PermissionUser, role: WorkRequestRoles) -> Self:
+        """Keep only resources where the user has the given role."""
+        return self.filter(role.q(user)).distinct()
 
     def can_be_unblocked(self) -> "WorkRequestQuerySet[WorkRequest]":
         """Filter to work requests that can be unblocked at all."""
@@ -357,34 +488,25 @@ class WorkRequestQuerySet(QuerySet["WorkRequest", A], Generic[A]):
             )
         )
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS, anonymous=Allow.PASS)
     def can_display(self, user: PermissionUser) -> "WorkRequestQuerySet[A]":
         """Keep only WorkRequests that can be displayed."""
-        # Delegate to workspace can_display check
-        return self.filter(workspace__in=Workspace.objects.can_display(user))
+        return self.with_role(user, WorkRequestRoles.VIEWER)
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS)
     def can_retry(self, user: PermissionUser) -> "WorkRequestQuerySet[A]":
         """Keep only WorkRequests that can be retried."""
-        # Delegate to workspace can_display check
-        # TODO: this encodes the status quo, and for now acts as a placeholder
-        # for a later implementation of a more accurate check
-        return self.filter(workspace__in=Workspace.objects.can_display(user))
+        return self.with_role(user, WorkRequestRoles.CONTRIBUTOR)
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
+    def can_abort(self, user: PermissionUser) -> "WorkRequestQuerySet[A]":
+        """Keep only WorkRequests that can be aborted."""
+        return self.with_role(user, WorkRequestRoles.CREATOR)
+
+    @permission_filter()
     def can_unblock(self, user: PermissionUser) -> "WorkRequestQuerySet[A]":
         """Keep only WorkRequests that can be unblocked."""
-        assert user is not None  # enforced by decorator
-        # Anonymous users are not allowed
-        if not user.is_authenticated:
-            return self.none()
-
-        # Delegate to workspace/scope ownership
-        return self.filter(
-            workspace__in=Workspace.objects.with_role(
-                user, Workspace.Roles.OWNER
-            )
-        ).distinct()
+        return self.with_role(user, WorkRequestRoles.OWNER)
 
     def pending(
         self, exclude_assigned: bool = False, worker: Optional["Worker"] = None
@@ -469,6 +591,85 @@ class WorkRequestQuerySet(QuerySet["WorkRequest", A], Generic[A]):
             )
         )
 
+    def workflows(self) -> "WorkRequestQuerySet[A]":
+        """Keep only workflows."""
+        return self.filter(task_type=TaskTypes.WORKFLOW)
+
+    def needs_input(self) -> "WorkRequestQuerySet[A]":
+        """Keep only work requests in NEEDS_INPUT state."""
+        return self.filter(
+            workflow_runtime_status=WorkRequest.RuntimeStatuses.NEEDS_INPUT
+        )
+
+    def visible_in_workflow(self) -> "WorkRequestQuerySet[A]":
+        """Keep only work requests that should be shown in workflow views."""
+        return self.annotate(
+            visible=Coalesce(
+                F("workflow_data_json__visible"),
+                Value("true"),
+                output_field=JSONField(),
+            )
+        ).filter(visible=True)
+
+    def unsuperseded(self) -> "WorkRequestQuerySet[A]":
+        """Keep only work requests that have not been superseded."""
+        return self.filter(superseded__isnull=True)
+
+    def terminated(self) -> "WorkRequestQuerySet[A]":
+        """
+        Keep only work requests that have terminated in some way.
+
+        Work requests that are completed or aborted will not change any more
+        (except perhaps for being retried, which will create a new work
+        request).
+        """
+        return self.filter(
+            status__in={
+                WorkRequest.Statuses.COMPLETED,
+                WorkRequest.Statuses.ABORTED,
+            }
+        )
+
+    def with_workflow_root_id(self) -> "WorkRequestQuerySet[Any]":
+        """Annotate the queryset with corresponding workflow roots."""
+
+        def workflow_root_cte(cte: With) -> QuerySet[Any]:
+            return self.values(
+                rec_parent=F("parent"), rec_child=F("id"), start=F("id")
+            ).union(
+                cte.join(WorkRequest, id=cte.col.rec_parent).values(
+                    rec_parent=F("parent"),
+                    rec_child=F("id"),
+                    start=cte.col.start,
+                )
+            )
+
+        ancestors = With.recursive(workflow_root_cte, name="ancestors")
+        roots = With(
+            ancestors.queryset()
+            .filter(rec_parent__isnull=True)
+            .values(descendant=F("start"), root=F("rec_child"))
+            .order_by(),
+            name="roots",
+        )
+        qs = (
+            roots.join(self, id=roots.col.descendant)
+            .with_cte(ancestors)
+            .with_cte(roots)
+            .annotate(
+                workflow_root_id=Case(
+                    When(
+                        Q(task_type=TaskTypes.WORKFLOW)
+                        | Q(parent__isnull=False),
+                        then=roots.col.root,
+                    ),
+                    default=None,
+                )
+            )
+        )
+        assert isinstance(qs, WorkRequestQuerySet)
+        return qs
+
 
 class WorkRequestManager(models.Manager["WorkRequest"]):
     """Manager for WorkRequest model."""
@@ -484,6 +685,7 @@ class WorkRequestManager(models.Manager["WorkRequest"]):
         step: str,
         display_name: str | None = None,
         status: _WorkRequestStatuses | None = None,
+        visible: bool = True,
     ) -> "WorkRequest":
         """
         Create a workflow callback WorkRequest.
@@ -506,7 +708,7 @@ class WorkRequestManager(models.Manager["WorkRequest"]):
             task_data={},
             priority_base=parent.priority_effective,
             workflow_data_json=WorkRequestWorkflowData(
-                step=step, display_name=display_name or step
+                step=step, display_name=display_name or step, visible=visible
             ).dict(exclude_unset=True),
         )
 
@@ -528,11 +730,10 @@ class WorkRequestManager(models.Manager["WorkRequest"]):
         created_by = context.require_user()
         assert created_by.is_authenticated
 
-        # Lookup the orchestrator
-        workflow_cls = Workflow.from_name(template.task_name)
-
         # Merge user provided data into template data
-        task_data = workflow_cls.build_workflow_data(template.task_data, data)
+        task_data: dict[str, Any] = {}
+        task_data.update(data)
+        task_data.update(template.task_data)
 
         # Build the WorkRequest
         work_request = self.create(
@@ -551,7 +752,7 @@ class WorkRequestManager(models.Manager["WorkRequest"]):
         )
 
         # Root work requests need an internal collection
-        # (:ref:`collection-workflow-internal`)
+        # (:collection:`debusine:workflow-internal`)
         if parent is None:
             work_request.internal_collection = Collection.objects.create(
                 name=f"workflow-{work_request.id}",
@@ -562,6 +763,9 @@ class WorkRequestManager(models.Manager["WorkRequest"]):
             work_request.save()
 
         if validate:
+            # Lookup the orchestrator
+            workflow_cls = Workflow.from_name(template.task_name)
+
             # Instantiate the orchestrator
             orchestrator = workflow_cls(work_request)
 
@@ -661,15 +865,11 @@ class WorkRequest(models.Model):
     """
 
     objects = WorkRequestManager.from_queryset(WorkRequestQuerySet)()
+    Roles: TypeAlias = WorkRequestRoles
 
     Statuses: TypeAlias = _WorkRequestStatuses
     RuntimeStatuses: TypeAlias = _RuntimeStatuses
-
-    class Results(models.TextChoices):
-        NONE = "", ""
-        SUCCESS = "success", "Success"
-        FAILURE = "failure", "Failure"
-        ERROR = "error", "Error"
+    Results: TypeAlias = WorkRequestResults
 
     class UnblockStrategy(models.TextChoices):
         DEPS = "deps", "Dependencies have completed"
@@ -690,6 +890,13 @@ class WorkRequest(models.Model):
     # See also #656
     workflow_last_activity_at = models.DateTimeField(blank=True, null=True)
     created_by = models.ForeignKey("User", on_delete=models.PROTECT)
+    aborted_by = models.ForeignKey(
+        "User",
+        blank=True,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="aborted_work_requests",
+    )
     status = models.CharField(
         max_length=9,
         choices=Statuses.choices,
@@ -862,24 +1069,43 @@ class WorkRequest(models.Model):
 
     def get_absolute_url(self) -> str:
         """Return an absolute URL to this work request."""
-        return reverse(
-            "workspaces:work_requests:detail",
-            kwargs={"wname": self.workspace.name, "pk": self.pk},
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.workspace.scope.name):
+            return reverse(
+                "workspaces:work_requests:detail",
+                kwargs={"wname": self.workspace.name, "pk": self.pk},
+            )
 
     def get_absolute_url_retry(self) -> str:
         """Return an absolute URL to retry this work request."""
-        return reverse(
-            "workspaces:work_requests:retry",
-            kwargs={"wname": self.workspace.name, "pk": self.pk},
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.workspace.scope.name):
+            return reverse(
+                "workspaces:work_requests:retry",
+                kwargs={"wname": self.workspace.name, "pk": self.pk},
+            )
+
+    def get_absolute_url_abort(self) -> str:
+        """Return an absolute URL to abort this work request."""
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.workspace.scope.name):
+            return reverse(
+                "workspaces:work_requests:abort",
+                kwargs={"wname": self.workspace.name, "pk": self.pk},
+            )
 
     def get_absolute_url_unblock(self) -> str:
         """Return an absolute URL to unblock this work request."""
-        return reverse(
-            "workspaces:work_requests:unblock",
-            kwargs={"wname": self.workspace.name, "pk": self.pk},
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.workspace.scope.name):
+            return reverse(
+                "workspaces:work_requests:unblock",
+                kwargs={"wname": self.workspace.name, "pk": self.pk},
+            )
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         """Save the current instance."""
@@ -887,44 +1113,90 @@ class WorkRequest(models.Model):
             self.process_event_reactions("on_creation")
         super().save(*args, **kwargs)
 
+    def has_role(self, user: PermissionUser, role: WorkRequestRoles) -> bool:
+        """Check if the user has the given role on this Workspace."""
+        # Honor implied_by_public immediately as it's independent from the user
+        if role.implied_by_public and self.workspace.public:
+            return True
+
+        if not user or not user.is_authenticated:
+            return False
+
+        if role.implied_by_creator and user == self.created_by:
+            return True
+
+        if context.user == user and context.workspace == self.workspace:
+            # Allowed as implied by scope roles the user has
+            if not context.scope_roles.isdisjoint(role.implied_by_scope_roles):
+                return True
+
+            # Allowed as implied by workspace roles the user has
+            if not context.workspace_roles.isdisjoint(
+                role.implied_by_workspace_roles
+            ):
+                return True
+
+            # The context has enough information to know that the user does not
+            # have the given role on this workspace
+            return False
+        return (
+            WorkRequest.objects.with_role(user, role)
+            .filter(pk=self.pk)
+            .exists()
+        )
+
+    def get_roles(self, user: PermissionUser) -> frozenset[WorkRequestRoles]:
+        """
+        Get the effective roles of the user on this workspace.
+
+        If you invoke this method on a whole queryset, you greatly reduce the
+        number of queries by annotating the queryset using
+        ``with_role_annotations``.
+        """
+        roles: list[WorkRequestRoles] = []
+        if ((roles_for := getattr(self, "roles_for", None)) is not None) and (
+            (
+                roles_for
+                and user
+                and user.is_authenticated
+                and int(roles_for) == user.pk
+            )
+            or (not roles_for and (not user or not user.is_authenticated))
+        ):
+            # Use roles from annotations
+            for role in WorkRequestRoles:
+                if getattr(self, f"is_{role}", False):
+                    roles.append(role)
+        else:
+            # Fallback on querying each role
+            for role in WorkRequestRoles:
+                if self.has_role(user, role):
+                    roles.append(role)
+        return WorkRequestRoles.from_iterable(roles)
+
     @permission_check(
-        "{user} cannot display {resource}", workers=AllowWorkers.ALWAYS
+        "{user} cannot display {resource}",
+        workers=Allow.ALWAYS,
+        anonymous=Allow.PASS,
     )
     def can_display(self, user: PermissionUser) -> bool:
         """Check if the work request can be displayed."""
-        # Delegate to workspace can_display check
-        return self.workspace.can_display(user)
+        return self.has_role(user, WorkRequest.Roles.VIEWER)
 
-    @permission_check(
-        "{user} cannot retry {resource}", workers=AllowWorkers.ALWAYS
-    )
+    @permission_check("{user} cannot retry {resource}", workers=Allow.ALWAYS)
     def can_retry(self, user: PermissionUser) -> bool:
         """Check if the work request can be retried."""
-        # Delegate to workspace can_display check
-        # TODO: this encodes the status quo, and for now acts as a placeholder
-        # for a later implementation of a more accurate check
-        return self.workspace.can_display(user)
+        return self.has_role(user, WorkRequestRoles.CONTRIBUTOR)
 
-    @permission_check(
-        "{user} cannot unblock {resource}", workers=AllowWorkers.NEVER
-    )
+    @permission_check("{user} cannot abort {resource}")
+    def can_abort(self, user: PermissionUser) -> bool:
+        """Check if the work request can be aborted."""
+        return self.has_role(user, WorkRequestRoles.CREATOR)
+
+    @permission_check("{user} cannot unblock {resource}")
     def can_unblock(self, user: PermissionUser) -> bool:
         """Check if the work request can be unblocked."""
-        assert user is not None  # enforced by decorator
-        # Anonymous users are not allowed
-        if not user.is_authenticated:
-            return False
-        # Shortcut to avoid hitting the database for common cases
-        match self.workspace.context_has_role(user, Workspace.Roles.OWNER):
-            case PartialCheckResult.ALLOW:
-                return True
-            case PartialCheckResult.DENY:
-                return False
-            case PartialCheckResult.PASS:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
-        return WorkRequest.objects.can_unblock(user).filter(pk=self.pk).exists()
+        return self.has_role(user, WorkRequestRoles.OWNER)
 
     def set_current(self) -> None:
         """Set the execution context to this scope/user/workspace."""
@@ -984,7 +1256,11 @@ class WorkRequest(models.Model):
     def add_event_reaction(
         self,
         event_name: Literal[
-            "on_creation", "on_unblock", "on_success", "on_failure"
+            "on_creation",
+            "on_unblock",
+            "on_assignment",
+            "on_success",
+            "on_failure",
         ],
         action: EventReaction,
     ) -> None:
@@ -1013,6 +1289,7 @@ class WorkRequest(models.Model):
         task_data: BaseTaskData | dict[str, Any] | None = None,
         workflow_data: Optional["WorkRequestWorkflowData"] = None,
         event_reactions: EventReactions | None = None,
+        relative_priority: int = 0,
     ) -> "WorkRequest":
         """Create a child WorkRequest."""
         if self.task_type != TaskTypes.WORKFLOW:
@@ -1023,6 +1300,10 @@ class WorkRequest(models.Model):
             )
         else:
             task_data_json = task_data or {}
+        if "task_configuration" not in task_data_json and (
+            current_task_config := self.task_data.get("task_configuration")
+        ):
+            task_data_json["task_configuration"] = current_task_config
         child = WorkRequest.objects.create(
             workspace=self.workspace,
             parent=self,
@@ -1031,6 +1312,7 @@ class WorkRequest(models.Model):
             task_type=task_type,
             task_name=task_name,
             task_data=task_data_json,
+            priority_base=self.priority_effective + relative_priority,
             workflow_data_json=(
                 workflow_data.dict(exclude_unset=True) if workflow_data else {}
             ),
@@ -1072,8 +1354,8 @@ class WorkRequest(models.Model):
         """
         Check if a work request can be retried.
 
-        :raises ValueError: raised with an explanation of why it cannot be
-                            retried
+        :raises CannotRetry: raised with an explanation of why it cannot be
+                             retried
         """
         if self.task_type not in {
             TaskTypes.WORKFLOW,
@@ -1251,6 +1533,69 @@ class WorkRequest(models.Model):
             return self._retry_workflow(reason=reason)
         else:
             return self._retry_supersede(reason=reason)
+
+    def _verify_abort(self) -> None:
+        """
+        Check if this work request can be aborted.
+
+        :raises CannotAbort: if the work request cannot be aborted.
+        """
+        if hasattr(self, "superseded"):
+            raise CannotAbort("Cannot abort old superseded tasks")
+
+        if self.status not in {
+            WorkRequest.Statuses.PENDING,
+            WorkRequest.Statuses.BLOCKED,
+            WorkRequest.Statuses.RUNNING,
+        }:
+            raise CannotAbort(
+                "Only pending, blocked, or running tasks can be aborted"
+            )
+
+    def verify_abort(self) -> bool:
+        """Check if this work request can be aborted."""
+        if not self.can_abort(context.user):
+            return False
+        try:
+            self._verify_abort()
+        except CannotAbort:
+            return False
+        return True
+
+    def abort(self) -> None:
+        """
+        Abort a work request.
+
+        If the work request is a workflow, then recursively abort its child
+        work requests too.
+        """
+        enforce(self.can_abort)
+        user = context.require_user()
+        # Enforcing `can_abort` ensures that the user can't be anonymous by
+        # this point.
+        assert user.is_authenticated
+        self._verify_abort()
+
+        for work_request in WorkRequest.objects.filter(
+            id__in=workflow_flattened(
+                self, include_workflows=True, include_invisible=True
+            )
+            .filter(
+                superseded__isnull=True,
+                status__in={
+                    WorkRequest.Statuses.PENDING,
+                    WorkRequest.Statuses.BLOCKED,
+                    WorkRequest.Statuses.RUNNING,
+                },
+            )
+            .values_list("id", flat=True)
+        ).select_for_update():
+            work_request.mark_aborted(user=user)
+            # TODO: If the work request was assigned to a worker, we should
+            # tell the worker so that it can abandon execution
+            # (https://salsa.debian.org/freexian-team/debusine/-/issues/824).
+            work_request.worker = None
+            work_request.save()
 
     def clean(self) -> None:
         """
@@ -1467,7 +1812,11 @@ class WorkRequest(models.Model):
         self.result = result
         self.completed_at = timezone.now()
         self.status = self.Statuses.COMPLETED
-        self.output_data = output_data
+        if output_data is not None:
+            if self.output_data is None:
+                self.output_data = output_data
+            else:
+                self.output_data = self.output_data.merge(output_data)
         self.save()
 
         if (
@@ -1494,6 +1843,8 @@ class WorkRequest(models.Model):
                 self.process_event_reactions("on_success")
             case self.Results.FAILURE | self.Results.ERROR:
                 self.process_event_reactions("on_failure")
+            case self.Results.SKIPPED:
+                pass
             case _ as unreachable:
                 assert_never(unreachable)
         if self.parent is not None:
@@ -1503,11 +1854,18 @@ class WorkRequest(models.Model):
     def process_event_reactions(
         self,
         event_name: Literal[
-            "on_creation", "on_unblock", "on_success", "on_failure"
+            "on_creation",
+            "on_unblock",
+            "on_assignment",
+            "on_success",
+            "on_failure",
         ],
     ) -> None:
         """Process list of actions to perform."""
         actions = self.get_triggered_actions(event_name)
+        self.process_skip_if_lookup_result_changed(
+            actions[ActionTypes.SKIP_IF_LOOKUP_RESULT_CHANGED]
+        )
         if event_name in {"on_success", "on_failure"}:
             notifications.notify_work_request_completed(
                 self, actions[ActionTypes.SEND_NOTIFICATION]
@@ -1526,7 +1884,11 @@ class WorkRequest(models.Model):
     def get_triggered_actions(
         self,
         event_name: Literal[
-            "on_creation", "on_unblock", "on_success", "on_failure"
+            "on_creation",
+            "on_unblock",
+            "on_assignment",
+            "on_success",
+            "on_failure",
         ],
     ) -> dict[str, list[EventReaction]]:
         """
@@ -1549,6 +1911,78 @@ class WorkRequest(models.Model):
             action_type = action.action
             actions[action_type].append(action)
         return actions
+
+    def process_skip_if_lookup_result_changed(
+        self, actions: list[EventReaction]
+    ) -> None:
+        """Skip this work request if the result of a lookup has changed."""
+        # Import here to prevent circular imports.
+        from debusine.server.collections.lookup import lookup_single
+
+        workflow_root = self.get_workflow_root()
+        should_skip = False
+        for skip in actions:
+            assert isinstance(skip, ActionSkipIfLookupResultChanged)
+            try:
+                result = lookup_single(
+                    skip.lookup,
+                    self.workspace,
+                    user=self.created_by,
+                    workflow_root=workflow_root,
+                )
+            except KeyError:
+                result = None
+            except LookupError as e:
+                logger.error("%s in WorkRequest %s", e, self.pk)  # noqa: G200
+                continue
+
+            new_collection_item_id = (
+                None
+                if result is None or result.collection_item is None
+                else result.collection_item.id
+            )
+            if new_collection_item_id == skip.collection_item_id:
+                continue
+
+            # Mark ourselves as complete, with a note about why.
+            should_skip = True
+            self.mark_completed(
+                WorkRequest.Results.SKIPPED,
+                output_data=OutputData(
+                    skip_reason=f"Result of lookup {skip.lookup!r} changed"
+                ),
+            )
+
+            if (
+                skip.promise_name is not None
+                and workflow_root is not None
+                and result is not None
+                and result.collection_item is not None
+            ):
+                assert workflow_root.internal_collection is not None
+
+                # Use the lookup result to resolve the promise.
+                if result.artifact is not None:
+                    workflow_root.internal_collection.manager.add_artifact(
+                        result.artifact,
+                        user=self.created_by,
+                        workflow=self.parent,
+                        variables=result.collection_item.data,
+                        name=skip.promise_name,
+                        replace=True,
+                    )
+                else:
+                    workflow_root.internal_collection.manager.add_bare_data(
+                        BareDataCategory(result.collection_item.category),
+                        user=self.created_by,
+                        workflow=self.parent,
+                        data=result.collection_item.data,
+                        name=skip.promise_name,
+                        replace=True,
+                    )
+
+        if should_skip:
+            raise SkipWorkRequest
 
     def process_update_collection_with_artifacts(
         self, actions: list[EventReaction]
@@ -1618,6 +2052,7 @@ class WorkRequest(models.Model):
                         variables=expanded_variables,
                         name=item_name,
                         replace=True,
+                        created_at=update.created_at,
                     )
                 except (ItemAdditionError, ItemRemovalError):
                     logger.exception(
@@ -1672,6 +2107,7 @@ class WorkRequest(models.Model):
                     data=data,
                     name=item_name,
                     replace=True,
+                    created_at=update.created_at,
                 )
             except (ItemAdditionError, ItemRemovalError):
                 logger.exception(
@@ -1764,13 +2200,13 @@ class WorkRequest(models.Model):
                     user=self.created_by,
                     workflow=self.parent,
                     data=DebusineHistoricalTaskRun(
-                        task_type=self.task_type,
+                        task_type=TaskTypes(self.task_type),
                         task_name=self.task_name,
                         subject=action.subject or default_subject,
                         context=action.context or default_context,
                         timestamp=int(self.started_at.timestamp()),
                         work_request_id=self.id,
-                        result=self.result,
+                        result=WorkRequestResults(self.result),
                         runtime_statistics=self.output_data.runtime_statistics,
                     ),
                 )
@@ -1838,7 +2274,12 @@ class WorkRequest(models.Model):
         if (
             self.children.filter(superseded__isnull=True)
             .exclude(
-                Q(result=WorkRequest.Results.SUCCESS)
+                Q(
+                    result__in={
+                        WorkRequest.Results.SUCCESS,
+                        WorkRequest.Results.SKIPPED,
+                    }
+                )
                 | Q(workflow_data_json__contains={"allow_failure": True})
             )
             .exists()
@@ -1871,7 +2312,7 @@ class WorkRequest(models.Model):
         s = WorkRequest.Statuses
         allow_failure = self.workflow_data and self.workflow_data.allow_failure
 
-        if self.result == r.SUCCESS or allow_failure:
+        if self.result in {r.SUCCESS, r.SKIPPED} or allow_failure:
             # lookup work requests that depend on the completed work
             # request and unblock them if no other work request is
             # blocking them
@@ -1958,12 +2399,13 @@ class WorkRequest(models.Model):
             and self.status == self.Statuses.RUNNING
         )
 
-    def mark_aborted(self) -> bool:
+    def mark_aborted(self, *, user: "User | None" = None) -> bool:
         """
         Worker has aborted the task after request from UI.
 
         Task will typically be in CREATED or RUNNING status.
         """
+        self.aborted_by = user
         self.completed_at = timezone.now()
         self.status = self.Statuses.ABORTED
         self.save()
@@ -1994,14 +2436,33 @@ class WorkRequest(models.Model):
 
         # Instantiate the unconfigured task
         task = self.get_task(worker=worker)
-        if not (task_configuration := task.data.task_configuration):
-            # We have no configuration to apply: recompute dynamic_task_data
-            # for this worker
-            dynamic_task_data = task.compute_dynamic_data(TaskDatabase(self))
-            self.dynamic_task_data = model_to_json_serializable_dict(
-                dynamic_task_data, exclude_unset=True
-            )
-            return
+
+        # Lookup the task-configuration collection to use
+        config_collection: Collection | None = None
+        if (task_configuration := task.data.task_configuration) is not None:
+            # Look up the debusine:task-configuration collection
+            try:
+                lookup_result = lookup_single(
+                    lookup=task_configuration,
+                    workspace=self.workspace,
+                    user=self.created_by,
+                    default_category=CollectionCategory.TASK_CONFIGURATION,
+                    workflow_root=self.get_workflow_root(),
+                    expect_type=LookupChildType.COLLECTION,
+                )
+            except KeyError:
+                if (
+                    task_configuration
+                    != BaseTaskData.DEFAULT_TASK_CONFIGURATION_LOOKUP
+                ):
+                    raise
+            else:
+                config_collection = lookup_result.collection
+
+        # Compute the configured task data
+        self.configured_task_data = model_to_json_serializable_dict(
+            task.data, exclude_unset=True
+        )
 
         # Compute dynamic task data once to extract subject and
         # configuration_context
@@ -2009,29 +2470,15 @@ class WorkRequest(models.Model):
         # of compute_dynamic_data becomes too expensive to run twice
         early_dynamic_task_data = task.compute_dynamic_data(TaskDatabase(self))
 
-        # Look up the debusine:task-configuration collection
-        lookup_result = lookup_single(
-            lookup=task_configuration,
-            workspace=self.workspace,
-            user=self.created_by,
-            default_category=CollectionCategory.TASK_CONFIGURATION,
-            workflow_root=self.get_workflow_root(),
-            expect_type=LookupChildType.COLLECTION,
-        )
-        config_collection = lookup_result.collection
-
-        # Compute the configured task data
-        self.configured_task_data = model_to_json_serializable_dict(
-            task.data, exclude_unset=True
-        )
-        apply_configuration(
-            self.configured_task_data,
-            config_collection,
-            task.TASK_TYPE,
-            task.name,
-            early_dynamic_task_data.subject,
-            early_dynamic_task_data.configuration_context,
-        )
+        if config_collection is not None:
+            apply_configuration(
+                self.configured_task_data,
+                config_collection,
+                task.TASK_TYPE,
+                task.name,
+                early_dynamic_task_data.subject,
+                early_dynamic_task_data.configuration_context,
+            )
 
         # Reinstantiate using configured_task_data
         try:
@@ -2043,7 +2490,8 @@ class WorkRequest(models.Model):
         dynamic_task_data = configured_task.compute_dynamic_data(
             TaskDatabase(self)
         )
-        dynamic_task_data.task_configuration_id = config_collection.pk
+        if config_collection is not None:
+            dynamic_task_data.task_configuration_id = config_collection.pk
         self.dynamic_task_data = model_to_json_serializable_dict(
             dynamic_task_data, exclude_unset=True
         )
@@ -2054,6 +2502,7 @@ class WorkRequest(models.Model):
         self.worker = worker
         self.save()
         notifications.notify_work_request_assigned(self)
+        self.process_event_reactions("on_assignment")
 
     def de_assign_worker(self) -> bool:
         """
@@ -2107,7 +2556,13 @@ class WorkRequest(models.Model):
         return self.is_workflow and self.parent is None
 
     def get_workflow_root(self) -> Optional["WorkRequest"]:
-        """Return the root of this work request's workflow, if any."""
+        """
+        Return the root of this work request's workflow, if any.
+
+        For bulk situations, prefer using
+        ``WorkRequest.objects.with_workflow_root_id()`` and then using the
+        ``workflow_root_id`` attribute of the annotated query set.
+        """
         if not self.is_workflow and not self.is_part_of_workflow:
             return None
         parent = self
@@ -2174,42 +2629,6 @@ class WorkRequest(models.Model):
                 hook[:2] for hook in connection.run_on_commit
             ]:
                 transaction.on_commit(update_workflows.delay)
-
-    @cached_property
-    def workflow_work_requests_success(self) -> int:
-        """Return number of successful work requests."""
-        return (
-            workflow_flattened(self)
-            .filter(result=WorkRequest.Results.SUCCESS)
-            .count()
-        )
-
-    @cached_property
-    def workflow_work_requests_failure(self) -> int:
-        """Return number of failed work requests."""
-        return (
-            workflow_flattened(self)
-            .filter(result=WorkRequest.Results.FAILURE)
-            .count()
-        )
-
-    @cached_property
-    def workflow_work_requests_pending(self) -> int:
-        """Return number of pending work requests."""
-        return (
-            workflow_flattened(self)
-            .filter(status=WorkRequest.Statuses.PENDING)
-            .count()
-        )
-
-    @cached_property
-    def workflow_work_requests_blocked(self) -> int:
-        """Return number of blocked work requests."""
-        return (
-            workflow_flattened(self)
-            .filter(status=WorkRequest.Statuses.BLOCKED)
-            .count()
-        )
 
     @property
     def has_children_in_progress(self) -> bool:
@@ -2317,40 +2736,54 @@ class NotificationChannel(models.Model):
         return self.name
 
 
-def workflow_flattened(workflow: WorkRequest) -> QuerySet[WorkRequest]:
+def workflow_flattened(
+    work_request: WorkRequest,
+    *,
+    include_workflows: bool = False,
+    include_invisible: bool = False,
+) -> WorkRequestQuerySet[WorkRequest]:
     """
     Return queryset of all the work requests that are part of the workflow.
 
-    Does not include work requests of type workflow.
+    :param work_request: The work request to start from.  If it is a
+      workflow, recursively include its children.
+    :param include_workflows: If True, include work requests of type
+      workflow; otherwise, exclude them (i.e. only include leaf work
+      requests).
+    :param include_invisible: If True, include work requests whose workflow
+      data field has ``visible=False`` set, indicating that the task should
+      not be shown in the visual representation of the workflow; otherwise,
+      exclude them.
     """
-    assert workflow.task_type == TaskTypes.WORKFLOW
-
-    work_request_queryset = CTEQuerySet(
-        type(workflow), using=WorkRequest.objects._db
+    work_request_queryset: WorkRequestQuerySet[WorkRequest] = (
+        WorkRequestQuerySet(type(work_request), using=WorkRequest.objects._db)
     )
 
-    def workflow_flattened_cte(cte: With) -> QuerySet[WorkRequest]:
+    def workflow_flattened_cte(cte: With) -> WorkRequestQuerySet[WorkRequest]:
         recursive = (
-            # .id is evasive action for problems encountered when `workflow`
-            # is from a model retrieved as part of a migration.
-            work_request_queryset.filter(parent=workflow.id)
+            # .id is evasive action for problems encountered when
+            # `work_request` is from a model retrieved as part of a
+            # migration.
+            work_request_queryset.filter(id=work_request.id)
             .values(rec_parent=F("parent"), rec_child=F("id"))
             .union(
-                cte.join(type(workflow), parent=cte.col.rec_child).values(
+                cte.join(type(work_request), parent=cte.col.rec_child).values(
                     rec_parent=F("parent"), rec_child=F("id")
                 )
             )
         )
-        assert isinstance(recursive, QuerySet)
+        assert isinstance(recursive, WorkRequestQuerySet)
         return recursive
 
     cte = With.recursive(workflow_flattened_cte)
-    flattened = (
-        cte.join(work_request_queryset, id=cte.col.rec_child)
-        .with_cte(cte)
-        .exclude(task_type=TaskTypes.WORKFLOW)
+    flattened = cte.join(work_request_queryset, id=cte.col.rec_child).with_cte(
+        cte
     )
-    assert isinstance(flattened, QuerySet)
+    if not include_workflows:
+        flattened = flattened.exclude(task_type=TaskTypes.WORKFLOW)
+    if not include_invisible:
+        flattened = flattened.visible_in_workflow()
+    assert isinstance(flattened, WorkRequestQuerySet)
     return flattened
 
 
@@ -2360,12 +2793,16 @@ def compute_workflow_last_activity(workflow: WorkRequest) -> datetime | None:
 
     This is the latest ``started_at``/``completed_at`` of its descendants.
     """
-    last_activity = workflow_flattened(workflow).aggregate(
+    last_activity = workflow_flattened(
+        workflow, include_invisible=True
+    ).aggregate(
         last_activity=Max(
             Greatest("started_at", "completed_at"),
             output_field=DateTimeField(blank=True, null=True),
         )
-    )["last_activity"]
+    )[
+        "last_activity"
+    ]
     assert last_activity is None or isinstance(last_activity, datetime)
     return last_activity
 
@@ -2381,7 +2818,7 @@ def compute_workflow_runtime_status(
     """
     assert workflow.task_type == TaskTypes.WORKFLOW
 
-    flattened = workflow_flattened(workflow)
+    flattened = workflow_flattened(workflow, include_invisible=True)
 
     if flattened.filter(
         task_type=TaskTypes.WAIT,

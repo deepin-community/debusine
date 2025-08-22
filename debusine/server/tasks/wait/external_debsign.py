@@ -34,6 +34,12 @@ class ExternalDebsign(
             ).id,
         )
 
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        if not self.dynamic_data:
+            return []
+        return [self.dynamic_data.unsigned_id]
+
     def _execute(self) -> bool:
         """Do nothing, successfully."""
         return True

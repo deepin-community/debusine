@@ -14,7 +14,6 @@ Debusine integration tests.
 Test Sbuild task.
 """
 
-import logging
 import subprocess
 import unittest
 from pathlib import Path
@@ -25,12 +24,9 @@ import yaml
 from debusine.artifacts.models import ArtifactCategory
 from debusine.tasks.models import LookupSingle
 from utils.client import Client
-from utils.common import Configuration, launch_tests
+from utils.common import Configuration
 from utils.integration_test_helpers_mixin import IntegrationTestHelpersMixin
 from utils.server import DebusineServer
-from utils.worker import Worker
-
-logger = logging.getLogger(__name__)
 
 
 class IntegrationTaskSbuildTests(
@@ -54,6 +50,7 @@ class IntegrationTaskSbuildTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self._sbuild_changes_file_path: Path | None = None
 
         # If debusine-server or nginx was launched just before the
@@ -71,8 +68,6 @@ class IntegrationTaskSbuildTests(
         self.architecture = subprocess.check_output(
             ["dpkg", "--print-architecture"], text=True
         ).strip()
-
-        self._worker = Worker()
 
     def test_work_request_sbuild_unshare(self) -> None:
         """Create an sbuild job: use "unshare" backend."""
@@ -169,7 +164,3 @@ class IntegrationTaskSbuildTests(
             data["environment"] = environment
 
         return yaml.safe_dump(data)
-
-
-if __name__ == '__main__':
-    launch_tests("Task sbuild integration tests for debusine")

@@ -11,7 +11,7 @@
 
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 try:
     import pydantic.v1 as pydantic
@@ -38,6 +38,8 @@ from debusine.client.models import (
     RelationsResponse,
     StrMaxLength255,
     StrictBaseModel,
+    WorkspaceInheritanceChain,
+    WorkspaceInheritanceChainElement,
     model_to_json_serializable_dict,
 )
 from debusine.test import TestCase
@@ -63,6 +65,7 @@ class FileTests(TestCase):
 
     def setUp(self) -> None:
         """Set up testing objects."""
+        super().setUp()
         self.size = 10
         self.checksums = {
             "sha256": pydantic.parse_obj_as(
@@ -119,6 +122,7 @@ class ArtifactCreateRequestTests(TestCase):
 
     def setUp(self) -> None:
         """Set up testing objects."""
+        super().setUp()
         self.category = "debian"
         self.workspace = "debian-lts"
         self.files = FilesRequestType(
@@ -177,6 +181,7 @@ class ArtifactResponseTests(TestCase):
 
     def setUp(self) -> None:
         """Set up objects."""
+        super().setUp()
         self.artifact_id = 5
         self.files_to_upload = ["README", "src/.dirstamp"]
 
@@ -184,7 +189,7 @@ class ArtifactResponseTests(TestCase):
             id=self.artifact_id,
             category="Testing",
             workspace="some workspace",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             download_tar_gz_url="https://example.com/some/path/",
             files_to_upload=self.files_to_upload,
         )
@@ -200,6 +205,7 @@ class RelationCreateRequestTests(TestCase):
 
     def setUp(self) -> None:
         """Set up test."""
+        super().setUp()
         self.artifact_id = 1
         self.target_id = 2
 
@@ -552,3 +558,129 @@ class EnrollConfirmPayloadTest(TestCase):
                     outcome=EnrollOutcome.CONFIRM, token=token
                 )
                 self.assertEqual(payload.token, token)
+
+
+class WorkspaceInheritanceChainElementTests(TestCase):
+    """Test for :py:class:`WorkspaceInheritanceChainElement`."""
+
+    def test_from_string(self) -> None:
+        for value, expected in (
+            ("42", WorkspaceInheritanceChainElement(id=42)),
+            ("test", WorkspaceInheritanceChainElement(workspace="test")),
+            (
+                "foo/bar",
+                WorkspaceInheritanceChainElement(scope="foo", workspace="bar"),
+            ),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    WorkspaceInheritanceChainElement.from_string(value),
+                    expected,
+                )
+
+    def test_matches(self) -> None:
+        El = WorkspaceInheritanceChainElement
+        sample = El(id=42, scope="scope", workspace="workspace")
+        for a, b, expected in (
+            (sample, El(id=42), True),
+            (El(id=42, scope="scope", workspace="workspace"), El(id=43), False),
+            (sample, El(workspace="workspace"), True),
+            (sample, El(workspace="invalid"), False),
+            (sample, El(id=42, scope="scope", workspace="workspace"), True),
+            (sample, El(id=43, scope="scope", workspace="workspace"), False),
+            (sample, El(id=42, scope="invalid", workspace="workspace"), False),
+            (sample, El(id=42, scope="scope", workspace="invalid"), False),
+        ):
+            with self.subTest(a=a, b=b):
+                self.assertEqual(a.matches(b), expected)
+
+    def test_invalid(self) -> None:
+        class Kwargs(TypedDict):
+            id: NotRequired[int]
+            scope: NotRequired[str]
+            workspace: NotRequired[str]
+
+        kwargs: Kwargs
+        for kwargs in (Kwargs(), Kwargs(scope="scope")):
+            with (
+                self.subTest(kwargs=kwargs),
+                self.assertRaisesRegex(
+                    ValueError, r"at least id or workspace need to be set"
+                ),
+            ):
+                WorkspaceInheritanceChainElement(**kwargs)
+
+
+class WorkspaceInheritanceChainTests(TestCase):
+    """Test for :py:class:`WorkspaceInheritanceChain`."""
+
+    def test_empty(self) -> None:
+        val = WorkspaceInheritanceChain()
+        self.assertEqual(val.dict(), {"chain": []})
+
+    def test_from_strings(self) -> None:
+        El = WorkspaceInheritanceChainElement
+
+        def chain(
+            *args: WorkspaceInheritanceChainElement,
+        ) -> WorkspaceInheritanceChain:
+            return WorkspaceInheritanceChain(chain=list(args))
+
+        for strings, expected in (
+            ([], chain()),
+            (["42"], chain(El(id=42))),
+            (["test"], chain(El(workspace="test"))),
+            (
+                ["scope/workspace"],
+                chain(El(scope="scope", workspace="workspace")),
+            ),
+            (
+                ["1", "test", "scope/workspace"],
+                chain(
+                    El(id=1),
+                    El(workspace="test"),
+                    El(scope="scope", workspace="workspace"),
+                ),
+            ),
+        ):
+            with self.subTest(strings=strings):
+                self.assertEqual(
+                    WorkspaceInheritanceChain.from_strings(strings), expected
+                )
+
+    def test_add(self) -> None:
+        El = WorkspaceInheritanceChainElement
+
+        def chain(
+            *args: WorkspaceInheritanceChainElement,
+        ) -> WorkspaceInheritanceChain:
+            return WorkspaceInheritanceChain(chain=list(args))
+
+        el1 = El(id=1)
+        el2 = El(id=2)
+        for a, b, expected in (
+            (chain(), chain(el1, el2), chain(el1, el2)),
+            (chain(el1), chain(el2), chain(el1, el2)),
+            (chain(el1, el2), chain(), chain(el1, el2)),
+        ):
+            self.assertEqual(a + b, expected)
+
+    def test_sub(self) -> None:
+        El = WorkspaceInheritanceChainElement
+
+        def chain(
+            *args: WorkspaceInheritanceChainElement,
+        ) -> WorkspaceInheritanceChain:
+            return WorkspaceInheritanceChain(chain=list(args))
+
+        el1 = El(id=1)
+        el2 = El(id=2)
+        el3 = El(id=3)
+        for a, b, expected in (
+            (chain(), chain(el1, el2), chain()),
+            (chain(el1, el2), chain(el2), chain(el1)),
+            (chain(el1, el2, el3), chain(), chain(el1, el2, el3)),
+            (chain(el1, el2, el3), chain(el1, el3), chain(el2)),
+        ):
+            with self.subTest(a=a, b=b):
+                self.assertEqual(a - b, expected)

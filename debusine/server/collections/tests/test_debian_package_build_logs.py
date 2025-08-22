@@ -19,7 +19,6 @@ from debusine.artifacts.models import (
     CollectionCategory,
 )
 from debusine.client.models import LookupChildType
-from debusine.db.context import context
 from debusine.db.models import CollectionItem, default_workspace
 from debusine.server.collections import (
     DebianPackageBuildLogsManager,
@@ -35,12 +34,14 @@ class DebianPackageBuildLogsManagerTests(TestCase):
 
     def setUp(self) -> None:
         """Set up tests."""
+        super().setUp()
         self.user = self.playground.get_default_user()
         self.workflow = self.playground.create_work_request(task_name="noop")
         self.workspace = default_workspace()
         self.collection = self.workspace.get_singleton_collection(
             user=self.user, category=CollectionCategory.PACKAGE_BUILD_LOGS
         )
+        self.collection_lookup = f"_@{CollectionCategory.PACKAGE_BUILD_LOGS}"
         self.manager = DebianPackageBuildLogsManager(collection=self.collection)
 
     def test_do_add_bare_data_no_data(self) -> None:
@@ -170,34 +171,6 @@ class DebianPackageBuildLogsManagerTests(TestCase):
         self.assertEqual(item.child_type, CollectionItem.Types.BARE)
         self.assertEqual(item.data, data)
 
-    def test_do_remove_bare_data(self) -> None:
-        """`do_remove_bare_data` removes the item."""
-        data = {
-            "work_request_id": 1,
-            "vendor": "debian",
-            "codename": "bookworm",
-            "architecture": "amd64",
-            "srcpkg_name": "hello",
-            "srcpkg_version": "1.0-1",
-        }
-        item = self.manager.add_bare_data(
-            BareDataCategory.PACKAGE_BUILD_LOG,
-            user=self.user,
-            workflow=self.workflow,
-            data=data,
-            replace=True,
-        )
-
-        self.manager.remove_bare_data(
-            item.name, user=self.user, workflow=self.workflow
-        )
-
-        item.refresh_from_db()
-        self.assertEqual(item.removed_by_user, self.user)
-        self.assertEqual(item.removed_by_workflow, self.workflow)
-        self.assertIsNotNone(item.removed_at)
-
-    @context.disable_permission_checks()
     def test_do_add_artifact_no_variables(self) -> None:
         """`do_add_artifact` requires variables."""
         artifact, _ = self.playground.create_artifact(
@@ -212,7 +185,6 @@ class DebianPackageBuildLogsManagerTests(TestCase):
                 artifact, user=self.user, workflow=self.workflow
             )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_raise_item_addition_error(self) -> None:
         """`do_add_artifact` raises an error for duplicate names."""
         work_request = self.playground.create_work_request()
@@ -244,7 +216,6 @@ class DebianPackageBuildLogsManagerTests(TestCase):
                 variables=data,
             )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_override_srcpkg_name_version(self) -> None:
         """
         `do_add_artifact` can override the source package name/version.
@@ -275,7 +246,6 @@ class DebianPackageBuildLogsManagerTests(TestCase):
         )
         self.assertEqual(item.data, data)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_different_work_request_ids(self) -> None:
         """Adding artifacts with different work request IDs is OK."""
         work_request_1 = self.playground.create_work_request()
@@ -315,7 +285,6 @@ class DebianPackageBuildLogsManagerTests(TestCase):
             ],
         )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace_bare_data(self) -> None:
         """`do_add_artifact` can replace an existing bare data item."""
         work_request = self.playground.create_work_request()
@@ -364,7 +333,6 @@ class DebianPackageBuildLogsManagerTests(TestCase):
         self.assertEqual(item_new.data, data)
         self.assertIsNone(item_new.removed_at)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace_artifact(self) -> None:
         """`do_add_artifact` can replace an existing artifact."""
         worker_1 = self.playground.create_worker()
@@ -415,7 +383,6 @@ class DebianPackageBuildLogsManagerTests(TestCase):
         self.assertEqual(item_new.data, {**data, "worker": worker_2.name})
         self.assertIsNone(item_new.removed_at)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace_nonexistent(self) -> None:
         """Replacing a nonexistent artifact is allowed."""
         work_request = self.playground.create_work_request()
@@ -445,9 +412,32 @@ class DebianPackageBuildLogsManagerTests(TestCase):
         self.assertEqual(item.artifact, artifact)
         self.assertEqual(item.data, data)
 
-    @context.disable_permission_checks()
-    def test_do_remove_artifact(self) -> None:
-        """`do_remove_artifact` removes the item."""
+    def test_do_remove_item_bare_data(self) -> None:
+        """`do_remove_item` removes a bare data item."""
+        data = {
+            "work_request_id": 1,
+            "vendor": "debian",
+            "codename": "bookworm",
+            "architecture": "amd64",
+            "srcpkg_name": "hello",
+            "srcpkg_version": "1.0-1",
+        }
+        item = self.manager.add_bare_data(
+            BareDataCategory.PACKAGE_BUILD_LOG,
+            user=self.user,
+            workflow=self.workflow,
+            data=data,
+            replace=True,
+        )
+
+        self.manager.remove_item(item, user=self.user, workflow=self.workflow)
+
+        self.assertEqual(item.removed_by_user, self.user)
+        self.assertEqual(item.removed_by_workflow, self.workflow)
+        self.assertIsNotNone(item.removed_at)
+
+    def test_do_remove_item_artifact(self) -> None:
+        """`do_remove_item` removes an artifact item."""
         work_request = self.playground.create_work_request()
         artifact, _ = self.playground.create_artifact(
             category=ArtifactCategory.PACKAGE_BUILD_LOG, data={}
@@ -468,11 +458,8 @@ class DebianPackageBuildLogsManagerTests(TestCase):
             replace=True,
         )
 
-        self.manager.remove_artifact(
-            artifact, user=self.user, workflow=self.workflow
-        )
+        self.manager.remove_item(item, user=self.user, workflow=self.workflow)
 
-        item.refresh_from_db()
         self.assertEqual(item.removed_by_user, self.user)
         self.assertEqual(item.removed_by_workflow, self.workflow)
         self.assertIsNotNone(item.removed_at)
@@ -486,7 +473,6 @@ class DebianPackageBuildLogsManagerTests(TestCase):
                 "invalid", "foo", workspace=self.workspace, user=self.user
             )
 
-    @context.disable_permission_checks()
     def test_do_lookup_filter_same_work_request_single(self) -> None:
         """`do_lookup_filter`: `same_work_request` with a single lookup."""
         work_requests = [
@@ -535,16 +521,16 @@ class DebianPackageBuildLogsManagerTests(TestCase):
             ),
         )
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
-                parent_collection=self.collection
-            ).filter(condition),
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.collection)
+            .filter(condition),
             [items[0]],
         )
         self.assertCountEqual(
             lookup_multiple(
                 LookupMultiple.parse_obj(
                     {
-                        "collection": self.collection.id,
+                        "collection": self.collection_lookup,
                         "lookup__same_work_request": subordinate_lookup,
                     }
                 ),
@@ -555,13 +541,13 @@ class DebianPackageBuildLogsManagerTests(TestCase):
             [
                 LookupResult(
                     result_type=CollectionItem.Types.ARTIFACT,
+                    parent_collection_lookup=self.collection_lookup,
                     collection_item=items[0],
                     artifact=build_logs[0],
                 )
             ],
         )
 
-    @context.disable_permission_checks()
     def test_do_lookup_filter_same_work_request_multiple(self) -> None:
         """`do_lookup_filter`: `same_work_request` with a multiple lookup."""
         work_requests = [
@@ -615,9 +601,9 @@ class DebianPackageBuildLogsManagerTests(TestCase):
             ),
         )
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
-                parent_collection=self.collection
-            ).filter(condition),
+            CollectionItem.objects.active()
+            .filter(parent_collection=self.collection)
+            .filter(condition),
             items[:2],
             ordered=False,
         )
@@ -625,7 +611,7 @@ class DebianPackageBuildLogsManagerTests(TestCase):
             lookup_multiple(
                 LookupMultiple.parse_obj(
                     {
-                        "collection": self.collection.id,
+                        "collection": self.collection_lookup,
                         "lookup__same_work_request": subordinate_lookup,
                     }
                 ),
@@ -636,6 +622,7 @@ class DebianPackageBuildLogsManagerTests(TestCase):
             [
                 LookupResult(
                     result_type=CollectionItem.Types.ARTIFACT,
+                    parent_collection_lookup=self.collection_lookup,
                     collection_item=item,
                     artifact=build_log,
                 )

@@ -23,6 +23,7 @@ from debusine.assets.models import (
     HetznerProviderAccountData,
     KeyPurpose,
     SigningKeyData,
+    asset_categories,
     asset_data_model,
 )
 
@@ -40,5 +41,6 @@ __all__ = [
     "HetznerProviderAccountData",
     "KeyPurpose",
     "SigningKeyData",
+    "asset_categories",
     "asset_data_model",
 ]

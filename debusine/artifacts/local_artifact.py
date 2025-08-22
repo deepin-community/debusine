@@ -16,9 +16,8 @@ import abc
 import json
 import re
 from collections.abc import Iterable, Sequence
-from datetime import datetime
 from json import JSONDecodeError
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, ClassVar, Generic, Self, TypeVar, cast, overload
 
 from debian import deb822, debfile
@@ -32,12 +31,7 @@ import debusine.artifacts.models as data_models
 from debusine import utils
 from debusine.artifacts.artifact_utils import files_in_meta_file_match_files
 from debusine.assets import KeyPurpose
-from debusine.client.models import (
-    ArtifactCreateRequest,
-    FileRequest,
-    FilesRequestType,
-    model_to_json_serializable_dict,
-)
+from debusine.client.models import FileRequest
 from debusine.utils import extract_generic_type_arguments
 
 AD = TypeVar("AD", bound=data_models.ArtifactData)
@@ -59,6 +53,9 @@ class LocalArtifact(pydantic.BaseModel, Generic[AD], abc.ABC):
     # Keys are paths in the artifact. Values are FileRequests for files that do
     # not exist locally but can be expected to already exist on the server.
     remote_files: dict[str, FileRequest] = pydantic.Field(default_factory=dict)
+    # Keys are paths in the artifact. Values are MIME types, suitable for
+    # Content-Type headers.
+    content_types: dict[str, str] = pydantic.Field(default_factory=dict)
     #: Artifact data
     data: AD
     # TODO: it would be great to not have to redefine data in subclasses, but
@@ -144,6 +141,7 @@ class LocalArtifact(pydantic.BaseModel, Generic[AD], abc.ABC):
         *,
         artifact_base_dir: Path | None = None,
         override_name: str | None = None,
+        content_type: str | None = None,
     ) -> None:
         """
         Add a local file in the artifact.
@@ -159,6 +157,9 @@ class LocalArtifact(pydantic.BaseModel, Generic[AD], abc.ABC):
            artifact_base_dir=/tmp/artifact
            Path of this file in the artifact: dir1/file1
         :param override_name: if not None: use it instead of file.name
+        :param content_type: if not None: record this as the
+          ``Content-Type`` to be used when serving the file, rather than
+          guessing
         :raises ValueError: artifact_base_dir is not absolute or is not
           a directory; file does not exist; the path in the artifact already
           had a file.
@@ -192,6 +193,8 @@ class LocalArtifact(pydantic.BaseModel, Generic[AD], abc.ABC):
 
         self._check_existing_file(path_in_artifact, file_absolute)
         self.files[path_in_artifact] = file_absolute
+        if content_type is not None:
+            self.content_types[path_in_artifact] = content_type
 
     def add_remote_file(
         self, path_in_artifact: str, file_request: FileRequest
@@ -215,44 +218,6 @@ class LocalArtifact(pydantic.BaseModel, Generic[AD], abc.ABC):
 
         if error is not None:
             raise ValueError(f"Model validation failed: {error}")
-
-    def serialize_for_create_artifact(
-        self,
-        *,
-        workspace: str | None,
-        work_request: int | None = None,
-        expire_at: datetime | None = None,
-    ) -> dict[str, Any]:
-        """Return dictionary to be used by the API to create an artifact."""
-        files: FilesRequestType = FilesRequestType({})
-        for artifact_path, local_path in self.files.items():
-            files[artifact_path] = FileRequest.create_from(local_path)
-        for artifact_path, file_request in self.remote_files.items():
-            files[artifact_path] = file_request
-
-        self.validate_model()
-
-        serialized = model_to_json_serializable_dict(
-            ArtifactCreateRequest(
-                workspace=workspace,
-                category=self.category,
-                files=files,
-                data=(
-                    self.data.dict()
-                    if isinstance(self.data, data_models.ArtifactData)
-                    else self.data
-                ),
-                work_request=work_request,
-                expire_at=expire_at,
-            )
-        )
-
-        # If the workspace was not specified: do not send it to the API.
-        # The server will assign it.
-        if serialized["workspace"] is None:
-            del serialized["workspace"]
-
-        return serialized
 
     @classmethod
     def _validate_files_length(
@@ -311,7 +276,9 @@ class WorkRequestDebugLogs(LocalArtifact[data_models.EmptyArtifactData]):
         artifact = cls(category=cls._category)
 
         for file in files:
-            artifact.add_local_file(file)
+            artifact.add_local_file(
+                file, content_type="text/plain; charset=utf-8"
+            )
 
         return artifact
 
@@ -337,6 +304,7 @@ class PackageBuildLog(LocalArtifact[data_models.DebianPackageBuildLog]):
         file: Path,
         source: str,
         version: str,
+        architecture: str | None = None,
         bd_uninstallable: data_models.DoseDistCheck | None = None,
     ) -> Self:
         """Return a PackageBuildLog."""
@@ -345,12 +313,13 @@ class PackageBuildLog(LocalArtifact[data_models.DebianPackageBuildLog]):
             data=data_models.DebianPackageBuildLog(
                 source=source,
                 version=version,
+                architecture=architecture,
                 filename=file.name,
                 bd_uninstallable=bd_uninstallable,
             ),
         )
 
-        artifact.add_local_file(file)
+        artifact.add_local_file(file, content_type="text/plain; charset=utf-8")
 
         return artifact
 
@@ -436,7 +405,9 @@ class Upload(LocalArtifact[data_models.DebianUpload]):
 
         artifact = cls.construct(category=cls._category, data=data)
 
-        artifact.add_local_file(changes_file)
+        artifact.add_local_file(
+            changes_file, content_type="text/plain; charset=utf-8"
+        )
 
         # Add any files referenced by .changes (excluding the exclude_files)
         base_directory = changes_file.parent
@@ -654,10 +625,13 @@ class LintianArtifact(LocalArtifact[data_models.DebianLintian]):
         cls,
         analysis: Path,
         lintian_output: Path,
+        architecture: str,
         summary: data_models.DebianLintianSummary,
     ) -> Self:
         """Return a LintianArtifact with the files set."""
-        data = data_models.DebianLintian(summary=summary)
+        data = data_models.DebianLintian(
+            architecture=architecture, summary=summary
+        )
 
         artifact = cls(category=cls._category, data=data)
 
@@ -868,7 +842,14 @@ class SigningInputArtifact(LocalArtifact[data_models.DebusineSigningInput]):
         )
         artifact = cls(category=cls._category, data=data)
         for file in files:
-            artifact.add_local_file(file, artifact_base_dir=base_dir)
+            artifact.add_local_file(
+                file,
+                artifact_base_dir=base_dir,
+                # The content-type here doesn't matter, but we don't want to
+                # involve libmagic in a potentially-sensitive signing
+                # workflow.
+                content_type="application/octet-stream",
+            )
         return artifact
 
     @pydantic.validator("files")
@@ -906,5 +887,26 @@ class SigningOutputArtifact(LocalArtifact[data_models.DebusineSigningOutput]):
         )
         artifact = cls(category=cls._category, data=data)
         for file in files:
-            artifact.add_local_file(file, artifact_base_dir=base_dir)
+            artifact.add_local_file(
+                file,
+                artifact_base_dir=base_dir,
+                # The content-type here doesn't matter, but we don't want to
+                # involve libmagic in a potentially-sensitive signing
+                # workflow.
+                content_type="application/octet-stream",
+            )
+        return artifact
+
+
+class RepositoryIndex(LocalArtifact[data_models.DebianRepositoryIndex]):
+    """An index file in a repository."""
+
+    _category = data_models.ArtifactCategory.REPOSITORY_INDEX
+
+    @classmethod
+    def create(cls, *, file: Path, path: str) -> Self:
+        """Return a RepositoryIndex."""
+        data = data_models.DebianRepositoryIndex(path=path)
+        artifact = cls(category=cls._category, data=data)
+        artifact.add_local_file(file, override_name=PurePath(path).name)
         return artifact

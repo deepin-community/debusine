@@ -13,9 +13,9 @@ from typing import Any, ClassVar
 
 from django.test import RequestFactory
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import WorkRequest, Worker, WorkerPool, WorkflowTemplate
 from debusine.db.playground import scenarios
-from debusine.tasks.models import TaskTypes
 from debusine.test.django import TestCase
 from debusine.web.views.tables import (
     FilterFailedWorkRequests,
@@ -155,13 +155,10 @@ class WorkflowTableTests(TestCase):
             {
                 "filter-statuses": "does-not-exist",
                 "filter-with_failed_work_requests": "1",
-                "filter-started_by": self.scenario.user.username,
             }
         )
         f = table.filters["statuses"]
         self.assertIsNone(f.value)
-        f = table.filters["started_by"]
-        self.assertEqual(f.value, [self.scenario.user.username])
         f = table.filters["with_failed_work_requests"]
         self.assertEqual(f.value, "1")
 
@@ -228,9 +225,10 @@ class WorkflowTableTests(TestCase):
 
     def test_list_filtering_workflow_templates(self) -> None:
         """View detail filters by workflow_templates."""
-        self.workflow_2.workflow_data_json["workflow_template_name"] = (
-            "filtered-out"
+        other_template = self.playground.create_workflow_template(
+            "other_template", "noop"
         )
+        self.workflow_2.workflow_template = other_template
         self.workflow_2.save()
         self.assert_filtered(
             self.workflow_1, workflow_templates=self.template.name

@@ -150,8 +150,12 @@ class Columns(Generic[M]):
         self.columns[name] = bc
         return bc
 
+    def __len__(self) -> int:
+        """Return the number of columns."""
+        return len(self.columns)
+
     def __getitem__(self, name: str) -> BoundColumn[M]:
-        """Get a filter by name."""
+        """Get a column by name."""
         return self.columns[name]
 
     def __iter__(self) -> Iterator[BoundColumn[M]]:

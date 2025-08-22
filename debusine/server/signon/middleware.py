@@ -27,7 +27,7 @@ from debusine.server.signon.signon import Signon
 
 @runtime_checkable
 class RequestSignonProtocol(Protocol):
-    """A Django request that has been processed by :class:`SignonMiddleware`."""
+    """A Django request that was processed by :py:class:`SignonMiddleware`."""
 
     signon: Signon
 

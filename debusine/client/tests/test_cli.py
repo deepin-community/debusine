@@ -24,15 +24,20 @@ from collections.abc import Callable, Generator
 from datetime import datetime, timedelta
 from itertools import count
 from pathlib import Path
-from typing import Any, Literal, NoReturn
+from typing import Any, ClassVar, Literal, NoReturn
 from unittest import mock
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import responses
 import yaml
 
 from debusine.artifacts import LocalArtifact
-from debusine.artifacts.models import ArtifactCategory
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    DebusineTaskConfiguration,
+    TaskTypes,
+)
 from debusine.assets import AssetCategory, KeyPurpose, SigningKeyData
 from debusine.client import exceptions
 from debusine.client.cli import Cli
@@ -47,20 +52,27 @@ from debusine.client.models import (
     RelationResponse,
     RelationsResponse,
     RemoteArtifact,
+    TaskConfigurationCollection,
+    TaskConfigurationCollectionUpdateResults,
     WorkRequestExternalDebsignRequest,
     WorkRequestRequest,
     WorkRequestResponse,
     WorkflowTemplateRequest,
+    WorkspaceInheritanceChain,
+    WorkspaceInheritanceChainElement,
     model_to_json_serializable_dict,
 )
+from debusine.client.task_configuration import RemoteTaskConfigurationRepository
 from debusine.test import TestCase
 from debusine.test.test_utils import (
     create_artifact_response,
     create_file_response,
+    create_remote_artifact,
     create_work_request_response,
     create_workflow_template_response,
 )
 from debusine.utils import calculate_hash
+from debusine.utils.input import YamlEditor
 
 
 class BaseCliTests(TestCase):
@@ -68,6 +80,8 @@ class BaseCliTests(TestCase):
 
     def setUp(self) -> None:
         """Configure test object."""
+        super().setUp()
+
         debian_server = {
             'api-url': 'https://debusine.debian.org/api',
             'scope': 'debian',
@@ -100,7 +114,10 @@ class BaseCliTests(TestCase):
             if not isinstance(logger, logging.PlaceHolder):
                 for handler in list(logger.handlers):
                     logger.removeHandler(handler)
+                    handler.close()
                 logger.propagate = True
+
+        super().tearDown()
 
     def create_cli(self, argv: list[str], create_config: bool = True) -> Cli:
         """
@@ -188,15 +205,27 @@ class BaseCliTests(TestCase):
         Patch _build_debusine_object. Return mock.
 
         The mocked object return_value is a MagicMock(spec=Debusine).
+
+        Keyword arguments correspond to methods of the resulting Debusine
+        object to mock.
         """
         patcher = mock.patch.object(
             Cli, "_build_debusine_object", autospec=True
         )
         mocked = patcher.start()
-        mocked.return_value = mock.create_autospec(spec=Debusine)
+        mock_debusine = mock.create_autospec(spec=Debusine)
+        mock_debusine._logger = logging.getLogger("debusine.client.tests")
+        mocked.return_value = mock_debusine
         self.addCleanup(patcher.stop)
 
         return mocked
+
+    def get_base_url(self, server_name: str) -> str:
+        """Return the base web URL for a given server."""
+        split_server = urlsplit(self.servers[server_name]["api-url"])
+        return urlunsplit(
+            (split_server.scheme, split_server.netloc, "", "", "")
+        )
 
 
 class CliTests(BaseCliTests):
@@ -545,14 +574,18 @@ class CliCreateArtifactTests(BaseCliTests):
         """
         mocked_create_artifact.assert_called_once()
 
-        server_url = self.servers[self.default_server]["api-url"]
+        base_url = self.get_base_url(self.default_server)
+        scope = self.servers[self.default_server]["scope"]
+        artifact_url = urljoin(
+            base_url,
+            f"{quote(scope)}/{quote(expected_workspace)}/"
+            f"artifact/{expected_artifact_id}/",
+        )
 
         expected = yaml.safe_dump(
             {
                 "result": "success",
-                "message": f"New artifact created in {server_url} "
-                f"in workspace {expected_workspace} "
-                f"with id {expected_artifact_id}.",
+                "message": f"New artifact created: {artifact_url}",
                 "artifact_id": expected_artifact_id,
                 "files_to_upload": expected_files_to_upload_count,
                 "expire_at": expected_expire_at,
@@ -698,6 +731,8 @@ class CliCreateArtifactTests(BaseCliTests):
             paths_in_artifact_to_file_models[artifact_path] = local_file_path
 
         create_artifact_return_value = create_artifact_response(
+            base_url=self.get_base_url(self.default_server),
+            scope=self.servers[self.default_server]["scope"],
             id=artifact_id,
             workspace=workspace,
             files_to_upload=list(paths_in_artifact_to_file_models.keys()),
@@ -783,6 +818,8 @@ class CliCreateArtifactTests(BaseCliTests):
 
         workspace = "workspace"
         create_artifact_return_value = create_artifact_response(
+            base_url=self.get_base_url(self.default_server),
+            scope=self.servers[self.default_server]["scope"],
             id=2,
             workspace=workspace,
             files_to_upload=list(map(lambda p: p.name, files_to_upload)),
@@ -805,6 +842,8 @@ class CliCreateArtifactTests(BaseCliTests):
         data: dict[str, Any] = {}
 
         create_artifact_return_value = create_artifact_response(
+            base_url=self.get_base_url(self.default_server),
+            scope=self.servers[self.default_server]["scope"],
             id=artifact_id,
             workspace=workspace,
         )
@@ -877,6 +916,8 @@ class CliCreateArtifactTests(BaseCliTests):
         files_to_upload: list[str] = []
 
         create_artifact_return_value = create_artifact_response(
+            base_url=self.get_base_url(self.default_server),
+            scope=self.servers[self.default_server]["scope"],
             id=artifact_id,
             workspace=expected_workspace,
             files_to_upload=files_to_upload,
@@ -1031,7 +1072,7 @@ class CliImportDebianArtifactTests(BaseCliTests):
         id_counter = count(10)
 
         def upload_artifact(
-            self: Debusine,
+            _self: Debusine,
             local_artifact: LocalArtifact[Any],  # noqa: U100
             *,
             workspace: str | None,  # noqa: U100
@@ -1039,7 +1080,13 @@ class CliImportDebianArtifactTests(BaseCliTests):
         ) -> RemoteArtifact:
             if workspace is None:  # pragma: no cover
                 workspace = "System"
-            return RemoteArtifact(id=next(id_counter), workspace=workspace)
+            artifact_id = next(id_counter)
+            return create_remote_artifact(
+                base_url=self.get_base_url(self.default_server),
+                scope=self.servers[self.default_server]["scope"],
+                id=artifact_id,
+                workspace=workspace,
+            )
 
         mocked_upload_artifact.side_effect = upload_artifact
 
@@ -1087,14 +1134,15 @@ class CliImportDebianArtifactTests(BaseCliTests):
         """
         self.assertEqual(mocked_upload_artifact.call_count, expected_artifacts)
 
-        server_url = self.servers[self.default_server]["api-url"]
+        base_url = self.get_base_url(self.default_server)
+        scope = self.servers[self.default_server]["scope"]
+        artifact_url = urljoin(
+            base_url, f"{quote(scope)}/{quote(expected_workspace)}/artifact/10/"
+        )
 
         expected = {
             "result": "success",
-            "message": (
-                f"New artifact created in {server_url} in workspace "
-                f"{expected_workspace} with id 10."
-            ),
+            "message": f"New artifact created: {artifact_url}",
             "artifact_id": 10,
         }
         if extended_artifacts:
@@ -1902,16 +1950,20 @@ class CliCreateWorkRequestTests(BaseCliTests):
         """
         stderr, stdout = self.capture_output(cli.execute)
 
+        base_url = self.get_base_url(self.default_server)
+        scope = self.servers[self.default_server]["scope"]
+        workspace = work_request_request.workspace or "Testing"
         work_request_id = mocked_post_work_request.return_value.id
+        work_request_url = urljoin(
+            base_url,
+            f"{quote(scope)}/{quote(workspace)}/"
+            f"work-request/{work_request_id}/",
+        )
 
         expected = yaml.safe_dump(
             {
                 'result': 'success',
-                'message': (
-                    'Work request registered on '
-                    'https://debusine.debian.org/api with id '
-                    f'{work_request_id}.'
-                ),
+                'message': f'Work request registered: {work_request_url}',
                 'work_request_id': work_request_id,
             },
             sort_keys=False,
@@ -1953,7 +2005,9 @@ class CliCreateWorkRequestTests(BaseCliTests):
             "package": "http://..../package_1.2-3.dsc",
         }
         mocked_post_work_request.return_value = create_work_request_response(
-            id=work_request_id
+            base_url=self.get_base_url(self.default_server),
+            scope=self.servers[self.default_server]["scope"],
+            id=work_request_id,
         )
 
         serialized_data = yaml.safe_dump(data)
@@ -2039,7 +2093,7 @@ class CliCreateWorkRequestTests(BaseCliTests):
                 "comment": "yaml.safe_load raises ScannerError",
             },
             {
-                "task_data": "input:\n  source_url: https://example.com\n" " )",
+                "task_data": "input:\n  source_url: https://example.com\n )",
                 "comment": "yaml.safe_load raises ParserError",
             },
         ]
@@ -2110,6 +2164,23 @@ class CliRetryWorkRequestTests(BaseCliTests):
         )
 
 
+class CliAbortWorkRequestTests(BaseCliTests):
+    """Tests for CLI abort-work-request subcommand."""
+
+    def test_abort(self) -> None:
+        """abort-work-request calls the abort method."""
+        debusine = self.patch_build_debusine_object()
+        cli = self.create_cli(["abort-work-request", "1"])
+
+        stderr, stdout = self.capture_output(cli.execute)
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout, "")
+        debusine.return_value.work_request_abort.assert_called_once_with(
+            1,
+        )
+
+
 class CliWorkRequestListTests(BaseCliTests):
     """Tests for CLI list-work-requests method."""
 
@@ -2147,6 +2218,11 @@ class CliWorkRequestListTests(BaseCliTests):
                 "results": [
                     {
                         "id": work_request_response.id,
+                        "url": (
+                            f"https://example.com/debusine/"
+                            f"{quote(work_request_response.workspace)}/"
+                            f"work-request/{work_request_response.id}/"
+                        ),
                         "created_at": work_request_response.created_at,
                         "started_at": work_request_response.started_at,
                         "completed_at": work_request_response.completed_at,
@@ -2239,6 +2315,11 @@ class CliWorkRequestStatusTests(BaseCliTests):
         expected = yaml.safe_dump(
             {
                 'id': work_request_response.id,
+                "url": (
+                    f"https://example.com/debusine/"
+                    f"{quote(work_request_response.workspace)}/"
+                    f"work-request/{work_request_response.id}/"
+                ),
                 'created_at': work_request_response.created_at,
                 'started_at': work_request_response.started_at,
                 'completed_at': work_request_response.completed_at,
@@ -2310,7 +2391,9 @@ class CliProvideSignatureTests(BaseCliTests):
                 for path in (tar, dsc, buildinfo, changes)
             },
         )
-        remote_signed_artifact = RemoteArtifact(id=3, workspace="Testing")
+        remote_signed_artifact = create_remote_artifact(
+            id=3, workspace="Testing"
+        )
         args = ["provide-signature", "1"]
         if local_changes:
             args.extend(["--local-file", str(changes)])
@@ -2435,6 +2518,7 @@ class CliProvideSignatureTests(BaseCliTests):
         local_file: str | None = None,
         expect_size: dict[str, int] | None = None,
         expect_sha256: dict[str, str] | None = None,
+        delete_dsc: bool = False,
     ) -> None:
         """Test a provide-signature failure scenario with local_file."""
         if expect_size is None:
@@ -2473,6 +2557,8 @@ class CliProvideSignatureTests(BaseCliTests):
                 for path in (tar, dsc, buildinfo, changes)
             },
         )
+        if delete_dsc:
+            dsc.unlink()
         if local_file is None:
             local_file = str(changes)
         args = ["provide-signature", "1", "--local-file", local_file]
@@ -2504,6 +2590,25 @@ class CliProvideSignatureTests(BaseCliTests):
             local_file="nonexistent.changes",
         )
 
+    def test_wrong_local_changes(self) -> None:
+        """provide-signature raises an error for the wrong --local-file."""
+        directory = self.create_temporary_directory()
+        (local_file := directory / "different.changes").write_text("")
+        self.verify_provide_signature_error_scenario(
+            (
+                r"^'[^']+\/different\.changes' is not part of artifact \d+\. "
+                r"Expecting 'foo_1.0_source\.changes'$"
+            ),
+            local_file=str(local_file),
+        )
+
+    def test_missing_local_dsc(self) -> None:
+        """provide-signature raises an error for missing indirect local-file."""
+        self.verify_provide_signature_error_scenario(
+            r"^'[^']+\/foo_1.0\.dsc' does not exist\.$",
+            delete_dsc=True,
+        )
+
     def test_local_dsc(self) -> None:
         """provide-signature raises an error for the wrong kind of file."""
         self.verify_provide_signature_error_scenario(
@@ -2514,7 +2619,7 @@ class CliProvideSignatureTests(BaseCliTests):
     def test_size_mismatch(self) -> None:
         """provide-signature verifies the size of local files."""
         self.verify_provide_signature_error_scenario(
-            r'^"[^"]+/foo_1\.0\.dsc" size mismatch \(expected 999 bytes\)$',
+            r"^'[^']+/foo_1\.0\.dsc' size mismatch \(expected 999 bytes\)$",
             expect_size={"foo_1.0.dsc": 999},
         )
 
@@ -2522,8 +2627,8 @@ class CliProvideSignatureTests(BaseCliTests):
         """provide-signature verifies the hashes of local files."""
         self.verify_provide_signature_error_scenario(
             (
-                r'^"[^"]+/foo_1\.0\.dsc" hash mismatch '
-                r'\(expected sha256 = abc123\)$'
+                r"^'[^']+/foo_1\.0\.dsc' hash mismatch "
+                r"\(expected sha256 = abc123\)$"
             ),
             expect_sha256={"foo_1.0.dsc": "abc123"},
         )
@@ -2574,15 +2679,24 @@ class CliCreateWorkflowTemplateTests(BaseCliTests):
         """
         stderr, stdout = self.capture_output(cli.execute)
 
+        base_url = self.get_base_url(self.default_server)
+        scope = self.servers[self.default_server]["scope"]
+        workspace = workflow_template_request.workspace or "Testing"
         workflow_template_id = mocked_workflow_template_create.return_value.id
+        workflow_template_name = (
+            mocked_workflow_template_create.return_value.name
+        )
+        workflow_template_url = urljoin(
+            base_url,
+            f"{quote(scope)}/{quote(workspace)}/"
+            f"workflow-template/{quote(workflow_template_name)}/",
+        )
 
         expected = yaml.safe_dump(
             {
                 "result": "success",
                 "message": (
-                    f"Workflow template registered on "
-                    f"https://debusine.debian.org/api with id "
-                    f"{workflow_template_id}."
+                    f"Workflow template registered: {workflow_template_url}"
                 ),
                 "workflow_template_id": workflow_template_id,
             },
@@ -2648,7 +2762,9 @@ class CliCreateWorkflowTemplateTests(BaseCliTests):
             "workflow_template_create",
             autospec=True,
             return_value=create_workflow_template_response(
-                id=workflow_template_id
+                base_url=self.get_base_url(self.default_server),
+                scope=self.servers[self.default_server]["scope"],
+                id=workflow_template_id,
             ),
         ) as mocked_workflow_template_create:
             self.assert_create_workflow_template(
@@ -2778,15 +2894,19 @@ class CliCreateWorkflowTests(BaseCliTests):
         """
         stderr, stdout = self.capture_output(cli.execute)
 
+        base_url = self.get_base_url(self.default_server)
+        scope = self.servers[self.default_server]["scope"]
+        workspace = workflow_request.workspace or "Testing"
         workflow_id = mocked_workflow_create.return_value.id
+        workflow_url = urljoin(
+            base_url,
+            f"{quote(scope)}/{quote(workspace)}/work-request/{workflow_id}/",
+        )
 
         expected = yaml.safe_dump(
             {
                 "result": "success",
-                "message": (
-                    f"Workflow created on https://debusine.debian.org/api "
-                    f"with id {workflow_id}."
-                ),
+                "message": f"Workflow created: {workflow_url}",
                 "workflow_id": workflow_id,
             },
             sort_keys=False,
@@ -2844,7 +2964,11 @@ class CliCreateWorkflowTests(BaseCliTests):
             Debusine,
             "workflow_create",
             autospec=True,
-            return_value=create_work_request_response(id=workflow_id),
+            return_value=create_work_request_response(
+                base_url=self.get_base_url(self.default_server),
+                scope=self.servers[self.default_server]["scope"],
+                id=workflow_id,
+            ),
         ) as mocked_workflow_create:
             self.assert_create_workflow(
                 cli,
@@ -3167,6 +3291,7 @@ class CliOnWorkRequestTests(BaseCliTests):
         workspaces: list[str] | None = None,
         last_completed_at: Path | None = None,
         silent: bool | None = False,
+        extra_args: list[str] | None = None,
     ) -> None:
         """Cli call debusine.on_work_request_completed."""
         command = self.create_temporary_file()
@@ -3179,7 +3304,9 @@ class CliOnWorkRequestTests(BaseCliTests):
         if silent:
             cli_args.extend(["--silent"])
 
-        cli_args.extend(["on-work-request-completed", str(command)])
+        cli_args.extend(
+            ["on-work-request-completed", str(command), *(extra_args or [])]
+        )
 
         if workspaces:
             cli_args.extend(["--workspace", *workspaces])
@@ -3197,13 +3324,18 @@ class CliOnWorkRequestTests(BaseCliTests):
         debusine.return_value.on_work_request_completed.assert_called_with(
             workspaces=workspaces,
             last_completed_at=last_completed_at,
-            command=str(command),
+            command=[str(command), *(extra_args or [])],
             working_directory=Path.cwd(),
         )
 
     def test_debusine_on_work_request_completed(self) -> None:
         """Cli call debusine.on_work_request_completed."""
         self.debusine_on_work_request_completed_is_called(silent=True)
+
+    def test_debusine_on_work_request_completed_with_extra_args(self) -> None:
+        self.debusine_on_work_request_completed_is_called(
+            silent=True, extra_args=["foo", "bar"]
+        )
 
     def test_debusine_on_work_request_completed_with_workspace(self) -> None:
         """Cli call debusine.on_work_request_completed."""
@@ -3370,3 +3502,816 @@ class CliSetupTests(BaseCliTests):
             server=None,
             scope="debian",
         )
+
+
+class CliTaskConfigPullPushTests(BaseCliTests):
+    """Tests for Cli task-config-pull and -push."""
+
+    config1: ClassVar[DebusineTaskConfiguration]
+    config2: ClassVar[DebusineTaskConfiguration]
+    template: ClassVar[DebusineTaskConfiguration]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.config1 = DebusineTaskConfiguration(
+            task_type=TaskTypes.WORKER, task_name="noop"
+        )
+        cls.config2 = DebusineTaskConfiguration(
+            task_type=TaskTypes.WORKER,
+            task_name="noop",
+            context="context",
+            subject="subject",
+        )
+        cls.template = DebusineTaskConfiguration(
+            template="template", comment="this is a template"
+        )
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Working directory for the local collection
+        self.workdir = self.create_temporary_directory()
+        # Mocked debusine object
+        build_debusine = self.patch_build_debusine_object()
+        self.debusine = build_debusine.return_value
+
+    def manifest(
+        self,
+        workspace: str = "System",
+        pk: int = 42,
+        name: str = "default",
+        data: dict[str, Any] | None = None,
+    ) -> RemoteTaskConfigurationRepository.Manifest:
+        """Create a manifest."""
+        return RemoteTaskConfigurationRepository.Manifest(
+            workspace=workspace,
+            collection=TaskConfigurationCollection(
+                id=pk, name=name, data=data or {}
+            ),
+        )
+
+    def make_remote_repo(
+        self, workspace: str = "System", pk: int = 42, name: str = "default"
+    ) -> RemoteTaskConfigurationRepository:
+        """Create a TaskConfigurationRepository with manifest."""
+        return RemoteTaskConfigurationRepository(
+            self.manifest(workspace=workspace, pk=pk, name=name)
+        )
+
+    def mock_fetch(
+        self, repo: RemoteTaskConfigurationRepository | None
+    ) -> Mock:
+        """Mock push_task_configuration_collection with a plausible return."""
+        if repo is None:
+            fetch = Mock(
+                side_effect=AssertionError("fetch is not supposed to be called")
+            )
+        else:
+            fetch = Mock(return_value=repo)
+        self.debusine.fetch_task_configuration_collection = fetch
+        return fetch
+
+    def mock_push(
+        self,
+        added: int = 1,
+        updated: int = 2,
+        removed: int = 3,
+        unchanged: int = 4,
+    ) -> Mock:
+        """Mock push_task_configuration_collection with a plausible return."""
+        results = TaskConfigurationCollectionUpdateResults(
+            added=added, updated=updated, removed=removed, unchanged=unchanged
+        )
+        push = Mock(return_value=results)
+        self.debusine.push_task_configuration_collection = push
+        return push
+
+    def write_file(self, path: Path, data: dict[str, Any]) -> None:
+        """Write out a yaml file in workdir."""
+        with (self.workdir / path).open("wt") as fd:
+            yaml.safe_dump(data, fd)
+
+    def workdir_files(self) -> list[Path]:
+        """List files present in workdir."""
+        res: list[Path] = []
+        for cur_root, dirs, files in os.walk(self.workdir):
+            for name in files:
+                res.append(
+                    Path(os.path.join(cur_root, name)).relative_to(self.workdir)
+                )
+        return res
+
+    def assertFileContents(self, path: Path, expected: dict[str, Any]) -> None:
+        """Check that path points to a YAML file with the given contents."""
+        with (self.workdir / path).open() as fd:
+            actual = yaml.safe_load(fd)
+        self.assertEqual(actual, expected)
+
+    def test_pull_default_to_current_dir(self) -> None:
+        with mock.patch("debusine.client.cli.Cli._task_config_pull") as pull:
+            cli = self.create_cli(["task-config-pull"])
+            cli.execute()
+        pull.assert_called_with(
+            self.debusine, Path.cwd(), workspace=None, collection="default"
+        )
+
+    def test_pull_workdir(self) -> None:
+        with mock.patch("debusine.client.cli.Cli._task_config_pull") as pull:
+            cli = self.create_cli(
+                ["task-config-pull", "--workdir", self.workdir.as_posix()]
+            )
+            cli.execute()
+        pull.assert_called_with(
+            self.debusine, self.workdir, workspace=None, collection="default"
+        )
+
+    def test_pull_workspace(self) -> None:
+        with mock.patch("debusine.client.cli.Cli._task_config_pull") as pull:
+            cli = self.create_cli(
+                [
+                    "task-config-pull",
+                    "--workdir",
+                    self.workdir.as_posix(),
+                    "--workspace=workspace",
+                ]
+            )
+            cli.execute()
+        pull.assert_called_with(
+            self.debusine,
+            self.workdir,
+            workspace="workspace",
+            collection="default",
+        )
+
+    def test_pull_collection_name(self) -> None:
+        with mock.patch("debusine.client.cli.Cli._task_config_pull") as pull:
+            cli = self.create_cli(
+                [
+                    "task-config-pull",
+                    "--workdir",
+                    self.workdir.as_posix(),
+                    "--workspace=workspace",
+                    "collection",
+                ]
+            )
+            cli.execute()
+        pull.assert_called_with(
+            self.debusine,
+            self.workdir,
+            workspace="workspace",
+            collection="collection",
+        )
+
+    def test_pull_no_workspace(self) -> None:
+        fetch = self.mock_fetch(repo=None)
+        cli = self.create_cli(
+            ["task-config-pull", "--workdir", self.workdir.as_posix()]
+        )
+        stderr, stdout = self.capture_output(
+            cli.execute, assert_system_exit_code=3
+        )
+        fetch.assert_not_called()
+        self.assertEqual(stdout, "")
+        self.assertEqual(
+            stderr,
+            f"{self.workdir} is not a repository,"
+            " and no workspace/collection names"
+            " were provided for a new checkout\n",
+        )
+
+    def test_pull_new_repo(self) -> None:
+        server_repo = self.make_remote_repo()
+        server_repo.add(self.config1)
+        server_repo.add(self.template)
+        self.mock_fetch(repo=server_repo)
+        cli = self.create_cli(
+            [
+                "task-config-pull",
+                "--workspace=System",
+                "--workdir",
+                self.workdir.as_posix(),
+            ]
+        )
+        with self.assertLogs("debusine.client.tests") as log:
+            stderr, stdout = self.capture_output(cli.execute)
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout, "")
+        self.assertCountEqual(
+            [x.removeprefix("INFO:debusine.client.tests:") for x in log.output],
+            [
+                "new/templates/template.yaml: new item",
+                "new/worker_noop/any_any.yaml: new item",
+                "2 added, 0 updated, 0 deleted, 0 unchanged",
+            ],
+        )
+        self.assertCountEqual(
+            self.workdir_files(),
+            [
+                path_manifest := Path("MANIFEST"),
+                path_template := Path("new/templates/template.yaml"),
+                path_config1 := Path("new/worker_noop/any_any.yaml"),
+            ],
+        )
+
+        self.assertFileContents(path_manifest, server_repo.manifest.dict())
+        self.assertFileContents(path_template, self.template.dict())
+        self.assertFileContents(path_config1, self.config1.dict())
+
+    def test_pull_existing_repo(self) -> None:
+        server_repo = self.make_remote_repo()
+        server_repo.add(self.config1)
+        server_repo.add(self.template)
+        self.mock_fetch(repo=server_repo)
+        self.write_file(
+            path_manifest := Path("MANIFEST"), server_repo.manifest.dict()
+        )
+        self.write_file(
+            path_config1 := Path("config.yaml"), self.config1.dict()
+        )
+        self.write_file(
+            path_template := Path("template.yaml"), self.template.dict()
+        )
+        cli = self.create_cli(
+            ["task-config-pull", "--workdir", self.workdir.as_posix()]
+        )
+        with self.assertLogs("debusine.client.tests") as log:
+            stderr, stdout = self.capture_output(cli.execute)
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout, "")
+        self.assertCountEqual(
+            [x.removeprefix("INFO:debusine.client.tests:") for x in log.output],
+            [
+                "0 added, 0 updated, 0 deleted, 2 unchanged",
+            ],
+        )
+        self.assertCountEqual(
+            self.workdir_files(),
+            [
+                path_manifest,
+                path_template,
+                path_config1,
+            ],
+        )
+
+        self.assertFileContents(path_manifest, server_repo.manifest.dict())
+        self.assertFileContents(path_template, self.template.dict())
+        self.assertFileContents(path_config1, self.config1.dict())
+
+    def test_pull_repo_manifest_mismatch(self) -> None:
+        server_repo = self.make_remote_repo()
+        server_repo.add(self.config2)
+        self.mock_fetch(repo=server_repo)
+        local_manifest = server_repo.manifest.dict()
+        local_manifest["workspace"] = "other"
+        self.write_file(path_manifest := Path("MANIFEST"), local_manifest)
+        self.write_file(
+            path_config1 := Path("config.yaml"), self.config1.dict()
+        )
+        cli = self.create_cli(
+            ["task-config-pull", "System", "--workdir", self.workdir.as_posix()]
+        )
+        stderr, stdout = self.capture_output(
+            cli.execute, assert_system_exit_code=3
+        )
+
+        self.assertEqual(
+            stderr,
+            "repo to pull refers to collection System/default (42)"
+            " while the checkout has collection other/default (42)\n",
+        )
+        self.assertEqual(stdout, "")
+        self.assertCountEqual(
+            self.workdir_files(),
+            [
+                path_manifest,
+                path_config1,
+            ],
+        )
+
+    def test_push_default_to_current_dir(self) -> None:
+        with mock.patch("debusine.client.cli.Cli._task_config_push") as push:
+            cli = self.create_cli(["task-config-push"])
+            cli.execute()
+        push.assert_called_with(
+            self.debusine, Path.cwd(), dry_run=False, force=False
+        )
+
+    def test_push_workdir(self) -> None:
+        with mock.patch("debusine.client.cli.Cli._task_config_push") as push:
+            cli = self.create_cli(
+                ["task-config-push", "--workdir", self.workdir.as_posix()]
+            )
+            cli.execute()
+        push.assert_called_with(
+            self.debusine,
+            self.workdir,
+            dry_run=False,
+            force=False,
+        )
+
+    def test_push_dry_run(self) -> None:
+        with mock.patch("debusine.client.cli.Cli._task_config_push") as push:
+            cli = self.create_cli(
+                [
+                    "task-config-push",
+                    "--workdir",
+                    self.workdir.as_posix(),
+                    "--dry-run",
+                ]
+            )
+            cli.execute()
+        push.assert_called_with(
+            self.debusine, self.workdir, dry_run=True, force=False
+        )
+
+    def test_push_force(self) -> None:
+        with mock.patch("debusine.client.cli.Cli._task_config_push") as push:
+            cli = self.create_cli(
+                [
+                    "task-config-push",
+                    "--workdir",
+                    self.workdir.as_posix(),
+                    "--force",
+                ]
+            )
+            cli.execute()
+        push.assert_called_with(
+            self.debusine, self.workdir, dry_run=False, force=True
+        )
+
+    def test_push_no_workdir(self) -> None:
+        path = self.workdir / "does-not-exist"
+        cli = self.create_cli(
+            ["task-config-push", "--workdir", path.as_posix()]
+        )
+        stderr, stdout = self.capture_output(
+            cli.execute, assert_system_exit_code=3
+        )
+        self.assertEqual(stderr, f"{path} is not a repository\n")
+        self.assertEqual(stdout, "")
+
+    def test_push_no_manifest(self) -> None:
+        cli = self.create_cli(
+            ["task-config-push", "--workdir", self.workdir.as_posix()]
+        )
+        stderr, stdout = self.capture_output(
+            cli.execute, assert_system_exit_code=3
+        )
+        self.assertEqual(stderr, f"{self.workdir} is not a repository\n")
+        self.assertEqual(stdout, "")
+
+    def test_push_repo(self) -> None:
+        server_repo = self.make_remote_repo()
+        self.mock_fetch(repo=server_repo)
+        push_method = self.mock_push()
+        self.write_file(Path("MANIFEST"), self.manifest().dict())
+        self.write_file(Path("config.yaml"), self.config1.dict())
+        cli = self.create_cli(
+            ["task-config-push", "--workdir", self.workdir.as_posix()]
+        )
+        with self.assertLogs("debusine.client.tests") as log:
+            stderr, stdout = self.capture_output(cli.execute)
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout, "")
+        self.assertCountEqual(
+            [x.removeprefix("INFO:debusine.client.tests:") for x in log.output],
+            [
+                "Pushing data to server...",
+                "1 added, 2 updated, 3 removed, 4 unchanged",
+            ],
+        )
+
+        repo = push_method.call_args.kwargs["repo"]
+        self.assertEqual(repo.manifest, self.manifest())
+        self.assertEqual(
+            [x.item for x in repo.entries.values()], [self.config1]
+        )
+        self.assertFalse(push_method.call_args.kwargs["dry_run"])
+
+    def test_push_repo_dry_run(self) -> None:
+        server_repo = self.make_remote_repo()
+        self.mock_fetch(repo=server_repo)
+        push_method = self.mock_push()
+        self.write_file(Path("MANIFEST"), self.manifest().dict())
+        self.write_file(Path("config.yaml"), self.config1.dict())
+        cli = self.create_cli(
+            [
+                "task-config-push",
+                "--workdir",
+                self.workdir.as_posix(),
+                "--dry-run",
+            ]
+        )
+        with self.assertLogs("debusine.client.tests") as log:
+            stderr, stdout = self.capture_output(cli.execute)
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout, "")
+        self.assertCountEqual(
+            [x.removeprefix("INFO:debusine.client.tests:") for x in log.output],
+            [
+                "Pushing data to server (dry run)...",
+                "1 added, 2 updated, 3 removed, 4 unchanged",
+            ],
+        )
+
+        repo = push_method.call_args.kwargs["repo"]
+        self.assertEqual(repo.manifest, self.manifest())
+        self.assertEqual(
+            [x.item for x in repo.entries.values()], [self.config1]
+        )
+        self.assertTrue(push_method.call_args.kwargs["dry_run"])
+
+    def test_push_repo_dirty(self) -> None:
+        self.write_file(Path("MANIFEST"), self.manifest().dict())
+        cli = self.create_cli(
+            ["task-config-push", "--workdir", self.workdir.as_posix()]
+        )
+        with mock.patch(
+            "debusine.client.task_configuration"
+            ".LocalTaskConfigurationRepository.is_dirty",
+            return_value=True,
+        ):
+            stderr, stdout = self.capture_output(
+                cli.execute, assert_system_exit_code=3
+            )
+        self.assertEqual(
+            stderr,
+            f"{self.workdir} has uncommitted changes:"
+            " please commit them before pushing\n",
+        )
+        self.assertEqual(stdout, "")
+
+    def test_push_repo_dirty_force(self) -> None:
+        self.write_file(Path("MANIFEST"), self.manifest().dict())
+        fetch_method = self.mock_fetch(repo=self.make_remote_repo())
+        push_method = self.mock_push()
+        cli = self.create_cli(
+            [
+                "task-config-push",
+                "--workdir",
+                self.workdir.as_posix(),
+                "--force",
+            ]
+        )
+        with (
+            mock.patch(
+                "debusine.client.task_configuration"
+                ".LocalTaskConfigurationRepository.is_dirty",
+                return_value=True,
+            ),
+            self.assertLogs("debusine.client.tests") as log,
+        ):
+            stderr, stdout = self.capture_output(cli.execute)
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout, "")
+        self.assertCountEqual(
+            [
+                x.removeprefix("WARNING:debusine.client.tests:").removeprefix(
+                    "INFO:debusine.client.tests:"
+                )
+                for x in log.output
+            ],
+            [
+                f"{self.workdir} has uncommitted changes:"
+                " please commit them before pushing",
+                "Pushing data to server...",
+                "1 added, 2 updated, 3 removed, 4 unchanged",
+            ],
+        )
+        fetch_method.assert_called()
+        push_method.assert_called()
+
+    def test_push_git_no_commit_on_server(self) -> None:
+        local_commit = "0" * 40
+        server_repo = self.make_remote_repo()
+        self.mock_fetch(repo=server_repo)
+        push_method = self.mock_push()
+        self.write_file(Path("MANIFEST"), self.manifest().dict())
+        with mock.patch(
+            "debusine.client.task_configuration"
+            ".LocalTaskConfigurationRepository.git_commit",
+            return_value=local_commit,
+        ):
+            cli = self.create_cli(
+                [
+                    "task-config-push",
+                    "--workdir",
+                    self.workdir.as_posix(),
+                ]
+            )
+            cli.execute()
+
+        repo = push_method.call_args.kwargs["repo"]
+        self.assertEqual(
+            repo.manifest, self.manifest(data={"git_commit": local_commit})
+        )
+
+    def test_push_git_does_not_have_previous_commit(self) -> None:
+        local_commit = "1" * 40
+        server_commit = "0" * 40
+        server_repo = self.make_remote_repo()
+        server_repo.manifest.collection.data["git_commit"] = server_commit
+        fetch_method = self.mock_fetch(repo=server_repo)
+        push_method = self.mock_push()
+
+        self.write_file(Path("MANIFEST"), self.manifest().dict())
+        with (
+            mock.patch(
+                "debusine.client.task_configuration"
+                ".LocalTaskConfigurationRepository.git_commit",
+                return_value=local_commit,
+            ),
+            mock.patch(
+                "debusine.client.task_configuration"
+                ".LocalTaskConfigurationRepository.has_commit",
+                return_value=False,
+            ),
+        ):
+            cli = self.create_cli(
+                [
+                    "task-config-push",
+                    "--workdir",
+                    self.workdir.as_posix(),
+                ]
+            )
+            stderr, stdout = self.capture_output(
+                cli.execute, assert_system_exit_code=3
+            )
+
+        self.assertEqual(
+            stderr,
+            "server collection was pushed from commit"
+            f" {server_commit} which is not known to {self.workdir}\n",
+        )
+        self.assertEqual(stdout, "")
+
+        fetch_method.assert_called()
+        push_method.assert_not_called()
+
+    def test_push_git_does_not_have_previous_commit_force(self) -> None:
+        local_commit = "1" * 40
+        server_commit = "0" * 40
+        server_repo = self.make_remote_repo()
+        server_repo.manifest.collection.data["git_commit"] = server_commit
+        fetch_method = self.mock_fetch(repo=server_repo)
+        push_method = self.mock_push()
+
+        self.write_file(Path("MANIFEST"), self.manifest().dict())
+        with (
+            mock.patch(
+                "debusine.client.task_configuration"
+                ".LocalTaskConfigurationRepository.git_commit",
+                return_value=local_commit,
+            ),
+            mock.patch(
+                "debusine.client.task_configuration"
+                ".LocalTaskConfigurationRepository.has_commit",
+                return_value=False,
+            ),
+            self.assertLogs("debusine.client.tests") as log,
+        ):
+            cli = self.create_cli(
+                [
+                    "task-config-push",
+                    "--workdir",
+                    self.workdir.as_posix(),
+                    "--force",
+                ]
+            )
+            stderr, stdout = self.capture_output(cli.execute)
+
+        self.assertCountEqual(
+            [
+                x.removeprefix("WARNING:debusine.client.tests:").removeprefix(
+                    "INFO:debusine.client.tests:"
+                )
+                for x in log.output
+            ],
+            [
+                "server collection was pushed from commit"
+                f" {server_commit} which is not known to {self.workdir}",
+                "Pushing data to server...",
+                "1 added, 2 updated, 3 removed, 4 unchanged",
+            ],
+        )
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout, "")
+
+        fetch_method.assert_called()
+        push_method.assert_called()
+
+    def test_push_git_has_previous_commit(self) -> None:
+        local_commit = "0" * 40
+        server_commit = "1" * 40
+        server_repo = self.make_remote_repo()
+        server_repo.manifest.collection.data["git_commit"] = server_commit
+        self.mock_fetch(repo=server_repo)
+        push_method = self.mock_push()
+
+        self.write_file(Path("MANIFEST"), self.manifest().dict())
+        with (
+            mock.patch(
+                "debusine.client.task_configuration"
+                ".LocalTaskConfigurationRepository.git_commit",
+                return_value=local_commit,
+            ),
+            mock.patch(
+                "debusine.client.task_configuration"
+                ".LocalTaskConfigurationRepository.has_commit",
+                return_value=True,
+            ),
+        ):
+            cli = self.create_cli(
+                [
+                    "task-config-push",
+                    "--workdir",
+                    self.workdir.as_posix(),
+                ]
+            )
+            cli.execute()
+
+        repo = push_method.call_args.kwargs["repo"]
+        self.assertEqual(
+            repo.manifest, self.manifest(data={"git_commit": local_commit})
+        )
+
+
+class CliWorkspaceInheritanceTests(BaseCliTests):
+    """Tests for Cli workspace-inheritance."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        build_debusine = self.patch_build_debusine_object()
+        self.debusine = build_debusine.return_value
+
+    def cli(
+        self, args: list[str], current: WorkspaceInheritanceChain
+    ) -> WorkspaceInheritanceChain | None:
+        """
+        Run the command with the given arguments.
+
+        :returns: the inheritance chain submitted to the server, or None if
+            nothing was submitted
+        """
+        with (
+            mock.patch.object(
+                self.debusine,
+                "get_workspace_inheritance",
+                return_value=current or WorkspaceInheritanceChain(),
+            ),
+            mock.patch.object(
+                self.debusine,
+                "set_workspace_inheritance",
+                side_effect=lambda self, chain: chain,
+            ) as set_inheritance,
+        ):
+            cli = self.create_cli(["workspace-inheritance", "workspace"] + args)
+            stderr, stdout = self.capture_output(cli.execute)
+            self.assertEqual(stderr, "")
+            if set_inheritance.called:
+                submitted = set_inheritance.call_args.kwargs["chain"]
+                assert isinstance(submitted, WorkspaceInheritanceChain)
+                self.assertEqual(
+                    stdout,
+                    yaml.safe_dump(
+                        submitted.dict(),
+                        sort_keys=False,
+                        width=math.inf,
+                    ),
+                )
+                return submitted
+            else:
+                self.assertEqual(
+                    stdout,
+                    yaml.safe_dump(
+                        current.dict(),
+                        sort_keys=False,
+                        width=math.inf,
+                    ),
+                )
+                return None
+
+    def chain(
+        self,
+        *args: WorkspaceInheritanceChainElement,
+    ) -> WorkspaceInheritanceChain:
+        """Shortcut to build an inheritance chain."""
+        return WorkspaceInheritanceChain(chain=list(args))
+
+    def test_get(self) -> None:
+        El = WorkspaceInheritanceChainElement
+        self.assertIsNone(self.cli([], current=self.chain(El(id=1), El(id=2))))
+
+    def test_change(self) -> None:
+        El = WorkspaceInheritanceChainElement
+        el1, el2, el3 = El(id=1), El(id=2), El(id=3)
+        for current, args, expected in (
+            (
+                self.chain(el2),
+                ["--append", "1", "3"],
+                self.chain(el2, el1, el3),
+            ),
+            (self.chain(), ["--append", "1", "3"], self.chain(el1, el3)),
+            (
+                self.chain(el2),
+                ["--prepend", "1", "3"],
+                self.chain(el1, el3, el2),
+            ),
+            (self.chain(), ["--prepend", "1", "3"], self.chain(el1, el3)),
+            (
+                self.chain(el1, el2, el3),
+                ["--remove", "1"],
+                self.chain(el2, el3),
+            ),
+            (
+                self.chain(el1, el2, el3),
+                ["--set", "3", "1"],
+                self.chain(el3, el1),
+            ),
+            (
+                self.chain(el1),
+                ["--append", "2", "--prepend", "3"],
+                self.chain(el3, el1, el2),
+            ),
+            (
+                self.chain(el1),
+                ["--append", "2", "--set", "3"],
+                self.chain(el3),
+            ),
+            (
+                self.chain(el2),
+                ["--prepend", "1", "3"],
+                self.chain(el1, el3, el2),
+            ),
+        ):
+            with self.subTest(current=current, args=args):
+                self.assertEqual(
+                    self.cli(args, current=current),
+                    expected,
+                )
+
+    def test_change_invalid_chain(self) -> None:
+        El = WorkspaceInheritanceChainElement
+        with (
+            mock.patch.object(
+                self.debusine,
+                "get_workspace_inheritance",
+                return_value=WorkspaceInheritanceChain(),
+            ),
+            mock.patch.object(
+                self.debusine,
+                "set_workspace_inheritance",
+                side_effect=DebusineError(problem={"error": "expected error"}),
+            ) as set_inheritance,
+        ):
+            cli = self.create_cli(
+                ["workspace-inheritance", "workspace", "--set", "1", "1"]
+            )
+            stderr, stdout = self.capture_output(
+                cli.execute, assert_system_exit_code=3
+            )
+            self.assertEqual(
+                stdout, "result: failure\nerror:\n  error: expected error\n"
+            )
+            self.assertEqual(stderr, "")
+            set_inheritance.assert_called_with(
+                "workspace", chain=self.chain(El(id=1), El(id=1))
+            )
+
+    def test_edit(self) -> None:
+        def mock_edit(self_: YamlEditor[dict[str, Any]]) -> bool:
+            self_.value = self.chain(el3, el2, el1).dict()
+            return True
+
+        El = WorkspaceInheritanceChainElement
+        el1, el2, el3 = El(id=1), El(id=2), El(id=3)
+        with mock.patch(
+            "debusine.utils.input.YamlEditor.edit",
+            side_effect=mock_edit,
+            autospec=True,
+        ):
+            self.assertEqual(
+                self.cli(["--edit"], current=self.chain(el1, el2, el3)),
+                self.chain(el3, el2, el1),
+            )
+
+    def test_edit_failed(self) -> None:
+        def mock_edit(self_: YamlEditor[dict[str, Any]]) -> bool:
+            self_.value = self.chain(el3, el2, el1).dict()
+            return False
+
+        El = WorkspaceInheritanceChainElement
+        el1, el2, el3 = El(id=1), El(id=2), El(id=3)
+        with mock.patch(
+            "debusine.utils.input.YamlEditor.edit",
+            side_effect=mock_edit,
+            autospec=True,
+        ):
+            self.assertIsNone(
+                self.cli(["--edit"], current=self.chain(el1, el2, el3))
+            )

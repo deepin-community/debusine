@@ -27,6 +27,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, NoReturn
 
+import argcomplete
 import yaml
 from dateutil.parser import isoparse
 from requests.exceptions import RequestException
@@ -53,9 +54,15 @@ from debusine.client.models import (
     WorkRequestRequest,
     WorkRequestResponse,
     WorkflowTemplateRequest,
+    WorkspaceInheritanceChain,
     model_to_json_serializable_dict,
     model_to_json_serializable_list,
 )
+from debusine.client.task_configuration import (
+    InvalidRepository,
+    LocalTaskConfigurationRepository,
+)
+from debusine.utils.input import YamlEditor
 
 
 class Cli:
@@ -181,6 +188,13 @@ class Cli:
             "work_request_id", type=int, help="Work request id to retry"
         )
 
+        abort_work_request = subparsers.add_parser(
+            "abort-work-request", help="Abort a work request"
+        )
+        abort_work_request.add_argument(
+            "work_request_id", type=int, help="Work request id to abort"
+        )
+
         provide_signature = subparsers.add_parser(
             "provide-signature",
             help="Provide a work request with an external signature",
@@ -202,7 +216,10 @@ class Cli:
         provide_signature.add_argument(
             "extra_args",
             nargs="*",
-            help="Additional arguments passed to debsign",
+            help=(
+                "Additional arguments passed to debsign. "
+                "Use a -- to pass options, e.g. -- -kMYKEY."
+            ),
         )
 
         create_workflow_template = subparsers.add_parser(
@@ -390,9 +407,11 @@ class Cli:
 
         on_work_request_completed = subparsers.add_parser(
             "on-work-request-completed",
-            help="Execute a command when a work request is completed. "
-            "Arguments to the command: WorkRequest.id and "
-            "WorkRequest.result",
+            help=(
+                "Execute a command when a work request is completed. "
+                "Arguments to the command: any additional arguments provided "
+                "here, followed by WorkRequest.id and WorkRequest.result"
+            ),
         )
         on_work_request_completed.add_argument(
             "--workspace",
@@ -414,9 +433,107 @@ class Cli:
             type=str,
             help="Path to the command to execute",
         )
+        on_work_request_completed.add_argument(
+            "extra_args",
+            nargs="*",
+            help="Additional arguments to pass to the command to execute",
+        )
+
+        task_config_pull = subparsers.add_parser(
+            "task-config-pull",
+            help="Check out a task configuration collection,"
+            " or update a local checkout",
+        )
+        task_config_pull.add_argument(
+            "--workspace",
+            type=str,
+            help="workspace name"
+            " (not needed to refresh an existing checkout)",
+        )
+        task_config_pull.add_argument(
+            "collection",
+            type=str,
+            nargs="?",
+            default="default",
+            help="collection name"
+            " (not needed to refresh an existing checkout)",
+        )
+        task_config_pull.add_argument(
+            "--workdir",
+            type=Path,
+            default=Path.cwd(),
+            help="working directory to use. Default: current directory.",
+        )
+
+        task_config_push = subparsers.add_parser(
+            "task-config-push",
+            help="Replace the contents of the collection on the server"
+            " with those of the local checkout",
+        )
+        task_config_push.add_argument(
+            "--workdir",
+            type=Path,
+            default=Path.cwd(),
+            help="working directory to use. Default: current directory.",
+        )
+        task_config_push.add_argument(
+            "-n",
+            "--dry-run",
+            action="store_true",
+            help="do not update the collection:"
+            " only show what would be updated",
+        )
+        task_config_push.add_argument(
+            "-f",
+            "--force",
+            action="store_true",
+            help="push the collection, skipping all checks",
+        )
+
+        workspace_inheritance = subparsers.add_parser(
+            "workspace-inheritance",
+            help="Query and change the inheritance chain of a workspace",
+        )
+        workspace_inheritance.add_argument(
+            "workspace", type=str, help="workspace name"
+        )
+        workspace_inheritance.add_argument(
+            "--append",
+            type=str,
+            nargs="+",
+            help="workspaces (id, 'name', or 'scope/name')"
+            " to add to the end of the parent list",
+        )
+        workspace_inheritance.add_argument(
+            "--prepend",
+            type=str,
+            nargs="+",
+            help="workspaces (id, 'name', or 'scope/name')"
+            " to add to the beginning of the parent list",
+        )
+        workspace_inheritance.add_argument(
+            "--remove",
+            type=str,
+            nargs="+",
+            help="workspaces (id, 'name', or 'scope/name')"
+            " to remove from the parent list",
+        )
+        workspace_inheritance.add_argument(
+            "--set",
+            type=str,
+            nargs="+",
+            help="workspaces (id, 'name', or 'scope/name')"
+            " that compose the new parent list",
+        )
+        workspace_inheritance.add_argument(
+            "--edit",
+            action="store_true",
+            help="edit the parent list using $EDITOR",
+        )
 
         subparsers.add_parser("setup", help="Guided setup of debusine-client")
 
+        argcomplete.autocomplete(parser)
         self.args = parser.parse_args(self._argv)
 
     def _build_debusine_object(self) -> Debusine:
@@ -519,6 +636,11 @@ class Cli:
                     debusine,
                     self.args.work_request_id,
                 )
+            case "abort-work-request":
+                self._abort_work_request(
+                    debusine,
+                    self.args.work_request_id,
+                )
             case "provide-signature":
                 self._provide_signature(
                     debusine,
@@ -588,12 +710,31 @@ class Cli:
                     debusine,
                     workspaces=self.args.workspace,
                     last_completed_at=self.args.last_completed_at,
-                    command=self.args.command,
+                    command=[self.args.command] + self.args.extra_args,
                 )
             case "create-workflow-template":
                 self.execute_create_workflow_template(debusine)
             case "create-workflow":
                 self.execute_create_workflow(debusine)
+            case "task-config-pull":
+                self._task_config_pull(
+                    debusine,
+                    self.args.workdir,
+                    workspace=self.args.workspace,
+                    collection=self.args.collection,
+                )
+            case "task-config-push":
+                self._task_config_push(
+                    debusine,
+                    self.args.workdir,
+                    dry_run=self.args.dry_run,
+                    force=self.args.force,
+                )
+            case "workspace-inheritance":
+                self._workspace_inheritance(
+                    debusine,
+                    self.args.workspace,
+                )
             case _ as unreachable:
                 raise AssertionError(
                     f"Unexpected sub-command name: {unreachable}"
@@ -690,9 +831,9 @@ class Cli:
         else:
             output = {
                 'result': 'success',
-                'message': f'Work request registered on '
-                f'{debusine.base_api_url} '
-                f'with id {work_request_created.id}.',
+                'message': (
+                    f"Work request registered: {work_request_created.url}"
+                ),
                 'work_request_id': work_request_created.id,
             }
         self._print_yaml(output)
@@ -722,22 +863,33 @@ class Cli:
         with self._api_call_or_fail():
             debusine.work_request_retry(work_request_id)
 
+    def _abort_work_request(
+        self,
+        debusine: Debusine,
+        work_request_id: int,
+    ) -> None:
+        """Abort a work request."""
+        with self._api_call_or_fail():
+            debusine.work_request_abort(work_request_id)
+
     def _fetch_local_file(
         self, src: Path, dest: Path, artifact_file: FileResponse
     ) -> None:
         """Copy src to dest and verify that its hash matches artifact_file."""
-        assert src.exists()
+        if not src.exists():
+            self._fail(f"{str(src)!r} does not exist.")
         hashes = copy_file(src, dest, artifact_file.checksums.keys())
         if hashes["size"] != artifact_file.size:
             self._fail(
-                f'"{src}" size mismatch (expected {artifact_file.size} bytes)'
+                f"{str(src)!r} size mismatch (expected {artifact_file.size} "
+                f"bytes)"
             )
 
         for hash_name, expected_value in artifact_file.checksums.items():
             if hashes[hash_name] != expected_value:
                 self._fail(
-                    f'"{src}" hash mismatch (expected {hash_name} '
-                    f'= {expected_value})'
+                    f"{str(src)!r} hash mismatch (expected {hash_name} "
+                    f"= {expected_value})"
                 )
 
     def _provide_signature_debsign(
@@ -766,6 +918,19 @@ class Cli:
             unsigned = debusine.artifact_get(
                 work_request.dynamic_task_data["unsigned_id"]
             )
+
+        if local_file:
+            expected_changes = [
+                file
+                for file in unsigned.files.keys()
+                if file.endswith(".changes")
+            ][0]
+            if local_file.name not in unsigned.files:
+                self._fail(
+                    f"{str(local_file)!r} is not part of artifact "
+                    f"{work_request.dynamic_task_data['unsigned_id']}. "
+                    f"Expecting {expected_changes!r}"
+                )
 
         with tempfile.TemporaryDirectory(
             prefix="debusine-debsign-"
@@ -876,8 +1041,8 @@ class Cli:
             output = {
                 "result": "success",
                 "message": (
-                    f"Workflow template registered on {debusine.base_api_url} "
-                    f"with id {workflow_template_created.id}."
+                    f"Workflow template registered: "
+                    f"{workflow_template_created.url}"
                 ),
                 "workflow_template_id": workflow_template_created.id,
             }
@@ -924,10 +1089,7 @@ class Cli:
         else:
             output = {
                 "result": "success",
-                "message": (
-                    f"Workflow created on {debusine.base_api_url} with id "
-                    f"{workflow_created.id}."
-                ),
+                "message": f"Workflow created: {workflow_created.url}",
                 "workflow_id": workflow_created.id,
             }
         self._print_yaml(output)
@@ -1032,9 +1194,7 @@ class Cli:
         else:
             output = {
                 "result": "success",
-                "message": f"New artifact created in {debusine.base_api_url} "
-                f"in workspace {artifact_created.workspace} "
-                f"with id {artifact_created.id}.",
+                "message": f"New artifact created: {artifact_created.url}",
                 "artifact_id": artifact_created.id,
                 "files_to_upload": len(artifact_created.files_to_upload),
                 "expire_at": expire_at,
@@ -1083,11 +1243,7 @@ class Cli:
             primary_artifact = uploaded[0]
             result = {
                 "result": "success",
-                "message": (
-                    f"New artifact created in {debusine.base_api_url} "
-                    f"in workspace {remote_artifact.workspace} with id "
-                    f"{primary_artifact.id}."
-                ),
+                "message": f"New artifact created: {primary_artifact.url}",
                 "artifact_id": primary_artifact.id,
             }
             for related_artifact in uploaded[1:]:
@@ -1175,6 +1331,8 @@ class Cli:
             self._print_yaml(output)
             raise SystemExit(3)
         else:
+            # TODO: Ideally this would show a URL instead like everything
+            # else, but assets don't have a web view at the moment.
             self._print_yaml(
                 {
                     "result": "success",
@@ -1216,11 +1374,11 @@ class Cli:
         *,
         workspaces: list[str],
         last_completed_at: Path | None,
-        command: str,
+        command: list[str],
     ) -> None:
-        if shutil.which(command) is None:
+        if shutil.which(command[0]) is None:
             self._fail(
-                f'Error: "{command}" does not exist or is not executable'
+                f'Error: "{command[0]}" does not exist or is not executable'
             )
 
         if last_completed_at is not None:
@@ -1250,3 +1408,133 @@ class Cli:
             command=command,
             working_directory=Path.cwd(),
         )
+
+    def _task_config_pull(
+        self,
+        debusine: Debusine,
+        workdir: Path,
+        workspace: str | None,
+        collection: str,
+    ) -> None:
+        if not LocalTaskConfigurationRepository.is_checkout(workdir):
+            if workspace is None:
+                self._fail(
+                    f"{workdir} is not a repository,"
+                    " and no workspace/collection names"
+                    " were provided for a new checkout"
+                )
+            workdir.mkdir(exist_ok=True)
+
+        local_repo = LocalTaskConfigurationRepository.from_path(workdir)
+
+        if workspace is None:
+            manifest = local_repo.manifest
+            assert manifest is not None
+            workspace = manifest.workspace
+            collection = manifest.collection.name
+
+        server_repo = debusine.fetch_task_configuration_collection(
+            workspace=workspace, name=collection
+        )
+        try:
+            stats = local_repo.pull(server_repo, logger=debusine._logger)
+        except InvalidRepository as e:
+            self._fail(str(e))
+        debusine._logger.info(
+            "%d added, %d updated, %d deleted, %d unchanged",
+            stats.added,
+            stats.updated,
+            stats.deleted,
+            stats.unchanged,
+        )
+
+    def _task_config_push(
+        self, debusine: Debusine, workdir: Path, dry_run: bool, force: bool
+    ) -> None:
+        if not LocalTaskConfigurationRepository.is_checkout(workdir):
+            self._fail(f"{workdir} is not a repository")
+        local_repo = LocalTaskConfigurationRepository.from_path(workdir)
+        assert local_repo.manifest is not None
+
+        if local_repo.is_dirty():
+            message = (
+                f"{workdir} has uncommitted changes:"
+                " please commit them before pushing"
+            )
+            if force:
+                debusine._logger.warning("%s", message)
+            else:
+                self._fail(message)
+
+        server_repo = debusine.fetch_task_configuration_collection(
+            workspace=local_repo.manifest.workspace,
+            name=local_repo.manifest.collection.name,
+        )
+
+        server_git_commit = server_repo.manifest.collection.data.get(
+            "git_commit"
+        )
+        if server_git_commit is not None and not local_repo.has_commit(
+            server_git_commit
+        ):
+            message = (
+                "server collection was pushed from commit"
+                f" {server_git_commit} which is not known to {workdir}"
+            )
+            if force:
+                debusine._logger.warning("%s", message)
+            else:
+                self._fail(message)
+
+        if (new_git_commit := local_repo.git_commit()) is not None:
+            local_repo.manifest.collection.data["git_commit"] = new_git_commit
+        else:
+            local_repo.manifest.collection.data.pop("git_commit", None)
+
+        if dry_run:
+            debusine._logger.info("Pushing data to server (dry run)...")
+        else:
+            debusine._logger.info("Pushing data to server...")
+
+        results = debusine.push_task_configuration_collection(
+            repo=local_repo, dry_run=dry_run
+        )
+        debusine._logger.info(
+            "%d added, %d updated, %d removed, %d unchanged",
+            results.added,
+            results.updated,
+            results.removed,
+            results.unchanged,
+        )
+
+    def _workspace_inheritance(
+        self, debusine: Debusine, workspace: str
+    ) -> None:
+        current = debusine.get_workspace_inheritance(workspace)
+        new: WorkspaceInheritanceChain = current
+        if self.args.append:
+            new = new + WorkspaceInheritanceChain.from_strings(self.args.append)
+        if self.args.prepend:
+            new = (
+                WorkspaceInheritanceChain.from_strings(self.args.prepend) + new
+            )
+        if self.args.remove:
+            new = new - WorkspaceInheritanceChain.from_strings(self.args.remove)
+        if self.args.set:
+            new = WorkspaceInheritanceChain.from_strings(self.args.set)
+        if self.args.edit:
+            editor: YamlEditor[dict[str, Any]] = YamlEditor(new.dict())
+            if editor.edit():
+                new = WorkspaceInheritanceChain(**editor.value)
+
+        if new != current:
+            try:
+                current = debusine.set_workspace_inheritance(
+                    workspace, chain=new
+                )
+            except DebusineError as err:
+                output = {"result": "failure", "error": err.asdict()}
+                self._print_yaml(output)
+                raise SystemExit(3)
+
+        self._print_yaml(current.dict())

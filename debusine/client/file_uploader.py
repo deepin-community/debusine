@@ -111,10 +111,10 @@ class FileUploader:
 
     @staticmethod
     def _parse_range_or_raise_exception(
-        response: requests.models.Response,
+        response: requests.models.Response, file_size: int
     ) -> dict[str, int]:
         try:
-            parsed_range = parse_range_header(response.headers)
+            parsed_range = parse_range_header(response.headers, file_size)
             if parsed_range is not None:
                 return parsed_range
         except ValueError:
@@ -145,7 +145,7 @@ class FileUploader:
             # The file is already uploaded
             return True
 
-        parsed_range = self._parse_range_or_raise_exception(r)
+        parsed_range = self._parse_range_or_raise_exception(r, file_size)
 
         start_position = parsed_range["end"]
 
@@ -167,7 +167,9 @@ class FileUploader:
             if r.status_code == requests.codes.created:
                 return True
             elif r.status_code == requests.codes.ok:
-                parsed_range = self._parse_range_or_raise_exception(r)
+                parsed_range = self._parse_range_or_raise_exception(
+                    r, file_size
+                )
                 start_position = parsed_range["end"]
             elif r.status_code == requests.codes.conflict:
                 return False

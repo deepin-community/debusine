@@ -11,12 +11,14 @@
 
 from pathlib import Path
 
-from debusine.tasks import BaseExternalTask
+from debusine.tasks import BaseExternalTask, DefaultDynamicData
 from debusine.tasks.models import BaseDynamicTaskData, NoopData
-from debusine.tasks.server import TaskDatabaseInterface
 
 
-class Noop(BaseExternalTask[NoopData, BaseDynamicTaskData]):
+class Noop(
+    BaseExternalTask[NoopData, BaseDynamicTaskData],
+    DefaultDynamicData[NoopData],
+):
     """
     Task that returns a boolean (execute() depending on the result field).
 
@@ -32,10 +34,3 @@ class Noop(BaseExternalTask[NoopData, BaseDynamicTaskData]):
     def get_label(self) -> str:
         """Return the task label."""
         return "noop"
-
-    def build_dynamic_data(
-        self,
-        task_database: TaskDatabaseInterface,  # noqa: U100
-    ) -> BaseDynamicTaskData:
-        """Resolve artifact lookups for this task."""
-        return BaseDynamicTaskData()

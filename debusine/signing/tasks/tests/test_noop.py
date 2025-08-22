@@ -10,7 +10,9 @@
 """Unit tests for the signing no-operation task."""
 
 from tempfile import TemporaryDirectory
-from unittest import TestCase, mock
+from unittest import mock
+
+from django.test import TestCase
 
 from debusine.signing.tasks import SigningNoop
 from debusine.tasks import TaskConfigError

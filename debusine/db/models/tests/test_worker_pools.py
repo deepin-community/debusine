@@ -335,6 +335,7 @@ class WorkerPoolTests(TestCase):
         work_request_running = self.playground.create_work_request()
         work_request_running.assign_worker(worker)
         work_request_running.task_data = {"invalid": True}
+        work_request_running.configured_task_data = {"invalid": True}
         work_request_running.save()
         work_request_running.mark_running()
 

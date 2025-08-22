@@ -7,7 +7,7 @@
 # modified, propagated, or distributed except according to the terms
 # contained in the LICENSE file.
 
-"""Tests for the the page navigation widget."""
+"""Tests for thepage navigation widget."""
 
 
 import lxml
@@ -75,3 +75,40 @@ class PageNavigationTests(TableTestCase):
         self.assertEqual(
             self.get_page_numbers(tree), ["1", "2", "3", "4", "…", "10", "11"]
         )
+
+
+class PageNavigationPreviewTests(TableTestCase):
+    """Tests for :py:class:`PageNavigationPreview`."""
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        """Initialize class data."""
+        super().setUpTestData()
+        for idx in range(10):
+            cls.playground.create_user(f"user{idx:02d}")
+
+    def get_table_class(self) -> type[Table[User]]:
+        class _Table(Table[User]):
+            user = Column("User", ordering="username")
+            default_order = "user"
+
+        return _Table
+
+    def test_render_single_page(self) -> None:
+        """Test rendering when no pagination is needed."""
+        table = self._table(preview=True)
+        paginator = table.get_paginator(per_page=20)
+        self.assertEqual(paginator.num_pages, 1)
+        nav = paginator.page_navigation
+        self.assertIs(nav.paginator, paginator)
+        self.assertEqual(nav.render(Context()), "")
+
+    def test_render(self) -> None:
+        """Test a simple use case."""
+        table = self._table(preview=True)
+        paginator = table.get_paginator(per_page=3)
+        nav = paginator.page_navigation
+        self.assertIs(nav.table, table)
+        self.assertIs(nav.paginator, paginator)
+        tree = self.assertHTMLValid(nav.render(Context()))
+        self.assertTextContentEqual(tree, "3 out of 11 shown")

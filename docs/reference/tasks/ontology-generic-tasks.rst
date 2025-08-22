@@ -45,14 +45,14 @@ Task data key names are used in ``pydantic`` models, and must therefore be
 should be used).
 
 Many tasks look up their execution environment from a
-:ref:`debian:environments collection <collection-environments>`.  These
-lookups have ``architecture``, ``format``, and ``backend`` filters
-automatically added to them based on the task data's ``host_architecture``
-and ``backend`` fields, so it is normally only necessary to specify
-``codename`` and perhaps ``variant`` (e.g.
-``debian/match:codename=bookworm:variant=autopkgtest``).
+:collection:`debian:environments` collection.  These lookups have
+``architecture``, ``format``, and ``backend`` filters automatically added to
+them based on the task data's ``host_architecture`` and ``backend`` fields,
+and they will automatically try ``variant={task_name}`` followed by
+``variant=``, so it is normally only necessary to specify ``codename`` (e.g.
+``debian/match:codename=bookworm``).
 
-.. _package-build-task:
+.. task:: PackageBuild
 
 Task ``PackageBuild``
 ---------------------
@@ -70,16 +70,16 @@ The ``task_data`` associated to this task can contain the following keys:
 
   * ``extra_binary_artifacts``: (:ref:`lookup-multiple`, optional). List of
     artifacts.  If provided these binary package artifacts
-    (``debian:binary-package``, ``debian:binary-packages``, or
-    ``debian:upload``) are downloaded and made available to apt when
-    installing build-dependencies.
+    (:artifact:`debian:binary-package`, :artifact:`debian:binary-packages`,
+    or :artifact:`debian:upload`) are downloaded and made available to apt
+    when installing build-dependencies.
 
 * ``environment`` (:ref:`lookup-single` with default category
-  ``debian:environments``, required):
-  artifact of category ``debian:system-tarball`` or ``debian:system-image``
+  :collection:`debian:environments`, required):
+  :artifact:`debian:system-tarball` or :artifact:`debian:system-image`
   artifact, depending on the backend type. ``QEMU`` and ``INCUS_VM`` require
-  a ``debian:system-image`` artifact, while the other backends require a
-  ``debian:system-tarball``.
+  a :artifact:`debian:system-image` artifact, while the other backends
+  require a :artifact:`debian:system-tarball`.
 * ``backend`` (optional, defaults to ``unshare``):
   If ``auto``, the task uses the default.
   Supported backends: ``incus-lxc``, ``incus-vm``, ``qemu``, and
@@ -127,14 +127,19 @@ The ``task_data`` associated to this task can contain the following keys:
   * ``timestamp`` (optional, default is now): changelog date
   * ``maintainer`` (optional, default is uploader): changelog author
 
-.. _system-bootstrap-task:
+* ``build_dep_resolver`` (optional, default is ``apt``): Use the
+  specified dependency resolver.
+* ``aspcud_criteria`` (optional): Optimization criteria for the
+  ``aspcud`` ``build_dep_resolver``.
+
+.. task:: SystemBootstrap
 
 Task ``SystemBootstrap``
 ------------------------
 
 A generic task to represent the bootstrapping of a Debian system out
 of an APT repository. The end result of such a task is to generate
-an artifact of category ``debian:system-tarball``.
+a :artifact:`debian:system-tarball` artifact.
 
 The ``task_data`` associated to this task can contain the following keys:
 
@@ -195,16 +200,16 @@ tarball/image:
   as the image has to be bootable and configure networking with
   systemd-networkd.
 
-.. _system-image-build-task:
+.. task:: SystemImageBuild
 
 Task ``SystemImageBuild``
 -------------------------
 
-This generic task is an extension of the :ref:`SystemBootstrap
-<system-bootstrap-task>` generic task: it should generate a disk image
-artifact complying with the :ref:`debian:system-image
-<artifact-system-image>` definition. That disk image contains a Debian-based
-system matching the description provided by the SystemBootstrap interface.
+This generic task is an extension of the :task:`SystemBootstrap` generic
+task: it should generate a disk image artifact complying with the
+:artifact:`debian:system-image` definition. That disk image contains a
+Debian-based system matching the description provided by the SystemBootstrap
+interface.
 
 The following additional keys are supported:
 
@@ -239,10 +244,10 @@ Some executor backends require specific packages to be installed in the
 tarball/image or specific customization:
 
 * ``incus-vm``: Requires: A kernel and bootloader, which the
-  :ref:`task-simplesystemimagebuild` will install.
+  :task:`SimpleSystemImageBuild` task will install.
   Also: ``python3`` and
   ``customization_script: /usr/share/autopkgtest/setup-commands/setup-testbed``
   to support the ``autopkgtest-virt-incus`` driver used by ``sbuild``
   and ``autopkgtest``.
 * ``qemu``: Requires: A kernel and bootloader, which the
-  :ref:`task-simplesystemimagebuild` will install.
+  :task:`SimpleSystemImageBuild` task will install.

@@ -1,10 +1,10 @@
-.. _task-mmdebstrap:
+.. task:: MmDebstrap
 
-Mmdebstrap task
+MmDebstrap task
 ---------------
 
-The ``mmdebstrap`` task fully implements the :ref:`SystemBootstrap
-<system-bootstrap-task>` interface.
+The ``mmdebstrap`` task fully implements the :task:`SystemBootstrap`
+interface.
 
 On top of the keys defined in that interface, it also supports the
 following additional keys in ``task_data``:

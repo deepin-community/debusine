@@ -8,13 +8,14 @@
 # contained in the LICENSE file.
 """Workflow that creates an experiment workspace from the one it's run on."""
 
+from debusine.artifacts.models import TaskTypes
 from debusine.server.tasks.models import CreateExperimentWorkspaceData
 from debusine.server.workflows.base import Workflow
 from debusine.server.workflows.models import (
     ExperimentWorkspaceData,
     WorkRequestWorkflowData,
 )
-from debusine.tasks.models import BaseDynamicTaskData, TaskTypes
+from debusine.tasks.models import BaseDynamicTaskData
 from debusine.tasks.server import TaskDatabaseInterface
 
 

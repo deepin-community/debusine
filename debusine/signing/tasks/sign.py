@@ -26,7 +26,7 @@ from debusine.client.models import (
     FilesResponseType,
     RelationType,
 )
-from debusine.signing.db.models import Key
+from debusine.signing.db.models import Key, sign
 from debusine.signing.models import SigningMode
 from debusine.signing.tasks import BaseSigningTask
 from debusine.signing.tasks.models import SignData, SignDynamicData
@@ -91,8 +91,8 @@ class Sign(BaseSigningTask[SignData, SignDynamicData]):
             ],
         )
 
-    def get_source_artifacts_ids(self) -> list[int]:
-        """Return the list of source artifact IDs used by this task."""
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
         if not self.dynamic_data:
             return []
         return self.dynamic_data.unsigned_ids
@@ -207,7 +207,8 @@ class Sign(BaseSigningTask[SignData, SignDynamicData]):
                             assert_never(unreachable)
                     permission_check = self._permission_checks[unsigned_id]
                     try:
-                        self._key.sign(
+                        sign(
+                            [self._key],
                             data_path,
                             signature_path,
                             mode,

@@ -10,6 +10,7 @@
 """Task to use lintian in debusine."""
 import json
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -29,11 +30,7 @@ from debusine.artifacts.models import (
 )
 from debusine.client.models import RelationType
 from debusine.tasks import BaseTaskWithExecutor, RunCommandTask
-from debusine.tasks.models import (
-    LintianData,
-    LintianDynamicData,
-    LintianPackageType,
-)
+from debusine.tasks.models import LintianData, LintianDynamicData
 from debusine.tasks.server import TaskDatabaseInterface
 
 
@@ -74,14 +71,12 @@ class Lintian(
         # or .changes)
         self._lintian_targets: list[Path] | None = None
 
-        # Package type to package names that are being analysed by
-        # this Lintian invocation. In other words: packages belonging
-        # to each package type.
-        self._package_type_to_packages: dict[LintianPackageType, set[str]] = {
-            LintianPackageType.SOURCE: set(),
-            LintianPackageType.BINARY_ANY: set(),
-            LintianPackageType.BINARY_ALL: set(),
-        }
+        # Architecture to package names that are being analysed by this
+        # Lintian invocation. In other words: packages belonging to each
+        # architecture.
+        self._architecture_to_packages: defaultdict[str, set[str]] = (
+            defaultdict(set)
+        )
 
         self._package_name_to_filename: dict[str, str] = {}
 
@@ -128,24 +123,23 @@ class Lintian(
             subject = get_source_package_name(input_source_artifact.data)
 
         # Validate input_binary_artifacts and get subject
-        if input_binary_artifacts:
-            for binary_artifact in input_binary_artifacts:
-                self.ensure_artifact_categories(
-                    configuration_key="input.binary_artifact",
-                    category=binary_artifact.category,
-                    expected=(
-                        ArtifactCategory.BINARY_PACKAGE,
-                        ArtifactCategory.BINARY_PACKAGES,
-                        ArtifactCategory.UPLOAD,
-                    ),
-                )
-                assert isinstance(
-                    binary_artifact.data,
-                    (DebianBinaryPackage, DebianBinaryPackages, DebianUpload),
-                )
+        for i, binary_artifact in enumerate(input_binary_artifacts):
+            self.ensure_artifact_categories(
+                configuration_key=f"input.binary_artifacts[{i}]",
+                category=binary_artifact.category,
+                expected=(
+                    ArtifactCategory.BINARY_PACKAGE,
+                    ArtifactCategory.BINARY_PACKAGES,
+                    ArtifactCategory.UPLOAD,
+                ),
+            )
+            assert isinstance(
+                binary_artifact.data,
+                (DebianBinaryPackage, DebianBinaryPackages, DebianUpload),
+            )
 
-                if subject is None:
-                    subject = get_source_package_name(binary_artifact.data)
+            if subject is None:
+                subject = get_source_package_name(binary_artifact.data)
 
         what = {"source", "binary-all", "binary-any"}
 
@@ -192,6 +186,18 @@ class Lintian(
             runtime_context=runtime_context,
             configuration_context=configuration_context,
         )
+
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        if not self.dynamic_data:
+            return []
+        result = []
+        if val := self.dynamic_data.input_source_artifact_id:
+            result.append(val)
+        if val := self.dynamic_data.environment_id:
+            result.append(val)
+        result += self.dynamic_data.input_binary_artifacts_ids
+        return result
 
     @classmethod
     def generate_severity_count_zero(cls) -> dict[str, int]:
@@ -368,21 +374,19 @@ class Lintian(
                         tag["explanation"] = explanation.strip()
                         explanation = ""
 
-                    tag = cls._parse_tag_line(line)
+                    if (new_tag := cls._parse_tag_line(line)) is not None:
+                        tag = new_tag
 
-                    if tag is None:
-                        continue
+                        # If a comment was read (above the tag) add it
+                        tag["comment"] = comment.strip()
+                        comment = ""
+                        # If we were in a comment: not anymore
+                        in_comment = False
 
-                    # If a comment was read (above the tag) add it
-                    tag["comment"] = comment.strip()
-                    comment = ""
-                    # If we were in a comment: not anymore
-                    in_comment = False
-
-                    # Add the tag in the list, unless it is needed
-                    # to be ignored (e.g. "masked")
-                    if tag["severity"] not in cls._IGNORED_SEVERITIES:
-                        tags.append(tag)
+                        # Add the tag in the list, unless it is needed
+                        # to be ignored (e.g. "masked")
+                        if tag["severity"] not in cls._IGNORED_SEVERITIES:
+                            tags.append(tag)
 
                 previous_line = line
 
@@ -427,12 +431,11 @@ class Lintian(
 
         return cmd
 
-    def _extract_package_name_type(
-        self,
-        file: Path,
-    ) -> tuple[str | None, LintianPackageType | None]:
+    def _extract_package_name_arch(
+        self, file: Path
+    ) -> tuple[str, str] | tuple[None, None]:
         """
-        Return package name for file.
+        Return package name and architecture for file.
 
         :param file: if file ends in .deb or .udeb: use debfile.DebFile
             to return control["Package"]. If it's a .dsc: return
@@ -443,11 +446,7 @@ class Lintian(
             pkg = debfile.DebFile(file)
             control = pkg.control.debcontrol()
             package_name = control["Package"]
-
-            if control["Architecture"] == "all":
-                package_type = LintianPackageType.BINARY_ALL
-            else:
-                package_type = LintianPackageType.BINARY_ANY
+            architecture = control["Architecture"]
 
         elif file.suffix in ".dsc":
             dsc = utils.read_dsc(file)
@@ -462,12 +461,12 @@ class Lintian(
             # Lintian identifies the binary package Vs. source package with
             # the string " source". This is removed when presented to the user
             package_name = dsc["Source"] + " source"
-            package_type = LintianPackageType.SOURCE
+            architecture = "source"
         else:
             package_name = None
-            package_type = None
+            architecture = None
 
-        return package_name, package_type
+        return package_name, architecture
 
     def fetch_input(self, destination: Path) -> bool:
         """Download the required artifacts."""
@@ -516,14 +515,14 @@ class Lintian(
 
         # Prepare mapping from filename to package name
         for file in download_directory.iterdir():
-            package_name, arch = self._extract_package_name_type(
+            package_name, architecture = self._extract_package_name_arch(
                 download_directory / file
             )
-            if package_name is None or arch is None:
+            if package_name is None or architecture is None:
                 continue
 
             self._package_name_to_filename[package_name] = file.name
-            self._package_type_to_packages[arch].add(package_name)
+            self._architecture_to_packages[architecture].add(package_name)
 
         if len(self._lintian_targets) == 0:
             ignored_file_names = [
@@ -565,19 +564,20 @@ class Lintian(
 
         lintian_file = exec_directory / self.CAPTURE_OUTPUT_FILENAME
 
-        package_type_to_analysis = self._create_package_type_to_analysis(
+        architecture_to_analysis = self._create_architecture_to_analysis(
             lintian_file
         )
 
-        for artifact_type, analysis in package_type_to_analysis.items():
+        for architecture, analysis in architecture_to_analysis.items():
             (
                 analysis_file := exec_directory
-                / f"analysis-{artifact_type}.json"
+                / f"analysis-{architecture}.json"
             ).write_text(json.dumps(analysis))
 
             lintian_artifact = LintianArtifact.create(
                 analysis=analysis_file,
                 lintian_output=lintian_file,
+                architecture=architecture,
                 summary=DebianLintianSummary(**analysis["summary"]),
             )
 
@@ -592,15 +592,15 @@ class Lintian(
                     uploaded.id, source_artifact_id, RelationType.RELATES_TO
                 )
 
-    def _create_package_type_to_analysis(
+    def _create_architecture_to_analysis(
         self, lintian_file: Path
-    ) -> dict[LintianPackageType, dict[str, Any]]:
+    ) -> dict[str, dict[str, Any]]:
         """
-        Read lintian_file, return dict with LintianPackageType to analysis.
+        Read lintian_file, return dict mapping architecture to analysis.
 
         :param lintian_file: Lintian output file
-        :return: dict[LintianPackageType, Analysis]:
-          only for the LintianPackageTypes in self.data["output"]
+        :return: dict[str, Analysis]:
+          only for the architectures selected by self.data.output
         """
         parsed_output = self._parse_output(lintian_file)
 
@@ -615,26 +615,24 @@ class Lintian(
             )
         )
 
-        package_analysis_mapping = {
-            LintianPackageType.SOURCE: "source_analysis",
-            LintianPackageType.BINARY_ALL: "binary_all_analysis",
-            LintianPackageType.BINARY_ANY: "binary_any_analysis",
-        }
+        package_analysis_mapping = defaultdict(lambda: "binary_any_analysis")
+        package_analysis_mapping["source"] = "source_analysis"
+        package_analysis_mapping["all"] = "binary_all_analysis"
         output = self.data.output
 
-        package_type_to_analysis: dict[LintianPackageType, dict[str, Any]] = {}
+        architecture_to_analysis: dict[str, dict[str, Any]] = {}
 
-        for package_type in LintianPackageType:
-            if not getattr(output, package_analysis_mapping[package_type]):
-                # self.data["output"]["source_analysis"] (or
-                # "binary_all_analysis", or "binary_any_analysis") was disabled
+        for architecture, packages in self._architecture_to_packages.items():
+            if not getattr(output, package_analysis_mapping[architecture]):
+                # self.data.output.source_analysis (or binary_all_analysis,
+                # or binary_any_analysis) was disabled
                 continue
 
-            package_type_to_analysis[package_type] = self._create_analysis(
-                parsed_output, self._package_type_to_packages[package_type]
+            architecture_to_analysis[architecture] = self._create_analysis(
+                parsed_output, packages
             )
 
-        return package_type_to_analysis
+        return architecture_to_analysis
 
     def task_succeeded(
         self, returncode: int | None, execute_directory: Path  # noqa: U100

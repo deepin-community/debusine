@@ -79,20 +79,10 @@ disturbing the day-to-day work.
 Debian-friendly people and companies will be able to sponsor external
 computing time, while trusted builds will remain under Debian's control.
 
-Current development plan
-------------------------
-
-Our priorities for 2025 are to:
-
-* Make Debusine useful to the Debian community, building QA workflows that
-  developers need.
-* Fix bugs and improve features that are gaining traction within Debian.
-* develop the support of custom package repositories (aka PPA for Debian)
-
 Learn more
 ----------
 
-* :ref:`why-this-project`
+* :ref:`roadmap`
 * :ref:`faq`
 * :ref:`tutorial-getting-started`
 * :ref:`contribute-to-debusine`

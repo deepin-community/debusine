@@ -196,6 +196,14 @@ class MmDebstrap(SystemBootstrap[MmDebstrapData]):
         if main_bootstrap_repository.suite in ("unstable", "sid"):
             codename = "sid"
 
+        components: list[str]
+        if self.data.bootstrap_repositories[0].components:
+            components = self.data.bootstrap_repositories[0].components
+        elif self._chroot_sources_file:
+            components = self._get_source_components(self._chroot_sources_file)
+        else:
+            raise AssertionError("self._chroot_sources_file not set")
+
         pkglist = self._get_pkglist(execute_dir / self._VAR_LIB_DPKG)
         with_init = self._get_with_init(
             execute_dir / self._TEST_SBIN_INIT_RETURN_CODE_FILE
@@ -208,6 +216,7 @@ class MmDebstrap(SystemBootstrap[MmDebstrapData]):
                 "architecture": bootstrap_options.architecture,
                 "vendor": vendor,
                 "codename": codename,
+                "components": components,
                 "pkglist": pkglist,
                 # with_dev: with the current setup (in mmdebstrap),
                 # the devices in /dev are always created

@@ -13,7 +13,11 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Literal, assert_never
 
-from debusine.artifacts.models import ArtifactCategory, CollectionCategory
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    CollectionCategory,
+    TaskTypes,
+)
 from debusine.server.workflows.base import Workflow
 from debusine.server.workflows.models import (
     UpdateEnvironmentsWorkflowData,
@@ -26,7 +30,6 @@ from debusine.tasks.models import (
     BaseTaskData,
     MmDebstrapData,
     SystemImageBuildData,
-    TaskTypes,
 )
 from debusine.tasks.server import TaskDatabaseInterface
 
@@ -117,7 +120,7 @@ class UpdateEnvironmentsWorkflow(
         self,
         *,
         codenames: list[str],
-        variants: list[str],
+        variants: list[str | None],
         backends: list[str],
     ) -> list[ActionVariables]:
         """
@@ -221,7 +224,9 @@ class UpdateEnvironmentsWorkflow(
                 # Build the group name for the child work requests.
                 group = codename
                 if variants:
-                    group += f" [{','.join(variants)}]"
+                    group += (
+                        f" [{','.join([str(variant) for variant in variants])}]"
+                    )
 
                 for architecture in target.architectures:
                     # Build data structures to help check whether a matching

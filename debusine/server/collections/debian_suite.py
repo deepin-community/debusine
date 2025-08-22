@@ -11,17 +11,19 @@
 
 import re
 from collections.abc import Generator
+from datetime import datetime
 from typing import Any
 
 from debian.debian_support import Version
 from django.db import IntegrityError
-from django.db.models import Q
+from django.db.models.fields.json import KT
 from django.utils import timezone
 
 from debusine.artifacts.local_artifact import BinaryPackage, SourcePackage
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
 from debusine.db.models import (
     Artifact,
+    Collection,
     CollectionItem,
     CollectionItemMatchConstraint,
     User,
@@ -33,6 +35,20 @@ from debusine.server.collections.base import (
 )
 
 
+def make_source_prefix(source_package_name: str) -> str:
+    """
+    Make the prefix for a source package name in a Debian repository's pool.
+
+    This is the "<first letter of source name>" / "<first 4 letters of
+    source name>" segment, as described in
+    https://lists.debian.org/debian-devel/2000/10/msg01340.html.
+    """
+    if source_package_name.startswith("lib"):
+        return source_package_name[:4]
+    else:
+        return source_package_name[:1]
+
+
 def make_pool_filename(
     source_package_name: str, component: str, base_name: str
 ) -> str:
@@ -42,10 +58,7 @@ def make_pool_filename(
     See https://lists.debian.org/debian-devel/2000/10/msg01340.html for an
     explanation of the structure.
     """
-    if source_package_name.startswith("lib"):
-        prefix = source_package_name[:4]
-    else:
-        prefix = source_package_name[:1]
+    prefix = make_source_prefix(source_package_name)
     return f"pool/{component}/{prefix}/{source_package_name}/{base_name}"
 
 
@@ -54,88 +67,23 @@ class DebianSuiteManager(CollectionManagerInterface):
 
     COLLECTION_CATEGORY = CollectionCategory.SUITE
     VALID_ARTIFACT_CATEGORIES = frozenset(
-        {ArtifactCategory.SOURCE_PACKAGE, ArtifactCategory.BINARY_PACKAGE}
+        {
+            ArtifactCategory.SOURCE_PACKAGE,
+            ArtifactCategory.BINARY_PACKAGE,
+            ArtifactCategory.REPOSITORY_INDEX,
+        }
     )
-
-    def add_source_package(
-        self,
-        artifact: Artifact,
-        *,
-        user: User,
-        component: str,
-        section: str,
-        replace: bool = False,
-    ) -> CollectionItem:
-        """
-        Add a source package artifact to the managed collection.
-
-        :param artifact: artifact to add
-        :param user: user adding the artifact to the collection
-        :param component: the component (e.g. `main` or `non-free`) for this
-          package
-        :param section: the section (e.g. `python`) for this package
-        :param replace: if True, replace an existing source package of the
-          same name and version
-        """
-        if artifact.category != ArtifactCategory.SOURCE_PACKAGE:
-            raise ItemAdditionError(
-                f'add_source_package requires a '
-                f'{ArtifactCategory.SOURCE_PACKAGE} artifact, not '
-                f'"{artifact.category}"'
-            )
-
-        return self.do_add_artifact(
-            artifact,
-            user=user,
-            variables={"component": component, "section": section},
-            replace=replace,
-        )
-
-    def add_binary_package(
-        self,
-        artifact: Artifact,
-        *,
-        user: User,
-        component: str,
-        section: str,
-        priority: str,
-        replace: bool = False,
-    ) -> CollectionItem:
-        """
-        Add a binary package artifact to the managed collection.
-
-        :param artifact: artifact to add
-        :param user: user adding the artifact to the collection
-        :param component: the component (e.g. `main` or `non-free`) for this
-          package
-        :param section: the section (e.g. `python`) for this package
-        :param priority: the priority (e.g. `optional`) for this package
-        :param replace: if True, replace an existing binary package of the
-          same name, version, and architecture
-        """
-        if artifact.category != ArtifactCategory.BINARY_PACKAGE:
-            raise ItemAdditionError(
-                f'add_binary_package requires a '
-                f'{ArtifactCategory.BINARY_PACKAGE} artifact, not '
-                f'"{artifact.category}"'
-            )
-
-        return self.do_add_artifact(
-            artifact,
-            user=user,
-            variables={
-                "component": component,
-                "section": section,
-                "priority": priority,
-            },
-            replace=replace,
-        )
 
     def make_constraints(
         self, item: CollectionItem, source_package_name: str, component: str
     ) -> Generator[CollectionItemMatchConstraint, None, None]:
         """Yield constraints for an item added to this collection."""
         assert item.artifact is not None
+        containing_archives = Collection.objects.filter(
+            category=CollectionCategory.ARCHIVE,
+            child_items__removed_at__isnull=True,
+            child_items__collection=self.collection,
+        )
         for file_in_artifact in item.artifact.fileinartifact_set.all():
             pool_filename = make_pool_filename(
                 source_package_name, component, file_in_artifact.path
@@ -144,6 +92,8 @@ class DebianSuiteManager(CollectionManagerInterface):
             hash_digest = (
                 f"{file.current_hash_algorithm}:{file.hash_digest.hex()}"
             )
+            # Each file name in pool/ must only refer to at most one
+            # concrete file in the suite at a given time.
             yield CollectionItemMatchConstraint(
                 collection=self.collection,
                 collection_item_id=item.id,
@@ -151,6 +101,18 @@ class DebianSuiteManager(CollectionManagerInterface):
                 key=pool_filename,
                 value=hash_digest,
             )
+            # The pool/ directory is shared between suites in the same
+            # archive, so we also need archive-level constraints to ensure
+            # that different suites in the same archive don't contain the
+            # same pool file with different contents.
+            for archive in containing_archives:
+                yield CollectionItemMatchConstraint(
+                    collection=archive,
+                    collection_item_id=item.id,
+                    constraint_name="pool-file",
+                    key=pool_filename,
+                    value=hash_digest,
+                )
 
     def do_add_artifact(
         self,
@@ -161,16 +123,27 @@ class DebianSuiteManager(CollectionManagerInterface):
         variables: dict[str, Any] | None = None,
         name: str | None = None,
         replace: bool = False,
+        created_at: datetime | None = None,
+        replaced_by: CollectionItem | None = None,
     ) -> CollectionItem:
         """Add the artifact into the managed collection."""
-        if variables is None or "component" not in variables:
-            raise ItemAdditionError(
-                f"Adding to {CollectionCategory.SUITE} requires a component"
-            )
-        if "section" not in variables:
-            raise ItemAdditionError(
-                f"Adding to {CollectionCategory.SUITE} requires a section"
-            )
+        required_variables: dict[str, tuple[str, ...]] = {
+            ArtifactCategory.SOURCE_PACKAGE: ("component", "section"),
+            ArtifactCategory.BINARY_PACKAGE: (
+                "component",
+                "section",
+                "priority",
+            ),
+            ArtifactCategory.REPOSITORY_INDEX: ("path",),
+        }
+        for required_variable in required_variables[artifact.category]:
+            if required_variable not in (variables or {}):
+                raise ItemAdditionError(
+                    f'Adding {artifact.category} to {CollectionCategory.SUITE} '
+                    f'requires "{required_variable}"'
+                )
+        assert variables is not None
+
         if artifact.category == ArtifactCategory.SOURCE_PACKAGE:
             source_package_data = SourcePackage.create_data(artifact.data)
             data = {
@@ -181,13 +154,7 @@ class DebianSuiteManager(CollectionManagerInterface):
             }
             name = "{package}_{version}".format(**data)
             source_package_name = source_package_data.name
-        else:
-            assert artifact.category == ArtifactCategory.BINARY_PACKAGE
-            if "priority" not in variables:
-                raise ItemAdditionError(
-                    f"Adding a binary package to {CollectionCategory.SUITE} "
-                    f"requires a priority"
-                )
+        elif artifact.category == ArtifactCategory.BINARY_PACKAGE:
             binary_package_data = BinaryPackage.create_data(artifact.data)
             data = {
                 "srcpkg_name": binary_package_data.srcpkg_name,
@@ -201,23 +168,18 @@ class DebianSuiteManager(CollectionManagerInterface):
             }
             name = "{package}_{version}_{architecture}".format(**data)
             source_package_name = binary_package_data.srcpkg_name
+        else:
+            assert artifact.category == ArtifactCategory.REPOSITORY_INDEX
+            data = {"path": variables["path"]}
+            name = "index:{path}".format(**data)
 
         if replace:
-            try:
-                old_artifact = (
-                    CollectionItem.active_objects.filter(
-                        parent_collection=self.collection,
-                        child_type=CollectionItem.Types.ARTIFACT,
-                        name=name,
-                    )
-                    .latest("created_at")
-                    .artifact
-                )
-            except CollectionItem.DoesNotExist:
-                pass
-            else:
-                assert old_artifact is not None
-                self.remove_artifact(old_artifact, user=user)
+            self.remove_items_by_name(
+                name=name,
+                child_types=[CollectionItem.Types.ARTIFACT],
+                user=user,
+                workflow=workflow,
+            )
 
         try:
             item = CollectionItem.objects.create_from_artifact(
@@ -225,38 +187,50 @@ class DebianSuiteManager(CollectionManagerInterface):
                 parent_collection=self.collection,
                 name=name,
                 data=data,
+                created_at=created_at,
                 created_by_user=user,
                 created_by_workflow=workflow,
+                replaced_by=replaced_by,
             )
-            CollectionItemMatchConstraint.objects.bulk_create(
-                self.make_constraints(
-                    item, source_package_name, data["component"]
+            if replaced_by is None and artifact.category in {
+                ArtifactCategory.SOURCE_PACKAGE,
+                ArtifactCategory.BINARY_PACKAGE,
+            }:
+                CollectionItemMatchConstraint.objects.bulk_create(
+                    self.make_constraints(
+                        item, source_package_name, data["component"]
+                    )
                 )
-            )
             return item
         except IntegrityError as exc:
             raise ItemAdditionError(str(exc))
 
-    def do_remove_artifact(
+    def do_remove_item(
         self,
-        artifact: Artifact,
+        item: CollectionItem,
         *,
         user: User | None = None,
         workflow: WorkRequest | None = None,
     ) -> None:
-        """Remove the artifact from the collection."""
-        items = CollectionItem.active_objects.select_for_update().filter(
-            artifact=artifact, parent_collection=self.collection
-        )
-        item_ids = {item.id for item in items.only("id")}
-        items.update(
-            removed_by_user=user,
-            removed_by_workflow=workflow,
-            removed_at=timezone.now(),
-        )
-        if self.collection.data.get("may_reuse_versions", False):
+        """Remove an item from the collection."""
+        item.removed_by_user = user
+        item.removed_by_workflow = workflow
+        item.removed_at = timezone.now()
+        item.save()
+        if (
+            item.artifact is not None
+            and (
+                item.artifact.category
+                in {
+                    ArtifactCategory.SOURCE_PACKAGE,
+                    ArtifactCategory.BINARY_PACKAGE,
+                }
+            )
+            and self.collection.data.get("may_reuse_versions", False)
+        ):
+            # This deletes both suite and archive constraints.
             CollectionItemMatchConstraint.objects.filter(
-                collection_item_id__in=item_ids, constraint_name="pool-file"
+                collection_item_id=item.id, constraint_name="pool-file"
             ).delete()
 
     def do_lookup(self, query: str) -> CollectionItem | None:
@@ -264,41 +238,57 @@ class DebianSuiteManager(CollectionManagerInterface):
         Return one CollectionItem based on the query.
 
         :param query: `source:NAME`, `source-version:NAME_VERSION`,
-          `binary:NAME_ARCHITECTURE`, or
-          `binary-version:NAME_VERSION_ARCHITECTURE`.  If more than one
-          possible CollectionItem matches the query (which is possible for
-          `source:` and `binary:` queries): return the one with the highest
-          version.
+          `binary:NAME_ARCHITECTURE`,
+          `binary-version:NAME_VERSION_ARCHITECTURE`, or `index:PATH`.  If
+          more than one possible CollectionItem matches the query (which is
+          possible for `source:` and `binary:` queries): return the one with
+          the highest version.
         """
-        query_filter = Q(
+        qs = CollectionItem.objects.active().filter(
             parent_collection=self.collection,
             child_type=CollectionItem.Types.ARTIFACT,
         )
+        sort_by_version = True
 
         if m := re.match(r"^source:(.+)$", query):
-            query_filter &= Q(
+            qs = qs.annotate(package=KT("data__package")).filter(
                 category=ArtifactCategory.SOURCE_PACKAGE,
-                data__package=m.group(1),
+                package=m.group(1),
             )
         elif m := re.match(r"^source-version:(.+?)_(.+)$", query):
-            query_filter &= Q(
+            qs = qs.annotate(
+                package=KT("data__package"), version=KT("data__version")
+            ).filter(
                 category=ArtifactCategory.SOURCE_PACKAGE,
-                data__package=m.group(1),
-                data__version=m.group(2),
+                package=m.group(1),
+                version=m.group(2),
             )
         elif m := re.match(r"^binary:(.+?)_(.+)$", query):
-            query_filter &= Q(
+            qs = qs.annotate(
+                package=KT("data__package"),
+                architecture=KT("data__architecture"),
+            ).filter(
                 category=ArtifactCategory.BINARY_PACKAGE,
-                data__package=m.group(1),
-                data__architecture=m.group(2),
+                package=m.group(1),
+                architecture__in={m.group(2), "all"},
             )
         elif m := re.match(r"^binary-version:(.+?)_(.+?)_(.+)$", query):
-            query_filter &= Q(
+            qs = qs.annotate(
+                package=KT("data__package"),
+                version=KT("data__version"),
+                architecture=KT("data__architecture"),
+            ).filter(
                 category=ArtifactCategory.BINARY_PACKAGE,
-                data__package=m.group(1),
-                data__version=m.group(2),
-                data__architecture=m.group(3),
+                package=m.group(1),
+                version=m.group(2),
+                architecture__in={m.group(3), "all"},
             )
+        elif m := re.match(r"^index:(.+)$", query):
+            qs = qs.annotate(path=KT("data__path")).filter(
+                category=ArtifactCategory.REPOSITORY_INDEX,
+                path=m.group(1),
+            )
+            sort_by_version = False
         else:
             raise LookupError(f'Unexpected lookup format: "{query}"')
 
@@ -308,10 +298,11 @@ class DebianSuiteManager(CollectionManagerInterface):
         # Django migration as currently configured.  We don't expect a
         # single suite to contain many active versions of a single package,
         # so doing the sorting in Python should be fine in practice.
-        items = sorted(
-            CollectionItem.active_objects.filter(query_filter),
-            key=lambda item: Version(item.data["version"]),
-        )
+        items = list(qs)
+        if sort_by_version:
+            items = sorted(
+                items, key=lambda item: Version(item.data["version"])
+            )
         if not items:
             return None
         return items[-1]

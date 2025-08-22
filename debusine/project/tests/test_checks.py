@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import MagicMock
 
+import pytest
 from django.conf import settings
 from django.core.checks import Error
 from django.core.management import call_command
@@ -27,6 +28,7 @@ from debusine.project import checks
 from debusine.test.django import TestCase
 
 
+@pytest.mark.xdist_group("serial-project-checks")
 class ChecksTests(TestCase):
     """Tests for functions in checks.py."""
 
@@ -98,6 +100,21 @@ class ChecksTests(TestCase):
         )
 
     @override_settings()
+    def test_check_directories_root_owned(self) -> None:
+        """_check_directories_owners should accept root-owned settings."""
+        settings.PATH_TO_DIR = self.create_temporary_directory()
+
+        patcher = mock.patch("pathlib.Path.owner", autospec=True)
+        mocked_pathlib_owner = patcher.start()
+        mocked_pathlib_owner.return_value = "root"
+        self.addCleanup(patcher.stop)
+
+        self.assertEqual(
+            checks._check_directories_owners(["PATH_TO_DIR"], missing_ok=True),
+            [],
+        )
+
+    @override_settings()
     def test_check_directories_owners_missing_optional_dirs_ok(self) -> None:
         """_check_directories_owners with optional dirs return empty list."""
         settings.PATH_TO_DIR_1 = "/does/not/exist"
@@ -162,7 +179,7 @@ class ChecksTests(TestCase):
 
         for command in common_checks._migration_commands:
             with self.subTest(command=command):
-                sys.argv[1] = command
+                sys.argv[1:] = [command]
                 self.assertEqual(
                     checks.directories_owners_check(app_configs=None), []
                 )
@@ -349,7 +366,7 @@ class ChecksTests(TestCase):
 
         for command in common_checks._migration_commands:
             with self.subTest(command=command):
-                sys.argv[1] = command
+                sys.argv[1:] = [command]
                 self.assertEqual(
                     common_checks.all_migrations_applied(
                         "debusine-admin", app_configs=None
@@ -432,7 +449,7 @@ class ChecksTests(TestCase):
 
         for command in common_checks._migration_commands:
             with self.subTest(command=command):
-                sys.argv[1] = command
+                sys.argv[1:] = [command]
                 self.assertEqual(
                     checks.local_file_store_directories_writable(
                         app_configs=None

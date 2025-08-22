@@ -1,0 +1,13 @@
+<div class="dropdown-menu table-filter-form-container">
+    <form id="{{ filter.dom_id }}-form"
+          class="px-2 py-3 table-filter-form d-flex align-items-center w-100"
+          method="get">
+        {% for k, v in f.base_filter_args %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+        {% block form %}{% endblock %}
+    </form>
+    <div class="dropdown-divider"></div>
+    <button class="btn btn-sm btn-primary ms-2"
+            form="{{ filter.dom_id }}-form"
+            type="submit">Add filter</button>
+    <button class="btn btn-sm btn-secondary ms-1 debusine-dropdown-close">Cancel</button>
+</div>

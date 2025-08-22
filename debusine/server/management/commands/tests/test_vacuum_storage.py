@@ -10,6 +10,7 @@
 """Tests for the management command vacuum_storage."""
 
 import os
+import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import timedelta
@@ -23,14 +24,16 @@ from django.conf import settings
 from django.db.models import F
 from django.utils import timezone
 
+from debusine.artifacts.models import CollectionCategory
 from debusine.assets.models import (
     AWSProviderAccountConfiguration,
     AWSProviderAccountCredentials,
     AWSProviderAccountData,
 )
-from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
+    ArtifactRelation,
+    CollectionItem,
     File,
     FileInArtifact,
     FileStore,
@@ -60,7 +63,6 @@ class VacuumStorageTestMixin(BaseDjangoTestCase):
     playground_memory_file_store = False
     two_days_ago = timezone.now() - timedelta(days=2)
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Set common objects and settings."""
         # Using override_settings does not work (perhaps because it's a
@@ -90,6 +92,7 @@ class VacuumStorageTestMixin(BaseDjangoTestCase):
             self.original_debusine_store_directory
         )
         settings.DEBUSINE_UPLOAD_DIRECTORY = self.original_upload_directory
+        super().tearDown()
 
 
 class VacuumStorageCommandTransactionTests(
@@ -119,14 +122,16 @@ class VacuumStorageCommandTransactionTests(
         # The last_activity_at field is the default "now",
         # but it will be deleted because the Artifact was
         # creating and still incomplete more than one day ago
-        file_path = "missing-file"
-        file_upload = FileUpload.objects.create(
-            file_in_artifact=file_in_artifact, path=file_path
+        temp_file = tempfile.NamedTemporaryFile(
+            prefix="missing-file-",
+            dir=settings.DEBUSINE_UPLOAD_DIRECTORY,
+            # Can be deleted by FileUpload.delete via its on_commit hook.
+            delete=False,
         )
-
-        # File in the temporary upload directory (can be deleted as part
-        # of FileUpload.delete() via its transaction.on_commit)
-        file_upload.absolute_file_path().touch()
+        temp_file.close()
+        file_upload = FileUpload.objects.create(
+            file_in_artifact=file_in_artifact, path=Path(temp_file.name).name
+        )
 
         return artifact, file_upload
 
@@ -143,21 +148,52 @@ class VacuumStorageCommandTransactionTests(
         assert file_in_artifact_2 is not None
         file_in_artifact_2.complete = False
         file_in_artifact_2.save()
+        self.playground.create_artifact_relation(artifact_1, artifact_2)
 
         # artifact_3 will not be deleted: old but complete
         artifact_3, _ = self.playground.create_artifact(paths=["README"])
         artifact_3.created_at = self.two_days_ago
         artifact_3.save()
+        self.playground.create_artifact_relation(artifact_2, artifact_3)
+
+        # artifact_4 will be deleted: target of an artifact relation (this
+        # cannot happen normally any more:
+        # ArtifactRelationsView.perform_create forbids it)
+        artifact_4, file_upload_4 = self.create_incomplete_old_artifact()
+        file_upload_4_path = file_upload_4.absolute_file_path()
+        self.playground.create_artifact_relation(artifact_3, artifact_4)
+
+        # artifact_5 will not be deleted: in a collection
+        artifact_5, _ = self.create_incomplete_old_artifact()
+        collection = self.playground.create_collection(
+            "test", CollectionCategory.TEST
+        )
+        CollectionItem.objects.create_from_artifact(
+            artifact_5,
+            parent_collection=collection,
+            name="test",
+            data={},
+            created_by_user=self.playground.get_default_user(),
+        )
 
         stdout, stderr, exitcode = call_command("vacuum_storage", verbosity=2)
 
-        # artifact_1 is deleted
+        # artifact_1 and its outbound relation are deleted, as are
+        # artifact_4 and its inbound relation
         self.assertQuerySetEqual(
-            Artifact.objects.all(), {artifact_2, artifact_3}, ordered=False
+            Artifact.objects.all(),
+            {artifact_2, artifact_3, artifact_5},
+            ordered=False,
+        )
+        self.assertQuerySetEqual(
+            ArtifactRelation.objects.values_list("artifact", "target"),
+            [(artifact_2.id, artifact_3.id)],
+            ordered=False,
         )
 
         # There is no file (deleted as part of FileUpload.delete())
         self.assertFalse(file_upload_1_path.exists())
+        self.assertFalse(file_upload_4_path.exists())
 
         self.assertEqual(
             stdout,
@@ -165,6 +201,7 @@ class VacuumStorageCommandTransactionTests(
             "Checking empty directories\n"
             "Checking incomplete artifacts\n"
             f"Deleted incomplete artifact {artifact_1.id}\n"
+            f"Deleted incomplete artifact {artifact_4.id}\n"
             "Checking orphan files in upload directory\n"
             "Checking missing files from stores\n"
             "Checking missing files from upload\n",
@@ -249,15 +286,14 @@ class VacuumStorageCommandTests(VacuumStorageTestMixin, TestCase):
 
         Also test that is not finding a file part of an artifact.
         """
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact(
-                paths=["README"], create_files=True
-            )
+        artifact, _ = self.playground.create_artifact(
+            paths=["README"], create_files=True
+        )
 
-            orphan_file = self.create_temporary_file(
-                directory=self.debusine_store_directory
-            )
-            self._set_modified_time_two_days_ago(orphan_file)
+        orphan_file = self.create_temporary_file(
+            directory=self.debusine_store_directory
+        )
+        self._set_modified_time_two_days_ago(orphan_file)
 
         stdout, stderr, exitcode = call_command(
             "vacuum_storage", "--dry-run", verbosity=2
@@ -294,16 +330,15 @@ class VacuumStorageCommandTests(VacuumStorageTestMixin, TestCase):
 
         Also test that file part of an artifact is not deleted.
         """
-        with context.disable_permission_checks():
-            path_in_artifact = "README"
-            artifact, _ = self.playground.create_artifact(
-                paths=[path_in_artifact], create_files=True
-            )
+        path_in_artifact = "README"
+        artifact, _ = self.playground.create_artifact(
+            paths=[path_in_artifact], create_files=True
+        )
 
-            temporary_file = self.create_temporary_file(
-                directory=self.debusine_store_directory
-            )
-            self._set_modified_time_two_days_ago(temporary_file)
+        temporary_file = self.create_temporary_file(
+            directory=self.debusine_store_directory
+        )
+        self._set_modified_time_two_days_ago(temporary_file)
         stdout, stderr, exitcode = call_command("vacuum_storage")
 
         # The file was deleted
@@ -330,12 +365,11 @@ class VacuumStorageCommandTests(VacuumStorageTestMixin, TestCase):
 
     def test_delete_empty_directory_dry_run(self) -> None:
         """Report delete an empty directory (but dry-run: does not delete)."""
-        with context.disable_permission_checks():
-            empty_directory = self.create_temporary_directory(
-                directory=self.debusine_store_directory
-            )
-            self._set_modified_time_two_days_ago(empty_directory)
-            self.playground.create_artifact(paths=["README"], create_files=True)
+        empty_directory = self.create_temporary_directory(
+            directory=self.debusine_store_directory
+        )
+        self._set_modified_time_two_days_ago(empty_directory)
+        self.playground.create_artifact(paths=["README"], create_files=True)
 
         stdout, stderr, exitcode = call_command(
             "vacuum_storage", "--dry-run", verbosity=2
@@ -359,17 +393,16 @@ class VacuumStorageCommandTests(VacuumStorageTestMixin, TestCase):
 
     def test_delete_empty_directory(self) -> None:
         """Delete an empty directory (and leave a non-empty directory)."""
-        with context.disable_permission_checks():
-            empty_dir = self.create_temporary_directory(
-                directory=self.debusine_store_directory
-            )
-            self._set_modified_time_two_days_ago(empty_dir)
-            path_in_artifact = "README"
-            artifact, _ = self.playground.create_artifact(
-                paths=[path_in_artifact],
-                create_files=True,
-                skip_add_files_in_store=False,
-            )
+        empty_dir = self.create_temporary_directory(
+            directory=self.debusine_store_directory
+        )
+        self._set_modified_time_two_days_ago(empty_dir)
+        path_in_artifact = "README"
+        artifact, _ = self.playground.create_artifact(
+            paths=[path_in_artifact],
+            create_files=True,
+            skip_add_files_in_store=False,
+        )
 
         stdout, stderr, exitcode = call_command("vacuum_storage")
 
@@ -1888,16 +1921,15 @@ class VacuumStorageCommandTests(VacuumStorageTestMixin, TestCase):
 
     def test_file_in_upload_db_missing_from_disk(self) -> None:
         """File is referenced by the DB but not in disk for uploads."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact(
-                paths=["README"], create_files=True
-            )
-            file_in_artifact = FileInArtifact.objects.get(artifact=artifact)
+        artifact, _ = self.playground.create_artifact(
+            paths=["README"], create_files=True
+        )
+        file_in_artifact = FileInArtifact.objects.get(artifact=artifact)
 
-            file_path = "missing-file"
-            FileUpload.objects.create(
-                file_in_artifact=file_in_artifact, path=file_path
-            )
+        file_path = "missing-file"
+        FileUpload.objects.create(
+            file_in_artifact=file_in_artifact, path=file_path
+        )
 
         stdout, stderr, exitcode = call_command("vacuum_storage")
 

@@ -31,7 +31,6 @@ class Icons(enum.StrEnum):
     USER = "person-circle"
     WORKER = "pc-horizontal"
     WORKER_EXTERNAL = "pc-horizontal"
-    WORKER_CELERY = "gear"
     WORKER_SIGNING = "patch-check"
     WORKFLOW = "diagram-3"
     WORK_REQUEST = "hammer"
@@ -53,3 +52,4 @@ class Icons(enum.StrEnum):
     FILE_VIEW = "file-earmark"
     FILE_VIEW_RAW = "file-earmark-code"
     WORK_REQUEST_RETRY = "arrow-repeat"
+    WORK_REQUEST_ABORT = "x"

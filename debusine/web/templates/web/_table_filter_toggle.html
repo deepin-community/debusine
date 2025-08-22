@@ -1,0 +1,12 @@
+{% if filter.active %}
+    <div class="btn-group btn-group-sm me-1"
+         role="group"
+         aria-label="Controls for active filter {{ filter.label }}">
+        <span class='btn btn-sm text-bg-secondary'>{{ filter.label }}</span>
+        <a href='?{{ filter.qs_remove }}'
+           class='btn btn-sm text-bg-secondary'
+           title='remove filter'>
+            <i class='bi bi-x-circle text-bg-secondary'></i>
+        </a>
+    </div>
+{% endif %}

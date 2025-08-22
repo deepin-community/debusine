@@ -13,17 +13,15 @@ from functools import cached_property
 from typing import Any
 
 from debusine.artifacts import AutopkgtestArtifact
-from debusine.artifacts.models import ArtifactCategory
+from debusine.artifacts.models import ArtifactCategory, TaskTypes
 from debusine.db.models import Artifact
 from debusine.tasks import Autopkgtest
-from debusine.tasks.models import TaskTypes
 from debusine.web.views.work_request import WorkRequestPlugin
 
 
 class AutopkgtestView(WorkRequestPlugin):
     """View for Autopkgtest work request."""
 
-    template_name = "web/autopkgtest-detail.html"
     task_type = TaskTypes.WORKER
     task_name = "autopkgtest"
 
@@ -217,10 +215,16 @@ class AutopkgtestView(WorkRequestPlugin):
         )
 
         context_data: dict[str, Any] = {
+            "specialized_tab": {
+                "label": "Autopkgtest",
+                "slug": "autopkgtest",
+                "template": "web/_autopkgtest-work_request-detail.html",
+            },
             "request_data": self._get_request_data(),
             "result": self.work_request.result,
         }
         if result_artifact:
             context_data["result_artifact"] = result_artifact
             context_data["result_data"] = self._get_result_data(result_artifact)
+
         return context_data

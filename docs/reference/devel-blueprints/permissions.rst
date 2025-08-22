@@ -445,7 +445,8 @@ not be able to create collections to publish artifacts.
 
 The permission management for creating collection may need to discriminate by
 collection type, so that a user might be able to create a hypothetical
-``debusine:sandbox`` collection, but not a ``debian:suite`` collection.
+``debusine:sandbox`` collection, but not a :collection:`debian:suite`
+collection.
 
 
 

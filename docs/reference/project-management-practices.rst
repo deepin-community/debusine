@@ -64,7 +64,7 @@ Adding labels
 The project managers label incoming issues. In practical terms, it means
 classifying them along the following properties:
 
-* Type of issue: ``Bug`` or ``Feature`` or ``Refactoring``
+* Type of issue: ``Bug``, ``Feature``, ``Refactoring`` or ``Discussion``
 * Priority of the issue: ``P1`` for highest priority, up to ``P3`` for
   lowest priority.
 * Difficulty of fixing:
@@ -83,9 +83,11 @@ classifying them along the following properties:
   * ``Administration``: it concerns administrator-level operations or
     significantly impacts production deployments
   * ``Documentation``: changes to the documentation are needed/requested
-  * ``Design discussion``: discussion between developers about software
-    design-level considerations
+  * ``Architecture``: discussions about software design-level considerations
+  * ``Development``: CI infrastructure/tooling for Debusine developers, or
+    impacts the Debusine contributors' experience
   * ``Performance``: poor performance in some situation
+  * ``Project management``: discussions about planning, coordination, policies, etc.
   * ``Security``: there's a possible security impact
   * ``UI``: changes to the User Interface are needed/requested
   * ``Usability``: impacts the user experience in a significant way

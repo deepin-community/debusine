@@ -22,7 +22,6 @@ from django.test import override_settings
 from django.utils.datastructures import CaseInsensitiveMapping
 from rest_framework import status
 
-from debusine.db.context import context
 from debusine.db.models import File, FileInArtifact
 from debusine.server.views import ProblemResponse
 from debusine.test.django import TestCase
@@ -54,8 +53,114 @@ class FileUITests(TestCase):
         with override_settings(DEBUG=True):
             template.render({"widget": widget})
 
-    def test_from_file_in_artifact(self) -> None:
-        """Test from_file_in_artifact."""
+    def test_from_file_in_artifact_explicit_content_type(self) -> None:
+        """Test from_file_in_artifact with explicit content-types."""
+
+        class SubTest(NamedTuple):
+            """Define a subtest."""
+
+            filename: str
+            db_content_type: str
+            widget_class: type[FileWidget]
+            rendered_content_type: str
+            size: int = 1024
+
+        sub_tests = [
+            SubTest(
+                "build.changes",
+                "text/plain; charset=utf-8",
+                files.TextFileWidget,
+                "text/plain; charset=utf-8",
+            ),
+            SubTest(
+                "file.log",
+                "text/plain; charset=utf-8",
+                files.TextFileWidget,
+                "text/plain; charset=utf-8",
+            ),
+            SubTest(
+                "file.txt",
+                "text/plain; charset=utf-8",
+                files.TextFileWidget,
+                "text/plain; charset=utf-8",
+            ),
+            SubTest(
+                "hello.build",
+                "text/plain; charset=utf-8",
+                files.TextFileWidget,
+                "text/plain; charset=utf-8",
+            ),
+            SubTest(
+                "hello.buildinfo",
+                "text/plain; charset=utf-8",
+                files.TextFileWidget,
+                "text/plain; charset=utf-8",
+            ),
+            SubTest(
+                "file.sources",
+                "text/plain; charset=utf-8",
+                files.TextFileWidget,
+                "text/plain; charset=utf-8",
+            ),
+            SubTest(
+                "readme.md",
+                "text/markdown; charset=utf-8",
+                files.TextFileWidget,
+                "text/markdown; charset=utf-8",
+            ),
+            SubTest(
+                "log",
+                "text/plain; charset=utf-8",
+                files.TextFileWidget,
+                "text/plain; charset=utf-8",
+            ),
+            SubTest(
+                "file.js", "text/javascript", files.TextFileWidget, "text/plain"
+            ),
+            SubTest(
+                "output.json",
+                "application/json; charset=us-ascii",
+                files.TextFileWidget,
+                "application/json; charset=us-ascii",
+            ),
+            SubTest(
+                "a.out",
+                "application/octet-stream",
+                files.BinaryFileWidget,
+                "application/octet-stream",
+            ),
+            SubTest(
+                "big.bin",
+                "application/octet-stream",
+                files.TooBigFileWidget,
+                "application/octet-stream",
+                2**32,
+            ),
+            SubTest(
+                "image.png",
+                "application/png",
+                files.BinaryFileWidget,
+                "application/octet-stream",
+            ),
+        ]
+
+        for sub_test in sub_tests:
+            with self.subTest(sub_test.filename):
+                artifact, _ = self.playground.create_artifact(
+                    paths={sub_test.filename: b"test"}, create_files=True
+                )
+                file_in_artifact = FileInArtifact.objects.get(artifact=artifact)
+                file_in_artifact.content_type = sub_test.db_content_type
+                file_in_artifact.file.size = sub_test.size
+                fileui = FileUI.from_file_in_artifact(file_in_artifact)
+                self.assertEqual(
+                    fileui.content_type, sub_test.rendered_content_type
+                )
+                self.assertEqual(fileui.widget_class, sub_test.widget_class)
+                self.assertRenders(fileui, file_in_artifact)
+
+    def test_from_file_in_artifact_guess_from_file_name(self) -> None:
+        """Test from_file_in_artifact, guessing based on the file name."""
 
         class SubTest(NamedTuple):
             """Define a subtest."""
@@ -108,10 +213,9 @@ class FileUITests(TestCase):
 
         for sub_test in sub_tests:
             with self.subTest(sub_test.filename):
-                with context.disable_permission_checks():
-                    artifact, _ = self.playground.create_artifact(
-                        paths={sub_test.filename: b"test"}, create_files=True
-                    )
+                artifact, _ = self.playground.create_artifact(
+                    paths={sub_test.filename: b"test"}, create_files=True
+                )
                 file_in_artifact = FileInArtifact.objects.get(artifact=artifact)
                 file_in_artifact.file.size = sub_test.size
                 fileui = FileUI.from_file_in_artifact(file_in_artifact)
@@ -165,7 +269,6 @@ class FileDownloadMixinTests(ViewTestMixin, TestCase):
     file: ClassVar[FileInArtifact]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up the common test fixture."""
         super().setUpTestData()
@@ -183,7 +286,7 @@ class FileDownloadMixinTests(ViewTestMixin, TestCase):
     def get_stream_response(
         self,
         file_in_artifact: FileInArtifact,
-        range_header: tuple[int, int] | str | None = None,
+        range_header: tuple[int | None, int | None] | str | None = None,
         download: bool = True,
     ) -> HttpResponseBase:
         """Instantiate the view and get a streaming file response."""
@@ -193,6 +296,10 @@ class FileDownloadMixinTests(ViewTestMixin, TestCase):
             case str():
                 headers["Range"] = range_header
             case [range_start, range_end]:
+                if range_start is None:
+                    range_start = ""
+                if range_end is None:
+                    range_end = ""
                 headers["Range"] = f"bytes={range_start}-{range_end}"
         if headers:
             request.headers = cast(
@@ -306,9 +413,37 @@ class FileDownloadMixinTests(ViewTestMixin, TestCase):
         )
         self.assertFileResponse(response, self.file, start, end)
 
+    def test_get_file_range_no_end_position(self) -> None:
+        """Server handles ``Range`` with no end position."""
+        start, end = 5, len(self.contents["file.md"]) - 1
+        response = self.get_stream_response(
+            self.file, range_header=(start, None)
+        )
+        self.assertFileResponse(response, self.file, start, end)
+
+    def test_get_file_range_suffix(self) -> None:
+        """Server handles ``Range`` with a suffix byte-range request."""
+        suffix_length = 10
+        end = len(self.contents["file.md"]) - 1
+        start = end - suffix_length + 1
+        response = self.get_stream_response(
+            self.file, range_header=(None, suffix_length)
+        )
+        self.assertFileResponse(response, self.file, start, end)
+
     def test_get_file_content_range_invalid(self) -> None:
         """Get return an error: Range header was invalid."""
         invalid_range_header = "invalid-range"
+        response = self.get_stream_response(
+            self.file, range_header=invalid_range_header
+        )
+        self.assertResponseProblem(
+            response, f'Invalid Range header: "{invalid_range_header}"'
+        )
+
+    def test_get_file_content_range_no_positions(self) -> None:
+        """Get return an error: Range header contains neither start nor end."""
+        invalid_range_header = "bytes=-"
         response = self.get_stream_response(
             self.file, range_header=invalid_range_header
         )
@@ -325,7 +460,7 @@ class FileDownloadMixinTests(ViewTestMixin, TestCase):
         )
         self.assertResponseProblem(
             response,
-            f"Invalid Content-Range start: {start}. " f"File size: {file_size}",
+            f"Invalid Content-Range start: {start}. File size: {file_size}",
         )
 
     def test_get_file_range_end_is_file_size(self) -> None:
@@ -344,7 +479,7 @@ class FileDownloadMixinTests(ViewTestMixin, TestCase):
         response = self.get_stream_response(self.file, range_header=(0, end))
         self.assertResponseProblem(
             response,
-            f"Invalid Content-Range end: {end}. " f"File size: {file_size}",
+            f"Invalid Content-Range end: {end}. File size: {file_size}",
         )
 
     def test_get_file_url_redirect(self) -> None:
@@ -381,9 +516,9 @@ class FileWidgetTests(ViewTestMixin, TestCase):
     empty: ClassVar[FileInArtifact]
     large: ClassVar[FileInArtifact]
     text: ClassVar[FileInArtifact]
+    json: ClassVar[FileInArtifact]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up the common test fixture."""
         super().setUpTestData()
@@ -393,6 +528,7 @@ class FileWidgetTests(ViewTestMixin, TestCase):
             "empty.bin": b"",
             "file.bin": bytes(range(256)),
             "largefile.bin": b"large",
+            "output.json": b'{"name": "John"}',
         }
         artifact, _ = cls.playground.create_artifact(
             paths=cls.contents,
@@ -401,29 +537,37 @@ class FileWidgetTests(ViewTestMixin, TestCase):
         cls.empty = artifact.fileinartifact_set.get(path="empty.bin")
         cls.dsc = artifact.fileinartifact_set.get(path="file.dsc")
         cls.text = artifact.fileinartifact_set.get(path="file.md")
+        cls.json = artifact.fileinartifact_set.get(path="output.json")
+        cls.json.content_type = "application/json; charset=us-ascii"
+        cls.json.save()
         cls.binary = artifact.fileinartifact_set.get(path="file.bin")
         cls.large = artifact.fileinartifact_set.get(path="largefile.bin")
         cls.large.file.size = 2**32
         cls.large.file.save()
 
-    def test_context_data_text(self) -> None:
-        """Test context for text files."""
-        file = self.text
-        context = FileWidget.create(file).get_context_data()
+    def test_context_data(self) -> None:
+        """Test context for file types that are supported."""
+        for file, expected_content in [
+            (self.text, "# Title"),
+            (self.json, "John"),
+            (self.dsc, '<span class="k">Source</span>'),
+        ]:
+            with self.subTest(file=file.path):
+                context = FileWidget.create(file).get_context_data()
 
-        file_linenumbers = context.pop("file_linenumbers")
-        self.assertIn("L1", file_linenumbers)
-        file_content = context.pop("file_content")
-        self.assertIn("# Title", file_content)
+                file_linenumbers = context.pop("file_linenumbers")
+                self.assertIn("L1", file_linenumbers)
+                file_content = context.pop("file_content")
+                self.assertIn(expected_content, file_content)
 
-        self.assertEqual(
-            context,
-            {
-                "file_in_artifact": file,
-                "file_ui": FileUI.from_file_in_artifact(file),
-                "file_contents_div_id": "file-contents",
-            },
-        )
+                self.assertEqual(
+                    context,
+                    {
+                        "file_in_artifact": file,
+                        "file_ui": FileUI.from_file_in_artifact(file),
+                        "file_contents_div_id": "file-contents",
+                    },
+                )
 
     def test_context_data_text_incomplete(self) -> None:
         """Test context for incomplete text files."""
@@ -434,25 +578,6 @@ class FileWidgetTests(ViewTestMixin, TestCase):
 
         self.assertNotIn("file_linenumbers", context)
         self.assertNotIn("file_content", context)
-
-        self.assertEqual(
-            context,
-            {
-                "file_in_artifact": file,
-                "file_ui": FileUI.from_file_in_artifact(file),
-                "file_contents_div_id": "file-contents",
-            },
-        )
-
-    def test_context_data_dsc(self) -> None:
-        """Test context for text files."""
-        file = self.dsc
-        context = FileWidget.create(file).get_context_data()
-
-        file_linenumbers = context.pop("file_linenumbers")
-        self.assertIn("L1", file_linenumbers)
-        file_content = context.pop("file_content")
-        self.assertIn('<span class="k">Source</span>', file_content)
 
         self.assertEqual(
             context,

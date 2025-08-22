@@ -1,4 +1,4 @@
-.. _workflow-noop:
+.. workflow:: noop
 
 Workflow ``noop``
 =================

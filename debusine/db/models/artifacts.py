@@ -26,7 +26,7 @@ from debusine.artifacts.models import ArtifactCategory, ArtifactData
 from debusine.db.context import context
 from debusine.db.models.files import File
 from debusine.db.models.permissions import (
-    AllowWorkers,
+    Allow,
     PermissionUser,
     permission_check,
     permission_filter,
@@ -89,7 +89,7 @@ class ArtifactQuerySet(QuerySet["Artifact", A], Generic[A]):
         """Filter to artifacts in the current workspace."""
         return self.filter(workspace=context.require_workspace())
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS, anonymous=Allow.PASS)
     def can_display(self, user: PermissionUser) -> "ArtifactQuerySet[A]":
         """Keep only Artifacts that can be displayed."""
         # Delegate to workspace can_display check
@@ -195,7 +195,7 @@ class ArtifactManager(models.Manager["Artifact"]):
         *,
         created_by_work_request: Optional["WorkRequest"] = None,
     ) -> "Artifact":
-        """Return a new Artifact based on a :class:`LocalArtifact`."""
+        """Return a new Artifact based on a :py:class:`LocalArtifact`."""
         artifact = Artifact.objects.create(
             category=local_artifact.category,
             workspace=workspace,
@@ -208,7 +208,11 @@ class ArtifactManager(models.Manager["Artifact"]):
             file_backend = workspace.scope.upload_file_backend(file)
             file_backend.add_file(local_path, fileobj=file)
             FileInArtifact.objects.create(
-                artifact=artifact, path=artifact_path, file=file, complete=True
+                artifact=artifact,
+                path=artifact_path,
+                file=file,
+                complete=True,
+                content_type=local_artifact.content_types.get(artifact_path),
             )
 
         return artifact
@@ -259,7 +263,9 @@ class Artifact(models.Model):
             ) from e
 
     @permission_check(
-        "{user} cannot display artifact {resource}", workers=AllowWorkers.ALWAYS
+        "{user} cannot display artifact {resource}",
+        workers=Allow.ALWAYS,
+        anonymous=Allow.PASS,
     )
     def can_display(self, user: PermissionUser) -> bool:
         """Check if the artifact can be displayed."""
@@ -333,17 +339,23 @@ class Artifact(models.Model):
 
     def get_absolute_url(self) -> str:
         """Return the canonical URL to display the artifact."""
-        return reverse(
-            "workspaces:artifacts:detail",
-            kwargs={"wname": self.workspace.name, "artifact_id": self.id},
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.workspace.scope.name):
+            return reverse(
+                "workspaces:artifacts:detail",
+                kwargs={"wname": self.workspace.name, "artifact_id": self.id},
+            )
 
     def get_absolute_url_download(self) -> str:
         """Return the canonical URL to download the artifact."""
-        return reverse(
-            "workspaces:artifacts:download",
-            kwargs={"wname": self.workspace.name, "artifact_id": self.id},
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.workspace.scope.name):
+            return reverse(
+                "workspaces:artifacts:download",
+                kwargs={"wname": self.workspace.name, "artifact_id": self.id},
+            )
 
     def __str__(self) -> str:
         """Return basic information of Artifact."""
@@ -366,6 +378,7 @@ class FileInArtifact(models.Model):
     # added.  (debusine.debian.net only had a single workspace at the time
     # of this migration, so that's not a problem there.)
     complete = models.BooleanField(default=False)
+    content_type = models.CharField(blank=True, null=True)
 
     class Meta(TypedModelMeta):
         constraints = [
@@ -384,36 +397,45 @@ class FileInArtifact(models.Model):
 
     def get_absolute_url(self) -> str:
         """Return an absolute URL to view this file."""
-        return reverse(
-            "workspaces:artifacts:file-detail",
-            kwargs={
-                "wname": self.artifact.workspace.name,
-                "artifact_id": self.artifact.id,
-                "path": self.path,
-            },
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.artifact.workspace.scope.name):
+            return reverse(
+                "workspaces:artifacts:file-detail",
+                kwargs={
+                    "wname": self.artifact.workspace.name,
+                    "artifact_id": self.artifact.id,
+                    "path": self.path,
+                },
+            )
 
     def get_absolute_url_raw(self) -> str:
         """Return an absolute URL to view this file as raw."""
-        return reverse(
-            "workspaces:artifacts:file-raw",
-            kwargs={
-                "wname": self.artifact.workspace.name,
-                "artifact_id": self.artifact.id,
-                "path": self.path,
-            },
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.artifact.workspace.scope.name):
+            return reverse(
+                "workspaces:artifacts:file-raw",
+                kwargs={
+                    "wname": self.artifact.workspace.name,
+                    "artifact_id": self.artifact.id,
+                    "path": self.path,
+                },
+            )
 
     def get_absolute_url_download(self) -> str:
         """Return an absolute URL to download this file."""
-        return reverse(
-            "workspaces:artifacts:file-download",
-            kwargs={
-                "wname": self.artifact.workspace.name,
-                "artifact_id": self.artifact.id,
-                "path": self.path,
-            },
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.artifact.workspace.scope.name):
+            return reverse(
+                "workspaces:artifacts:file-download",
+                kwargs={
+                    "wname": self.artifact.workspace.name,
+                    "artifact_id": self.artifact.id,
+                    "path": self.path,
+                },
+            )
 
 
 class FileUpload(models.Model):
@@ -509,7 +531,7 @@ class ArtifactRelationQuerySet(QuerySet["ArtifactRelation", A], Generic[A]):
             artifact__workspace__scope=scope, target__workspace__scope=scope
         )
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS, anonymous=Allow.PASS)
     def can_display(
         self, user: PermissionUser
     ) -> "ArtifactRelationQuerySet[A]":
@@ -561,7 +583,8 @@ class ArtifactRelation(models.Model):
 
     @permission_check(
         "{user} cannot display artifact relation {resource}",
-        workers=AllowWorkers.ALWAYS,
+        workers=Allow.ALWAYS,
+        anonymous=Allow.PASS,
     )
     def can_display(self, user: PermissionUser) -> bool:
         """Check if the artifact can be displayed."""

@@ -30,7 +30,7 @@ from debusine.db.context import context
 from debusine.db.models import Artifact, ArtifactRelation, FileInArtifact
 from debusine.server.tar import TarArtifact
 from debusine.web.forms import ArtifactForm
-from debusine.web.views import sidebar, ui_shortcuts
+from debusine.web.views import ui_shortcuts
 from debusine.web.views.base import (
     BaseUIView,
     CreateViewBase,
@@ -38,7 +38,6 @@ from debusine.web.views.base import (
     SingleObjectMixinBase,
     WorkspaceView,
 )
-from debusine.web.views.base_rightbar import RightbarUIView
 from debusine.web.views.files import (
     FileDownloadMixin,
     FileUI,
@@ -46,11 +45,11 @@ from debusine.web.views.files import (
     PathMixin,
 )
 from debusine.web.views.http_errors import HttpError400, catch_http_errors
-from debusine.web.views.sidebar import SidebarItem
+from debusine.web.views.mixins import UIShortcutsMixin
 from debusine.web.views.view_utils import format_yaml
 
 
-class ArtifactView(WorkspaceView, RightbarUIView, abc.ABC):
+class ArtifactView(WorkspaceView, UIShortcutsMixin, abc.ABC):
     """Base view for UIs showing an artifact or part of it."""
 
     permission_denied_message = (
@@ -71,26 +70,8 @@ class ArtifactView(WorkspaceView, RightbarUIView, abc.ABC):
         self.artifact = self.get_artifact()
         self.enforce(self.artifact.can_display)
 
-    def get_sidebar_items(self) -> list[SidebarItem]:
-        """Return a list of sidebar items."""
-        items = super().get_sidebar_items()
-        artifact = self.artifact
-        items.append(sidebar.create_artifact_category(artifact))
-        items.append(sidebar.create_workspace(artifact.workspace))
-        items.append(
-            sidebar.create_work_request(
-                artifact.created_by_work_request, link=True
-            )
-        )
-        items.append(sidebar.create_user(artifact.created_by, context=artifact))
-        items.append(sidebar.create_created_at(artifact.created_at))
-        items.append(sidebar.create_expire_at(artifact.expire_at))
-        return items
 
-
-class ArtifactDetailView(
-    ArtifactView, DetailViewBase[Artifact], RightbarUIView
-):
+class ArtifactDetailView(ArtifactView, DetailViewBase[Artifact]):
     """Display an artifact and its file(s)."""
 
     model = Artifact
@@ -104,7 +85,7 @@ class ArtifactDetailView(
 
     def get_queryset(self) -> QuerySet[Artifact]:
         """Add the select_related we need to the queryset."""
-        return super().get_queryset().select_related("workspace")
+        return super().get_queryset().select_related("workspace__scope")
 
     def get_title(self) -> str:
         """Return the page title."""
@@ -152,19 +133,21 @@ class ArtifactDetailView(
         return file_list
 
     def _current_view_is_specialized(self) -> bool:
-        """
-        Specialized (based on a plugin) view will be served.
-
-        User did not force the default view, a plugin exists, and the work
-        request passes validation.
-        """
+        """Tab for the specialized view information will be served."""
         return ArtifactPlugin.plugin_for(self.artifact.category) is not None
 
     def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
-        """Return context for this view."""
+        """Return context for this view's tabled template."""
         ctx = super().get_context_data(**kwargs)
 
         plugin_view = ArtifactPlugin.plugin_for(self.artifact.category)
+
+        if plugin_view is not None:
+            # Add specific specialized plugin information
+            ctx.update(
+                **plugin_view(self.artifact).get_context_data(),
+                **{"specialized_view": True},
+            )
 
         for file_in_artifact in self.file_list:
             self.add_object_ui_shortcuts(
@@ -200,13 +183,6 @@ class ArtifactDetailView(
 
         ctx["file_count"] = len(self.file_list)
 
-        if plugin_view is not None:
-            # Add specific specialized_plugin information
-            ctx.update(
-                **plugin_view(self.artifact).get_context_data(),
-                **{"specialized_view": True},
-            )
-
         return ctx
 
     def get_template_names(self) -> list[str]:
@@ -236,7 +212,7 @@ class FileView(
             super()
             .get_queryset()
             .filter(artifact_id=self.kwargs["artifact_id"])
-            .select_related("artifact__workspace")
+            .select_related("artifact__workspace__scope")
         )
 
     def get_object(

@@ -1,4 +1,4 @@
-.. _workflow-debian-pipeline:
+.. workflow:: debian_pipeline
 
 Workflow ``debian_pipeline``
 ============================
@@ -8,19 +8,19 @@ run to build and test an upload to Debian, similar to the `Salsa CI pipeline
 more distribution-wide testing and the ability to handle the task of
 performing the upload.
 
-This builds on the existing :ref:`sbuild workflow <workflow-sbuild>`.
+This builds on the existing :workflow:`sbuild` workflow.
 
 * ``task_data``:
 
   * ``source_artifact`` (:ref:`lookup-single`, required): the
-    ``debian:source-package`` or ``debian:upload`` artifact representing the
-    source package to test
+    :artifact:`debian:source-package` or :artifact:`debian:upload` artifact
+    representing the source package to test
 
   * ``vendor`` (string, required): the distribution vendor on which to run
     tests
   * ``codename`` (string, required): the distribution codename on which to
     run tests
-  * ``extra_repositories`` (optional): see the :ref:`package-build-task`
+  * ``extra_repositories`` (optional): see :task:`PackageBuild`
   * ``architectures`` (list of strings, optional): if set, only run on any
     of these architecture names
 
@@ -38,54 +38,58 @@ This builds on the existing :ref:`sbuild workflow <workflow-sbuild>`.
 
   * ``signing_template_names`` (dictionary, optional): mapping from
     architecture to list of names of binary packages that should be used as
-    signing templates by the :ref:`make_signed_source sub-workflow
-    <workflow-make-signed-source>`
+    signing templates by the :workflow:`make_signed_source` sub-workflow
 
-  * ``sbuild_backend`` (string, optional): see :ref:`package-build-task`
+  * ``sbuild_backend`` (string, optional): see :task:`PackageBuild`
   * ``sbuild_environment_variant`` (string, optional): variant of the
     environment to build on, e.g. ``buildd``
+
+  * ``qa_suite`` (:ref:`lookup-single`, required if
+    ``enable_reverse_dependencies_autopkgtest`` or ``enable_debdiff`` is True):
+    the :collection:`debian:suite` collection to search for
+    reverse-dependencies or debdiff original packages. Once we have a good way
+    to look up the primary suite for a vendor and codename, this could default
+    to doing so
 
   * ``enable_check_installability`` (boolean, defaults to True): whether to
     include installability-checking tasks
   * ``check_installability_suite`` (:ref:`lookup-single`, required if
-    ``enable_check_installability`` is True): the ``debian:suite``
+    ``enable_check_installability`` is True): the :collection:`debian:suite`
     collection to check installability against; once we have a good way to
     look up the primary suite for a vendor and codename, this could default
     to doing so
 
   * ``enable_autopkgtest`` (boolean, defaults to True): whether to include
     autopkgtest tasks
-  * ``autopkgtest_backend`` (string, optional): see :ref:`task-autopkgtest`
+  * ``autopkgtest_backend`` (string, optional): see :task:`Autopkgtest`
 
   * ``enable_reverse_dependencies_autopkgtest`` (boolean, defaults to
     False): whether to include autopkgtest tasks for reverse-dependencies
-  * ``reverse_dependencies_autopkgtest_suite`` (:ref:`lookup-single`,
-    required if ``enable_reverse_dependencies_autopkgtest`` is True): the
-    ``debian:suite`` collection to search for reverse-dependencies; once we
-    have a good way to look up the primary suite for a vendor and codename,
-    this could default to doing so
 
   * ``enable_lintian`` (boolean, defaults to True): whether to include
     lintian tasks
-  * ``lintian_backend`` (string, optional): see :ref:`task-lintian`
-  * ``lintian_fail_on_severity`` (string, optional): see :ref:`task-lintian`
+  * ``lintian_backend`` (string, optional): see :task:`Lintian`
+  * ``lintian_fail_on_severity`` (string, optional): see :task:`Lintian`
 
   * ``enable_piuparts`` (boolean, defaults to True): whether to include
     piuparts tasks
-  * ``piuparts_backend`` (string, optional): see :ref:`task-piuparts`
+  * ``piuparts_backend`` (string, optional): see :task:`Piuparts`
   * ``piuparts_environment`` (string, optional): the environment to run
     piuparts in
 
-  * ``enable_debdiff`` (boolean, defaults to False): whether to generate
+  * ``enable_debdiff`` (boolean, defaults to False): whether to include
     debdiff for source and binary packages, comparing the supplied source
     package and the built binary packages against the packages available in the
-    distribution identified by ``vendor`` and ``codename``.
+    distribution identified by ``qa_suite``.
+
+  * ``enable_blhc`` (boolean, defaults to True): whether to include ``blhc``
+    tasks for the logs associated to the builds
 
   * ``enable_make_signed_source`` (boolean, defaults to False): whether to
     sign the contents of builds and make a signed source package
   * ``make_signed_source_purpose`` (string, required only if
     ``enable_make_signed_source`` is True): the purpose of the key to sign
-    with; see :ref:`task-sign`
+    with; see :task:`Sign`
   * ``make_signed_source_key`` (string, required only if
     ``enable_make_signed_source`` is True): the fingerprint to sign
     with; must match ``purpose``
@@ -96,11 +100,14 @@ This builds on the existing :ref:`sbuild workflow <workflow-sbuild>`.
 
   * ``enable_upload`` (boolean, defaults to False): whether to upload to an
     upload queue
-  * ``upload_key`` (:ref:`lookup-single`, optional): key used to sign the
-    uploads. If not set and if ``upload_require_signature`` is True, then
-    the user will have to remotely sign the files.
-  * ``upload_require_signature`` (boolean, defaults to True): whether the
-    uploads must be signed
+  * ``upload_key`` (:ref:`lookup-single`, optional): key used to sign
+    uploads
+  * ``upload_binary_key`` (:ref:`lookup-single`, optional): key used to sign
+    binary uploads
+  * ``upload_require_signature`` (boolean, defaults to True): whether
+    uploads must be signed; if this is set and neither ``upload_key`` nor
+    (if applicable) ``upload_binary_key`` is set, then the user will have to
+    remotely sign the files
   * ``upload_include_source`` (boolean, defaults to True): include
     source with the upload
   * ``upload_include_binaries`` (boolean, defaults to True): include
@@ -111,13 +118,13 @@ This builds on the existing :ref:`sbuild workflow <workflow-sbuild>`.
     them all together; if False, create a separate PackageUpload task for
     each source and binary upload
   * ``upload_since_version`` (string, optional): if ``source_artifact`` is a
-    ``debian:source-package``, include changelog information from all
-    versions strictly later than this version in the ``.changes`` file; the
-    default is to include only the topmost changelog entry
+    :artifact:`debian:source-package`, include changelog information from
+    all versions strictly later than this version in the ``.changes`` file;
+    the default is to include only the topmost changelog entry
   * ``upload_target_distribution`` (string, optional): if
-    ``source_artifact`` is a ``debian:source-package``, override the target
-    ``Distribution`` field in the ``.changes`` file to this value; the
-    default is to use the distribution from the topmost changelog entry
+    ``source_artifact`` is a :artifact:`debian:source-package`, override the
+    target ``Distribution`` field in the ``.changes`` file to this value;
+    the default is to use the distribution from the topmost changelog entry
   * ``upload_target`` (string, defaults to
     ``ftp://anonymous@ftp.upload.debian.org/pub/UploadQueue/``): the upload
     queue, as an ``ftp://`` or ``sftp://`` URL
@@ -139,7 +146,7 @@ architectures supported by this Debusine instance and the
 The workflow creates sub-workflows and tasks as follows, with substitutions
 based on its own task data:
 
-* an :ref:`sbuild sub-workflow <workflow-sbuild>`, with task data:
+* an :workflow:`sbuild` sub-workflow, with task data:
 
   * ``input.source_artifact``: ``{source_artifact}``
   * ``target_distribution``: ``{vendor}:{codename}``
@@ -150,8 +157,8 @@ based on its own task data:
   * ``signing_template_names``: ``{signing_template_names}``, if set
 
 * if any of ``enable_check_installability``, ``enable_autopkgtest``,
-  ``enable_lintian``, and ``enable_piuparts`` are True, a :ref:`qa
-  sub-workflow <workflow-qa>`, with task data copied from the items of the
+  ``enable_lintian``, ``enable_piuparts`` and ``enable_debdiff`` are True,
+  a :workflow:`qa` sub-workflow, with task data copied from the items of the
   same name in this workflow's task data, plus:
 
   * ``binary_artifacts``:
@@ -159,11 +166,10 @@ based on its own task data:
     architecture
   * ``architectures``: the effective set of architectures
 
-* if ``enable_confirmation`` is set, a :ref:`task-confirm`
+* if ``enable_confirmation`` is set, a :task:`Confirm`
 
 * if ``enable_make_signed_source`` and ``signing_template_names`` are set, a
-  :ref:`make_signed_source sub-workflow <workflow-make-signed-source>`, with
-  task data:
+  :workflow:`make_signed_source` sub-workflow, with task data:
 
   * ``binary_artifacts``:
     ``internal@collections/name:build-{architecture}``, for each available
@@ -179,12 +185,11 @@ based on its own task data:
   * ``key``: ``{make_signed_source_key}``
   * ``sbuild_backend``: ``{sbuild_backend}``
 
-* if ``enable_upload`` is set, a :ref:`package_upload sub-workflow
-  <workflow-package-upload>` for each source package being uploaded (at
-  least the top-level ``source_artifact``, but also each assembled signed
-  source package from the :ref:`make_signed_source sub-workflow
-  <workflow-make-signed-source>` if one exists), configured to require a
-  signature from the developer, with task data:
+* if ``enable_upload`` is set, a :workflow:`package_upload` sub-workflow for
+  each source package being uploaded (at least the top-level
+  ``source_artifact``, but also each assembled signed source package from
+  the :workflow:`make_signed_source` sub-workflow if one exists), configured
+  to require a signature from the developer, with task data:
 
   * ``source_artifact``: the source artifact to upload (or unset if this
     upload is for the top-level source artifact and
@@ -204,31 +209,26 @@ based on its own task data:
   * ``target``: ``{upload_target}``
   * ``vendor``: ``{vendor}``
   * ``codename``: ``{codename}``
+  * ``arch_all_host_architecture``: ``{arch_all_host_architecture}``
   * ``delayed_days``: ``{upload_delayed_days}``
 
-The first work request for each architecture in the :ref:`make_signed_source
-sub-workflow <workflow-make-signed-source>` and the first work request in
-the ``package_upload`` sub-workflow depend on the :ref:`task-confirm` above.
+The first work request for each architecture in the
+:workflow:`make_signed_source` sub-workflow and the first work request in
+the ``package_upload`` sub-workflow depend on the :task:`Confirm` above.
 
 .. todo::
-    Not implemented: `enable_debdiff`, ``enable_check_installability``,
+    Not implemented: ``enable_check_installability``,
     ``check_installability_suite`` and ``enable_confirmation``.
-    See the relevant blueprints for :ref:`task installability <task-check-installability>`,
-    :ref:`reverse dependencies autopkgtest <workflow-reverse-dependencies-autopkgtest>` or
-    :ref:`enable confirmation <task-confirm>`.
+    See the relevant blueprints for :task:`task installability <CheckInstallability>`,
+    :workflow:`reverse_dependencies_autopkgtest` or
+    :task:`enable confirmation <Confirm>`.
 
 .. todo::
 
-    There should also be an option to add the results to a debian:suite
-    collection rather than uploading it to an external queue.  However, this
-    isn't very useful until Debusine has its own repository hosting, and
-    once it does, we'll need to be able to apply consistency checks to
-    uploads rather than just adding them to suites in an unconstrained way.
-    This will probably involve a new workflow yet to be designed.
-
-.. todo::
-
-    The pipeline should also include the ability to schedule a `debdiff
-    against a baseline suite
-    <https://salsa.debian.org/freexian-team/debusine/-/issues/398>`_ (either
-    directly or in a sub-workflow).
+    There should also be an option to add the results to a
+    :collection:`debian:suite` collection rather than uploading it to an
+    external queue.  However, this isn't very useful until Debusine has its
+    own repository hosting, and once it does, we'll need to be able to apply
+    consistency checks to uploads rather than just adding them to suites in
+    an unconstrained way.  This will probably involve a new workflow yet to
+    be designed.

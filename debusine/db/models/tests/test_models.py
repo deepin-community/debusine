@@ -20,6 +20,7 @@ class NotificationChannelTests(TestCase):
 
     def setUp(self) -> None:
         """Set up test."""
+        super().setUp()
         self.email_data = {
             "from": "sender@debusine.example.org",
             "to": ["recipient@example.com"],

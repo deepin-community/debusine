@@ -13,7 +13,6 @@ import re
 from typing import ClassVar, cast
 
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
-from debusine.db.context import context
 from debusine.db.models import (
     Collection,
     CollectionItem,
@@ -96,15 +95,13 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
         del self.task.derived_collection
         self.assertEqual(self.task.derived_collection, self.derived_collection)
 
-    @context.disable_permission_checks()
     def test_find_relevant_base_items(self) -> None:
         """Only active items in the correct base collection are relevant."""
         collection_items = [
             self.create_source_package_item(self.base_manager, package, "1.0")
             for package in ("a", "b", "c")
         ]
-        assert collection_items[2].artifact is not None
-        self.base_manager.remove_artifact(collection_items[2].artifact)
+        self.base_manager.remove_item(collection_items[2])
         other_collection = Collection.objects.create(
             name="trixie",
             category=CollectionCategory.SUITE,
@@ -120,7 +117,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             ordered=False,
         )
 
-    @context.disable_permission_checks()
     def test_find_relevant_derived_items(self) -> None:
         """Only active items in the correct derived collection are relevant."""
         source_package_items = [
@@ -133,8 +129,7 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             )
             for source_package_item in source_package_items[:3]
         ]
-        assert lintian_items[2].artifact is not None
-        self.derived_manager.remove_artifact(lintian_items[2].artifact)
+        self.derived_manager.remove_item(lintian_items[2])
         other_collection = Collection.objects.create(
             name="trixie",
             category=CollectionCategory.SUITE_LINTIAN,
@@ -151,7 +146,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             ordered=False,
         )
 
-    @context.disable_permission_checks()
     def test_find_expected_derived_items(self) -> None:
         """
         Derived item names are mapped to sets of base item IDs.
@@ -200,7 +194,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             },
         )
 
-    @context.disable_permission_checks()
     def test_categorize_derived_items(self) -> None:
         """Items are categorized into add/replace/remove."""
         source_package_items = [
@@ -216,8 +209,7 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             )
 
         for source_package_item in source_package_items[1:]:
-            assert source_package_item.artifact is not None
-            self.base_manager.remove_artifact(source_package_item.artifact)
+            self.base_manager.remove_item(source_package_item)
         new_source_package_items = [
             self.create_source_package_item(self.base_manager, package, "1.0")
             for package in ("c", "d")
@@ -249,7 +241,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             ],
         )
 
-    @context.disable_permission_checks()
     def test_make_child_work_request_source_only(self) -> None:
         """Make a child work request with no binary packages."""
         source_package_item = self.create_source_package_item(
@@ -291,7 +282,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             ],
         )
 
-    @context.disable_permission_checks()
     def test_make_child_work_request_with_binaries(self) -> None:
         """Make a child work request with binary packages."""
         source_package_item = self.create_source_package_item(
@@ -343,7 +333,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             ],
         )
 
-    @context.disable_permission_checks()
     def test_make_child_work_request_with_only_binaries(self) -> None:
         """Make a child work request with binary packages but no sources."""
         binary_package_items = [
@@ -403,7 +392,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
                 base_item_ids=set(), child_task_data=None, force=False
             )
 
-    @context.disable_permission_checks()
     def test_make_child_work_request_with_multiple_sources(self) -> None:
         """`make_child_work_request` raises ValueError: multiple sources."""
         source_package_items = [
@@ -427,7 +415,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
                 force=False,
             )
 
-    @context.disable_permission_checks()
     def test_make_child_work_request_extra_task_data(self) -> None:
         """A child work request can be supplied with extra task data."""
         source_package_item = self.create_source_package_item(
@@ -468,7 +455,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             },
         )
 
-    @context.disable_permission_checks()
     def test_make_child_work_request_force(self) -> None:
         """`force=True` is needed if a matching work request already exists."""
         source_package_item = self.create_source_package_item(
@@ -517,7 +503,6 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             )
         )
 
-    @context.disable_permission_checks()
     def test_execute(self) -> None:
         """The task plans and executes the required changes."""
         source_package_items = [
@@ -533,8 +518,7 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             )
 
         for source_package_item in source_package_items[1:]:
-            assert source_package_item.artifact is not None
-            self.base_manager.remove_artifact(source_package_item.artifact)
+            self.base_manager.remove_item(source_package_item)
         new_source_package_items = [
             self.create_source_package_item(self.base_manager, package, "1.0")
             for package in ("c", "d")
@@ -592,7 +576,7 @@ class UpdateSuiteLintianCollectionTests(CollectionTestMixin, TestCase):
             )
         # The task removed items that were planned to be removed.
         self.assertQuerySetEqual(
-            CollectionItem.active_objects.filter(
+            CollectionItem.objects.active().filter(
                 parent_collection=self.derived_collection
             ),
             [lintian_items[0], lintian_items[2]],

@@ -1,0 +1,26 @@
+<p class="mt-2 mb-0">
+    {% block status %}
+        Status:
+        <a href="{% url "worker-pools:list" %}">Worker pools</a>
+        • <a href="{% url "workers:list" %}">Workers</a>
+        • <a href="{% url "task-status" %}">Task status</a>
+    {% endblock %}
+</p>
+<p class="mt-0 mb-0">
+    {% block copyright %}
+        © 2019-2025 <a href="https://salsa.debian.org/freexian-team/debusine/-/blob/devel/AUTHORS">Debusine Developers</a>
+    {% endblock %}
+</p>
+<p class="mt-0 mb-0">
+    {% block links %}
+        <a href="https://freexian-team.pages.debian.net/debusine/"
+           target="_blank">Documentation</a> •
+        <a href="https://salsa.debian.org/freexian-team/debusine/-/issues"
+           target="_blank">Bugs</a> •
+        <a href="https://salsa.debian.org/freexian-team/debusine/"
+           target="_blank">Code</a> •
+        <a href="https://freexian-team.pages.debian.net/debusine/howtos/contribute.html"
+           target="_blank">Contributing</a>
+        {% if debusine_version %}• {{ debusine_version }}{% endif %}
+    {% endblock %}
+</p>

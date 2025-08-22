@@ -11,24 +11,31 @@
 
 import inspect
 import logging
-import re
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any, TYPE_CHECKING
 from unittest import mock
 
+from celery import states
+from celery.contrib.testing.app import TestApp, setup_default_app
 from channels.db import database_sync_to_async
+from django.db import transaction
+from django.db.models import JSONField, QuerySet
+from django.db.models.functions import Cast
 from django.test import override_settings
 from django.utils import timezone
+from django_celery_results.models import TaskResult
 
 from debusine.artifacts.models import (
     ArtifactCategory,
     CollectionCategory,
     DebianSourcePackage,
+    TaskTypes,
 )
 from debusine.assets import KeyPurpose
-from debusine.db.context import context
 from debusine.db.models import (
+    Collection,
+    CollectionItem,
     TaskDatabase,
     Token,
     WorkRequest,
@@ -36,6 +43,7 @@ from debusine.db.models import (
     default_workspace,
 )
 from debusine.db.tests.utils import RunInParallelTransaction
+from debusine.project.celery import TaskWithBetterArgumentRepresentation
 from debusine.server.scheduler import (
     _work_request_changed,
     _worker_changed,
@@ -43,18 +51,21 @@ from debusine.server.scheduler import (
     schedule_for_worker,
 )
 from debusine.server.tasks import ServerNoop
-from debusine.server.tasks.tests.helpers import TestBaseWaitTask
+from debusine.server.tasks.tests.helpers import SampleBaseWaitTask
 from debusine.server.tasks.wait.models import DelayData
 from debusine.server.workflows.models import WorkRequestWorkflowData
 from debusine.signing.tasks.models import GenerateKeyData
 from debusine.tasks import Lintian, Sbuild
 from debusine.tasks.models import (
+    ActionSkipIfLookupResultChanged,
     BaseDynamicTaskData,
     BaseTaskData,
+    EventReactions,
     LintianData,
     LintianInput,
     LookupSingle,
-    TaskTypes,
+    OutputData,
+    OutputDataError,
     WorkerType,
 )
 from debusine.tasks.server import ArtifactInfo
@@ -114,7 +125,7 @@ class SchedulerTestCase(PlaygroundTestCase):
         # environment
         (
             "debian/match:codename=sid:architecture=amd64:format=tarball:"
-            "backend=unshare",
+            "backend=unshare:variant=",
             CollectionCategory.ENVIRONMENTS,
         ): ArtifactInfo(
             id=2,
@@ -144,7 +155,7 @@ class SchedulerTestCase(PlaygroundTestCase):
     ) -> Worker:
         """Create and return a Worker."""
         token = Token.objects.create(enabled=enabled)
-        worker = Worker.objects.create_with_fqdn('worker.lan', token)
+        worker = Worker.objects.create_with_fqdn('worker.lan', token=token)
 
         worker.dynamic_metadata = {
             "system:worker_type": worker_type,
@@ -190,6 +201,7 @@ class SchedulerTests(SchedulerTestCase, TestCase):
 
     def setUp(self) -> None:
         """Initialize test case."""
+        super().setUp()
         self.work_request_1 = self.create_sample_sbuild_work_request()
         self.work_request_2 = self.create_sample_sbuild_work_request()
         self.patch_task_database()
@@ -341,7 +353,7 @@ class SchedulerTests(SchedulerTestCase, TestCase):
     def test_wait_other_task(self) -> None:
         """schedule() leaves non-Delay Wait tasks running."""
 
-        class WaitNoop(TestBaseWaitTask[BaseTaskData, BaseDynamicTaskData]):
+        class WaitNoop(SampleBaseWaitTask[BaseTaskData, BaseDynamicTaskData]):
             TASK_VERSION = 1
 
             def _execute(self) -> bool:
@@ -369,6 +381,7 @@ class ScheduleForWorkerTests(SchedulerTestCase, TestCase):
 
     def setUp(self) -> None:
         """Initialize test case."""
+        super().setUp()
         self.worker = self._create_worker(enabled=True)
         self.patch_task_database()
 
@@ -422,6 +435,48 @@ class ScheduleForWorkerTests(SchedulerTestCase, TestCase):
 
         self.assertIsNone(result)
 
+    def test_skips_work_request_if_lookup_result_changed(self) -> None:
+        """Skip work request if an action requests it."""
+        collection = self.playground.create_collection(
+            "test", CollectionCategory.TEST
+        )
+        lookup = f"test@{CollectionCategory.TEST}/name:foo"
+        work_request = self.create_sample_sbuild_work_request()
+        work_request.event_reactions = EventReactions(
+            on_assignment=[
+                ActionSkipIfLookupResultChanged(
+                    lookup=lookup, collection_item_id=None
+                )
+            ]
+        )
+        work_request.save()
+        CollectionItem.objects.create_from_artifact(
+            self.playground.create_artifact()[0],
+            parent_collection=collection,
+            name="foo",
+            data={},
+            created_by_user=self.playground.get_default_user(),
+        )
+
+        with self.assertLogs(
+            "debusine.server.scheduler", level=logging.DEBUG
+        ) as log:
+            result = schedule_for_worker(self.worker)
+        work_request.refresh_from_db()
+
+        self.assertIn(
+            f"DEBUG:debusine.server.scheduler:"
+            f"Skipping work request {work_request} due to on_assignment action",
+            log.output,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(work_request.status, WorkRequest.Statuses.COMPLETED)
+        self.assertEqual(work_request.result, WorkRequest.Results.SKIPPED)
+        self.assertEqual(
+            work_request.output_data,
+            OutputData(skip_reason=f"Result of lookup {lookup!r} changed"),
+        )
+
     def test_with_pending_unassigned_work_request(self) -> None:
         """schedule_for_worker() picks up the pending work request."""
         with override_settings(DISABLE_AUTOMATIC_SCHEDULING=True):
@@ -450,14 +505,31 @@ class ScheduleForWorkerTests(SchedulerTestCase, TestCase):
             result = schedule_for_worker(self.worker)
         work_request.refresh_from_db()
 
+        expected_message = (
+            "Failed to configure: 3 validation errors for SbuildData"
+        )
         self.assertIn(
-            f"WorkRequest {work_request.id} failed to configure, aborting it. "
-            f"Task data: {work_request.task_data} Error: 3 validation errors",
+            f"ERROR:debusine.server.scheduler:"
+            f"Error assigning work request "
+            f"{work_request.task_type}/{work_request.task_name} "
+            f"({work_request.id}): {expected_message}",
             "\n".join(log.output),
         )
         self.assertIsNone(result)
         self.assertEqual(work_request.status, WorkRequest.Statuses.COMPLETED)
         self.assertEqual(work_request.result, WorkRequest.Results.ERROR)
+        assert work_request.output_data is not None
+        self.assertIsInstance(work_request.output_data, OutputData)
+        assert work_request.output_data.errors is not None
+        self.assertEqual(len(work_request.output_data.errors), 1)
+        self.assertTrue(
+            work_request.output_data.errors[0].message.startswith(
+                expected_message
+            )
+        )
+        self.assertEqual(
+            work_request.output_data.errors[0].code, "configure-failed"
+        )
 
     def test_with_failing_compute_dynamic_data(self) -> None:
         """schedule_for_worker() handles failure to compute dynamic data."""
@@ -473,21 +545,33 @@ class ScheduleForWorkerTests(SchedulerTestCase, TestCase):
             result = schedule_for_worker(self.worker)
         work_request.refresh_from_db()
 
-        lines = re.split(r"(?= [A-Z])", log.output[0])
+        expected_message = (
+            f"Failed to compute dynamic data: "
+            f"('bad-lookup', {CollectionCategory.ENVIRONMENTS!r})"
+        )
         self.assertEqual(
-            lines,
+            log.output,
             [
-                "WARNING:debusine.server.scheduler:"
-                f"WorkRequest {work_request.id}"
-                " failed to pre-process task data, aborting it.",
-                f" Task data: {work_request.task_data}",
-                f" Error: ('bad-lookup', {CollectionCategory.ENVIRONMENTS!r})",
+                f"ERROR:debusine.server.scheduler:"
+                f"Error assigning work request "
+                f"{work_request.task_type}/{work_request.task_name} "
+                f"({work_request.id}): {expected_message}"
             ],
         )
 
         self.assertIsNone(result)
         self.assertEqual(work_request.status, WorkRequest.Statuses.COMPLETED)
         self.assertEqual(work_request.result, WorkRequest.Results.ERROR)
+        self.assertEqual(
+            work_request.output_data,
+            OutputData(
+                errors=[
+                    OutputDataError(
+                        message=expected_message, code="dynamic-data-failed"
+                    )
+                ]
+            ),
+        )
 
     @override_settings(DISABLE_AUTOMATIC_SCHEDULING=True)
     def test_computes_dynamic_data_with_worker_host_architecture(self) -> None:
@@ -521,7 +605,7 @@ class ScheduleForWorkerTests(SchedulerTestCase, TestCase):
             ),
             (
                 "debian/match:codename=bookworm:architecture=i386:"
-                "format=tarball:backend=unshare",
+                "format=tarball:backend=unshare:variant=",
                 CollectionCategory.ENVIRONMENTS,
             ): ArtifactInfo(
                 id=2,
@@ -529,6 +613,11 @@ class ScheduleForWorkerTests(SchedulerTestCase, TestCase):
                 data=create_system_tarball_data(),
             ),
         }
+        task_config_collection = Collection.objects.get(
+            workspace=self.playground.get_default_workspace(),
+            name="default",
+            category=CollectionCategory.TASK_CONFIGURATION,
+        )
 
         result = schedule_for_worker(self.worker)
 
@@ -544,6 +633,7 @@ class ScheduleForWorkerTests(SchedulerTestCase, TestCase):
                 "subject": "hello",
                 "runtime_context": "binary-all+binary-any+source:sid",
                 "configuration_context": "sid",
+                "task_configuration_id": task_config_collection.pk,
             },
         )
 
@@ -710,10 +800,9 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
     )
     async def test_schedule_from_work_request_changed(self) -> None:
         """End to end: from WorkRequest.save(), notification to schedule()."""
-        with context.disable_permission_checks():
-            work_request_1 = await database_sync_to_async(
-                self.create_sample_sbuild_work_request
-            )()
+        work_request_1 = await database_sync_to_async(
+            self.create_sample_sbuild_work_request
+        )()
 
         self.assertIsNone(work_request_1.worker)
 
@@ -766,10 +855,9 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
         """End to end: from Worker.save() to schedule_for_worker()."""
         await database_sync_to_async(self.worker.mark_disconnected)()
 
-        with context.disable_permission_checks():
-            work_request_1 = await database_sync_to_async(
-                self.create_sample_sbuild_work_request
-            )()
+        work_request_1 = await database_sync_to_async(
+            self.create_sample_sbuild_work_request
+        )()
 
         # The Worker is not connected: the work_request_1.worker is None
         self.assertIsNone(work_request_1.worker)
@@ -789,8 +877,7 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
     @override_settings(DISABLE_AUTOMATIC_SCHEDULING=True)
     def test_when_worker_is_locked(self) -> None:
         """schedule_for_worker() fails when it fails to lock the Worker."""
-        with context.disable_permission_checks():
-            self.create_sample_sbuild_work_request()
+        self.create_sample_sbuild_work_request()
 
         thread = RunInParallelTransaction(
             lambda: Worker.objects.select_for_update().get(id=self.worker.id)
@@ -805,8 +892,7 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
     @override_settings(DISABLE_AUTOMATIC_SCHEDULING=True)
     def test_when_work_request_is_locked(self) -> None:
         """schedule_for_worker() fails when it fails to lock the WorkRequest."""
-        with context.disable_permission_checks():
-            work_request = self.create_sample_sbuild_work_request()
+        work_request = self.create_sample_sbuild_work_request()
 
         thread = RunInParallelTransaction(
             lambda: WorkRequest.objects.select_for_update().get(
@@ -837,18 +923,28 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
             r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
         )
 
+    def find_workflow_task_results(self) -> QuerySet[TaskResult]:
+        task_results = (
+            TaskResult.objects.filter(
+                task_name="debusine.server.workflows.celery.run_workflow_task"
+            )
+            .annotate(task_args_array=Cast("task_args", JSONField()))
+            .order_by("date_created")
+        )
+        assert isinstance(task_results, QuerySet)
+        return task_results
+
     @override_settings(DISABLE_AUTOMATIC_SCHEDULING=True)
     def test_server_task(self) -> None:
         """schedule_for_worker() dispatches server tasks to Celery."""
-        with context.disable_permission_checks():
-            worker = Worker.objects.get_or_create_celery()
-            worker.dynamic_metadata = {
-                "system:worker_type": WorkerType.CELERY,
-                "server:servernoop:version": ServerNoop.TASK_VERSION,
-            }
-            work_request = self.playground.create_work_request(
-                task_type=TaskTypes.SERVER, task_name="servernoop"
-            )
+        worker = Worker.objects.get_or_create_celery()
+        worker.dynamic_metadata = {
+            "system:worker_type": WorkerType.CELERY,
+            "server:servernoop:version": ServerNoop.TASK_VERSION,
+        }
+        work_request = self.playground.create_work_request(
+            task_type=TaskTypes.SERVER, task_name="servernoop"
+        )
 
         with mock.patch(
             "debusine.server.scheduler.run_server_task.apply_async"
@@ -863,14 +959,11 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
     def test_workflow_callbacks(self) -> None:
         """schedule() dispatches workflow callbacks to Celery."""
         WorkRequest.objects.all().delete()
-        with context.disable_permission_checks():
-            parent = self.playground.create_workflow()
+        parent = self.playground.create_workflow()
         parent.mark_running()
         wr = WorkRequest.objects.create_workflow_callback(
             parent=parent, step="test"
         )
-        wr.status = WorkRequest.Statuses.PENDING
-        wr.save()
 
         with mock.patch(
             "debusine.server.scheduler.run_workflow_task.apply_async"
@@ -883,11 +976,165 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
         wr.refresh_from_db()
         self.assertEqual(wr.status, WorkRequest.Statuses.RUNNING)
 
+    def test_workflow_callback_another_workflow_running(self) -> None:
+        """Callbacks for multiple workflows may run concurrently."""
+        test_app = TestApp(
+            set_as_current=True,
+            broker="memory://",
+            task_cls=TaskWithBetterArgumentRepresentation,
+        )
+        self.enterContext(setup_default_app(test_app))
+
+        WorkRequest.objects.all().delete()
+        workflows = [self.playground.create_workflow() for _ in range(3)]
+        for workflow in workflows:
+            workflow.mark_running()
+        wrs = [
+            WorkRequest.objects.create_workflow_callback(
+                parent=workflow, step="test"
+            )
+            for workflow in workflows[:2]
+        ]
+
+        with transaction.atomic():
+            self.assertEqual(schedule(), wrs)
+
+        self.assertQuerySetEqual(
+            self.find_workflow_task_results()
+            .filter(status=states.PENDING)
+            .values_list("task_args_array", flat=True),
+            [[wr.id] for wr in wrs[:2]],
+        )
+        self.assertQuerySetEqual(
+            WorkRequest.objects.filter(id__in={wr.id for wr in wrs})
+            .order_by("id")
+            .values_list("status", flat=True),
+            [WorkRequest.Statuses.RUNNING] * len(wrs),
+        )
+
+        wrs.append(
+            WorkRequest.objects.create_workflow_callback(
+                parent=workflows[-1], step="test"
+            )
+        )
+        # A running work request in the same parent workflow that isn't a
+        # workflow callback doesn't stop the workflow callback running.
+        self.playground.create_work_request(
+            parent=workflows[-1], assign_new_worker=True, mark_running=True
+        )
+
+        with transaction.atomic():
+            self.assertCountEqual(schedule(), [wrs[-1]])
+        self.assertQuerySetEqual(
+            self.find_workflow_task_results()
+            .filter(status=states.PENDING)
+            .values_list("task_args_array", flat=True),
+            [[wr.id] for wr in wrs],
+        )
+        self.assertQuerySetEqual(
+            WorkRequest.objects.filter(id__in={wr.id for wr in wrs})
+            .order_by("id")
+            .values_list("status", flat=True),
+            [WorkRequest.Statuses.RUNNING] * len(wrs),
+        )
+
+    def test_workflow_callback_same_workflow_running(self) -> None:
+        """Callbacks for the same workflow may not run concurrently."""
+        test_app = TestApp(
+            set_as_current=True,
+            broker="memory://",
+            task_cls=TaskWithBetterArgumentRepresentation,
+        )
+        self.enterContext(setup_default_app(test_app))
+
+        WorkRequest.objects.all().delete()
+        workflow = self.playground.create_workflow()
+        workflow.mark_running()
+        wrs = [
+            WorkRequest.objects.create_workflow_callback(
+                parent=workflow, step=f"test{i}"
+            )
+            for i in range(2)
+        ]
+
+        with transaction.atomic():
+            self.assertEqual(schedule(), [wrs[0]])
+
+        self.assertQuerySetEqual(
+            self.find_workflow_task_results()
+            .filter(status=states.PENDING)
+            .values_list("task_args_array", flat=True),
+            [[wrs[0].id]],
+        )
+        self.assertQuerySetEqual(
+            WorkRequest.objects.filter(id__in={wr.id for wr in wrs})
+            .order_by("id")
+            .values_list("status", flat=True),
+            [WorkRequest.Statuses.RUNNING, WorkRequest.Statuses.PENDING],
+        )
+
+        wrs.append(
+            WorkRequest.objects.create_workflow_callback(
+                parent=workflow, step="test2"
+            )
+        )
+
+        with transaction.atomic():
+            self.assertEqual(schedule(), [])
+
+        workflow_task_results = self.find_workflow_task_results().filter(
+            status=states.PENDING
+        )
+        self.assertQuerySetEqual(
+            workflow_task_results.values_list("task_args_array", flat=True),
+            [[wrs[0].id]],
+        )
+        self.assertQuerySetEqual(
+            WorkRequest.objects.filter(id__in={wr.id for wr in wrs})
+            .order_by("id")
+            .values_list("status", flat=True),
+            [
+                WorkRequest.Statuses.RUNNING,
+                WorkRequest.Statuses.PENDING,
+                WorkRequest.Statuses.PENDING,
+            ],
+        )
+
+        # Completing the Celery task (albeit artificially) allows the
+        # scheduler to proceed.
+        self.assertTrue(
+            WorkRequest.objects.get(id=wrs[0].id).mark_completed(
+                WorkRequest.Results.SUCCESS
+            )
+        )
+        workflow_task_result = workflow_task_results.get()
+        workflow_task_result.status = states.SUCCESS
+        workflow_task_result.save()
+
+        with transaction.atomic():
+            self.assertEqual(schedule(), [wrs[1]])
+
+        self.assertQuerySetEqual(
+            self.find_workflow_task_results()
+            .filter(status=states.PENDING)
+            .values_list("task_args_array", flat=True),
+            [[wrs[1].id]],
+        )
+        self.assertQuerySetEqual(
+            WorkRequest.objects.filter(id__in={wr.id for wr in wrs})
+            .order_by("id")
+            .values_list("status", flat=True),
+            [
+                WorkRequest.Statuses.COMPLETED,
+                WorkRequest.Statuses.RUNNING,
+                WorkRequest.Statuses.PENDING,
+            ],
+        )
+
     def test_workflows(self) -> None:
         """schedule() dispatches workflows to Celery."""
         WorkRequest.objects.all().delete()
-        with context.disable_permission_checks():
-            wr = self.playground.create_workflow(task_name="noop")
+        wr = self.playground.create_workflow(task_name="noop")
 
         with mock.patch(
             "debusine.server.scheduler.run_workflow_task.apply_async"
@@ -902,13 +1149,11 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
 
     def test_sub_workflow(self) -> None:
         """schedule() orchestrates pending sub-workflows via their root."""
-        with context.disable_permission_checks():
-            root_wr = self.playground.create_workflow(task_name="noop")
-            sub_wr = self.playground.create_workflow(parent=root_wr)
-            # Mark the root workflow running, to simulate the situation
-            # where it can only do part of its work and has to be called
-            # back later.
-            root_wr.mark_running()
+        root_wr = self.playground.create_workflow(task_name="noop")
+        sub_wr = self.playground.create_workflow(parent=root_wr)
+        # Mark the root workflow running, to simulate the situation where it
+        # can only do part of its work and has to be called back later.
+        root_wr.mark_running()
 
         with mock.patch(
             "debusine.server.scheduler.run_workflow_task.apply_async",
@@ -925,9 +1170,8 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
 
     def test_groups_workflows_by_root(self) -> None:
         """schedule() groups pending workflows by their root workflow."""
-        with context.disable_permission_checks():
-            root_wr = self.playground.create_workflow(task_name="noop")
-            sub_wr = self.playground.create_workflow(parent=root_wr)
+        root_wr = self.playground.create_workflow(task_name="noop")
+        sub_wr = self.playground.create_workflow(parent=root_wr)
 
         with mock.patch(
             "debusine.server.scheduler.run_workflow_task.apply_async"
@@ -942,6 +1186,108 @@ class ScheduleForWorkerTransactionTests(SchedulerTestCase, TransactionTestCase):
         sub_wr.refresh_from_db()
         self.assertEqual(root_wr.status, WorkRequest.Statuses.RUNNING)
         self.assertEqual(sub_wr.status, WorkRequest.Statuses.PENDING)
+
+    def test_sub_workflow_another_workflow_running(self) -> None:
+        """Sub-workflows of different root workflows may run concurrently."""
+        test_app = TestApp(
+            set_as_current=True,
+            broker="memory://",
+            task_cls=TaskWithBetterArgumentRepresentation,
+        )
+        self.enterContext(setup_default_app(test_app))
+
+        WorkRequest.objects.all().delete()
+        roots = [self.playground.create_workflow() for _ in range(3)]
+        # Mark the root workflows running, to simulate the situation where
+        # they can only do part of their work and have to be called back
+        # later.
+        for root in roots:
+            self.assertTrue(root.mark_running())
+        for root in roots[:2]:
+            child = self.playground.create_workflow(parent=root)
+            self.assertTrue(child.mark_running())
+            self.playground.create_workflow(parent=child)
+
+        with transaction.atomic():
+            self.assertEqual(schedule(), roots[:2])
+
+        self.assertQuerySetEqual(
+            self.find_workflow_task_results()
+            .filter(status=states.PENDING)
+            .values_list("task_args_array", flat=True),
+            [[root.id] for root in roots[:2]],
+        )
+
+        self.playground.create_workflow(parent=roots[-1])
+        # A running work request in the same parent workflow that isn't a
+        # sub-workflow doesn't stop the sub-workflow running.
+        self.playground.create_work_request(
+            parent=roots[-1], assign_new_worker=True, mark_running=True
+        )
+
+        with transaction.atomic():
+            self.assertCountEqual(schedule(), [roots[-1]])
+
+        self.assertQuerySetEqual(
+            self.find_workflow_task_results()
+            .filter(status=states.PENDING)
+            .values_list("task_args_array", flat=True),
+            [[root.id] for root in roots],
+        )
+
+    def test_sub_workflow_same_workflow_running(self) -> None:
+        """Sub-workflows of the same root workflow may not run concurrently."""
+        test_app = TestApp(
+            set_as_current=True,
+            broker="memory://",
+            task_cls=TaskWithBetterArgumentRepresentation,
+        )
+        self.enterContext(setup_default_app(test_app))
+
+        WorkRequest.objects.all().delete()
+        root = self.playground.create_workflow()
+        root.mark_running()
+        for _ in range(2):
+            self.playground.create_workflow(parent=root)
+
+        with transaction.atomic():
+            self.assertEqual(schedule(), [root])
+
+        self.assertQuerySetEqual(
+            self.find_workflow_task_results()
+            .filter(status=states.PENDING)
+            .values_list("task_args_array", flat=True),
+            [[root.id]],
+        )
+
+        self.playground.create_workflow(parent=root)
+
+        with transaction.atomic():
+            self.assertEqual(schedule(), [])
+
+        workflow_task_results = self.find_workflow_task_results().filter(
+            status=states.PENDING
+        )
+        self.assertQuerySetEqual(
+            workflow_task_results.values_list("task_args_array", flat=True),
+            [[root.id]],
+        )
+
+        # Completing the Celery task (albeit artificially) allows the
+        # scheduler to proceed.
+        workflow_task_result = workflow_task_results.get()
+        workflow_task_result.status = states.SUCCESS
+        workflow_task_result.save()
+
+        with transaction.atomic():
+            self.assertEqual(schedule(), [root])
+
+        self.assertQuerySetEqual(
+            self.find_workflow_task_results()
+            .filter(status=states.PENDING)
+            .values_list("task_args_array", flat=True),
+            [[root.id]],
+        )
 
 
 def _method_has_kwargs(method: Callable[..., Any]) -> bool:

@@ -34,7 +34,7 @@ class WorkersListView(BaseUIView, TableMixin[Worker], ListViewBase[Worker]):
 
     def get_queryset(self) -> WorkerQuerySet[Any]:
         """Use the custom QuerySet."""
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().exclude(worker_type=WorkerType.CELERY)
         queryset = cast(
             WorkerQuerySet[Any], queryset.select_related("worker_pool")
         )
@@ -59,7 +59,7 @@ class WorkerDetailView(BaseUIView, DetailViewBase[Worker]):
     ) -> Worker:
         """Return the Worker object to show."""
         assert queryset is None
-        queryset = self.get_queryset()
+        queryset = self.get_queryset().exclude(worker_type=WorkerType.CELERY)
         return get_object_or_404(queryset, name=self.kwargs["name"])
 
     def get_title(self) -> str:

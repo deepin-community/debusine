@@ -1,0 +1,20 @@
+{% load debusine %}
+<ul>
+    {% if list %}
+        {% for value in list %}
+            <li>
+                {% if value is None %}
+                    -
+                {% elif value|is_dict_like %}
+                    {% include "web/_dict_to_ul.html" with dict=value %}
+                {% elif value|is_list_like %}
+                    {% include "web/_dict_to_ul.html" with list=value %}
+                {% else %}
+                    {{ value }}
+                {% endif %}
+            </li>
+        {% endfor %}
+    {% else %}
+        -
+    {% endif %}
+</ul>

@@ -1,4 +1,4 @@
-.. _artifact-work-request-debug-logs:
+.. artifact:: debusine:work-request-debug-logs
 
 Category ``debusine:work-request-debug-logs``
 =============================================
@@ -13,5 +13,5 @@ Category ``debusine:work-request-debug-logs``
 
 * Relationships:
 
-  * relates-to: the corresponding ``debian:source-package`` (if built from a
-    source package)
+  * relates-to: the corresponding :artifact:`debian:source-package` (if
+    built from a source package)

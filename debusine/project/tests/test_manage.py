@@ -39,6 +39,7 @@ class DefaultSettingsTests(TestCase):
             mock.patch("sys.argv", [program_name, "--version"]),
             mock.patch("os.geteuid", return_value=0),
             mock.patch("os.execvp", side_effect=OSError) as mock_execvp,
+            mock.patch("debusine.project.settings.defaults.test_data_override"),
             self.assertRaises(OSError),
         ):
             main()
@@ -62,6 +63,7 @@ class DefaultSettingsTests(TestCase):
             mock.patch("sys.argv", [program_name, "--version"]),
             mock.patch("os.geteuid", return_value=1),
             mock.patch("os.execvp", side_effect=OSError) as mock_execvp,
+            mock.patch("debusine.project.settings.defaults.test_data_override"),
             contextlib.redirect_stdout(stdout),
         ):
             main()

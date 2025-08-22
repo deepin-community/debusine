@@ -18,6 +18,7 @@ from debusine.assets import (
     AssetCategory,
     KeyPurpose,
     SigningKeyData,
+    asset_categories,
     asset_data_model,
 )
 
@@ -88,3 +89,8 @@ class TestBaseAssetDataModel(TestCase):
                 AssetCategory.CLOUD_PROVIDER_ACCOUNT,
                 {"provider_type": "unknown"},
             )
+
+    def test_asset_categories(self) -> None:
+        categories = asset_categories()
+        self.assertIn(AssetCategory.CLOUD_PROVIDER_ACCOUNT, categories)
+        self.assertIn(AssetCategory.SIGNING_KEY, categories)

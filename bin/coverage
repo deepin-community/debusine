@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 #
 # Copyright © The Debusine Developers
 # See the AUTHORS file at the top-level directory of this distribution
@@ -63,6 +63,8 @@ class Options(NamedTuple):
     isolate_db: bool = False
     #: Do not run commands, print them only
     dry_run: bool = False
+    #: Run tests in parallel if possible
+    parallel: bool = True
 
 
 class Runner(abc.ABC):
@@ -146,8 +148,8 @@ class Runner(abc.ABC):
             )
 
 
-class Django(Runner):
-    """Run tests with Django's test runner."""
+class Pytest(Runner):
+    """Run tests with pytest."""
 
     MULTIPLE_TARGETS = True
 
@@ -160,60 +162,67 @@ class Django(Runner):
 
     def get_runner_cmd(self) -> list[str]:
         """Get the test runner command line."""
-        cmd: list[str] = ["./manage.py", "test"]
+        return []
+
+    def get_cmd(self) -> list[str]:
+        """Get the test runner command line."""
+        cmd: list[str] = []
+        cmd += self.get_wrappers_cmd()
+        cmd += [
+            "pytest",
+            "--cov=debusine",
+            "--cov-append",
+            "--cov-report=",
+        ]
         if self.options.verbose:
-            cmd.append("-v2")
+            cmd.append("-v")
         if self.options.failfast:
-            cmd.append("--failfast")
+            cmd.append("--exitfirst")
         for pattern in self.options.patterns:
             cmd += ["-k", pattern]
-        cmd += [target.modname for target in self.targets]
+        if self.targets:
+            cmd.append("--pyargs")
+            for target in self.targets:
+                cmd.append(target.modname)
         return cmd
 
 
-class DjangoParallel(Django):
-    """Run tests with Django's test runner, in parallel."""
+class PytestSerial(Pytest):
+    """Run pytest without parallelism."""
 
-    # Avoid coalescing multiple packages in a single parallel test run: we know
-    # some packages can be parallel tested, but all of them may not be
-    # parallel-tested together (yet)
-    MULTIPLE_TARGETS = False
-
-    def get_coverage_cmd(self) -> list[str]:
-        """Get coverage testing command line."""
-        cmd = super().get_coverage_cmd()
-        cmd.append("--concurrency=multiprocessing")
-        return cmd
-
-    def get_runner_cmd(self) -> list[str]:
+    def get_cmd(self) -> list[str]:
         """Get the test runner command line."""
-        cmd = super().get_runner_cmd()
-        cmd.append("--parallel=auto")
+        cmd = super().get_cmd()
+        cmd += ["--numprocesses", "0"]
         return cmd
 
 
-class DjangoSigning(Django):
-    """Run tests with Django's test runner, with signing configuration."""
+class PytestMain(Pytest):
+    """Run pytest on the main debusine code."""
 
-    def get_environment(self) -> dict[str, str] | None:
-        """Get extra environment vars to use for tests."""
-        return {"DJANGO_SETTINGS_MODULE": "debusine.signing.settings"}
-
-
-class Unittest(Runner):
-    """Run tests using unittest's discover."""
-
-    def get_runner_cmd(self) -> list[str]:
+    def get_cmd(self) -> list[str]:
         """Get the test runner command line."""
-        cmd: list[str] = ["-m", "unittest", "discover"]
-        if self.options.verbose:
-            cmd.append("--verbose")
-        if self.options.failfast:
-            cmd.append("--failfast")
-        for pattern in self.options.patterns:
-            cmd += ["-k", pattern]
-        cmd += [target.modname for target in self.targets]
-        return cmd
+        res = super().get_cmd()
+        res.append("--ignore=debusine/signing")
+        return res
+
+
+class PytestSigning(Pytest):
+    """Run pytest on the debusine signing code."""
+
+    def get_cmd(self) -> list[str]:
+        """Get the test runner command line."""
+        res = super().get_cmd()
+        res.append("--ds=debusine.signing.settings")
+        return res
+
+
+class PytestMainSerial(PytestSerial, PytestMain):
+    """PytestMain without parallelism."""
+
+
+class PytestSigningSerial(PytestSerial, PytestSigning):
+    """PytestSigning without parallelism."""
 
 
 class Runners:
@@ -296,7 +305,7 @@ class Coverage:
         """Do coverage reporting."""
         if exc_val is not None:
             return
-        self.run("combine")
+        # self.run("combine")
 
         report_args = [
             "--precision=2",
@@ -320,49 +329,52 @@ class Target(NamedTuple):
     runner: type[Runner]
 
     @classmethod
-    def get_runner(cls, modname: str) -> type[Runner]:
+    def get_runner(cls, options: Options, modname: str) -> type[Runner]:
         """Select the runner to use for the given module."""
-        if not (m := re.match(r"debusine\.(?P<app>\w+)(\.|$)", modname)):
-            return Unittest
+        main_runner: type[Runner]
+        signing_runner: type[Runner]
+        if options.parallel:
+            main_runner = PytestMain
+            signing_runner = PytestSigning
+        else:
+            main_runner = PytestMainSerial
+            signing_runner = PytestSigningSerial
 
-        django_parallel: type[Runner]
-        try:
-            importlib.import_module("tblib")
-            django_parallel = DjangoParallel
-        except ModuleNotFoundError:
-            django_parallel = Django
+        if not (m := re.match(r"debusine\.(?P<app>\w+)(\.|$)", modname)):
+            return main_runner
 
         match m.group("app"):
             case "signing":
-                return DjangoSigning
-            case "server" | "web":
-                return DjangoParallel
-            case "project" | "test" | "django":
-                # TODO: verify which of these can be run in parallel
-                return Django
-            case "db":
-                if modname.startswith("debusine.db.playground"):
-                    return django_parallel
-                else:
-                    return Django
+                return signing_runner
             case _:
-                return Unittest
+                return main_runner
 
     @classmethod
-    def create_dir(cls, path: Path) -> Self:
+    def create_dir(cls, options: Options, path: Path) -> Self:
         """Infer a test target from a directory."""
         path = path.absolute()
         relpath = path.relative_to(top_srcdir)
         modname = relpath.as_posix().replace("/", ".")
+        include = f"{relpath}/*"
+
+        if relpath.name == "templatetags":
+            # Add "include" for coverage (since it's not a subdirectory
+            # of the directory where the code under test is)
+            templatetags_tests = relpath.parent / "templatetags_tests"
+            include += f",{templatetags_tests}/*"
+
+            # Fix "modname": the runner needs it to find the tests
+            modname = modname.replace(".templatetags", ".templatetags_tests")
+
         return Target(
             relpath=relpath,
             modname=modname,
-            include=f"{relpath}/*",
-            runner=cls.get_runner(modname),
+            include=include,
+            runner=cls.get_runner(options, modname),
         )
 
     @classmethod
-    def create_file(cls, path: Path) -> Self:
+    def create_file(cls, options: Options, path: Path) -> Self:
         """Infer a test target from a file."""
         # Test a single module, inferring test location from debusine
         # coding practices
@@ -370,6 +382,15 @@ class Target(NamedTuple):
         relpath = path.relative_to(top_srcdir)
         name = relpath.name.removesuffix(".py")
         testfile = path.parent / "tests" / f"test_{name}.py"
+
+        if relpath.parent.name == "templatetags":
+            # Tests for templatetags live in a different directory
+            # (not a subdirectory of the templatetags/ but in its
+            # parent directory in "templatetags_tests/")
+            testfile = (
+                path.parent.parent / "templatetags_tests" / f"test_{name}.py"
+            )
+
         testfile_relpath = testfile.relative_to(top_srcdir)
         if not testfile.exists():
             raise Fail(
@@ -383,16 +404,16 @@ class Target(NamedTuple):
             relpath=relpath,
             modname=modname,
             include=relpath.as_posix(),
-            runner=cls.get_runner(modname),
+            runner=cls.get_runner(options, modname),
         )
 
     @classmethod
-    def create(cls, path: Path) -> Self:
+    def create(cls, options: Options, path: Path) -> Self:
         """Infer a test target from a path."""
         if path.is_dir():
-            return cls.create_dir(path)
+            return cls.create_dir(options, path)
         elif path.is_file():
-            return cls.create_file(path)
+            return cls.create_file(options, path)
         else:
             with local_sys_path():
                 try:
@@ -405,7 +426,7 @@ class Target(NamedTuple):
             path = Path(spec.origin)
             if path.name == "__init__.py":
                 path = path.parent
-            return cls.create(path)
+            return cls.create(options, path)
 
 
 def main():
@@ -447,6 +468,13 @@ def main():
         help="use pg_virtualenv to run tests in a separate database",
     )
     parser.add_argument(
+        "--parallel",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="enable/disable running tests in parallel. Default: enabled",
+    )
+
+    parser.add_argument(
         "path",
         type=Path,
         nargs="*",
@@ -461,6 +489,7 @@ def main():
         verbose=args.verbose,
         isolate_db=args.isolate_db,
         dry_run=args.dry_run,
+        parallel=args.parallel,
     )
 
     paths: list[Path]
@@ -478,7 +507,7 @@ def main():
     # Build the list of test/coverage targets
     with Runners(options) as runners:
         for path in paths:
-            runners.add(Target.create(path))
+            runners.add(Target.create(options, path))
 
     # Run tests and collect coverage
     with Coverage(runners.targets, dry_run=args.dry_run):

@@ -155,7 +155,8 @@ class ViewTestMixin(BaseDjangoTestCase):
             self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
             self.assertRegex(
                 response.context["exception"],
-                r"Workspace .+ not found in scope .+",
+                r"Workspace .+ not found in scope .+, or you are not "
+                r"authorized to see it",
             )
 
         with (
@@ -275,12 +276,12 @@ class ViewTestMixin(BaseDjangoTestCase):
         workflow_templates: list[WorkflowTemplate],
     ) -> None:
         """Check that the page has the given collections in the navbar."""
-        el = self.assertHasElement(tree, "//li[@id='nav-workflows']")
+        nav = self.assertHasElement(tree, "//li[@id='nav-workflows']")
         if not workflow_templates:
-            workflows_a = self.assertHasElement(el, "a")
-            self.assertFalse(el.xpath("div"))
+            workflows_a = self.assertHasElement(nav, "a")
+            self.assertFalse(nav.xpath("div"))
         else:
-            workflows_a = self.assertHasElement(el, "div/a[@href!='#']")
+            workflows_a = self.assertHasElement(nav, "div/a[@href!='#']")
 
         list_url = reverse(
             "workspaces:workflows:list", kwargs={"wname": workspace.name}
@@ -291,14 +292,22 @@ class ViewTestMixin(BaseDjangoTestCase):
         if not workflow_templates:
             return
 
-        expected: list[tuple[str, str]] = [
-            (list_url + f"?workflow_templates={wt.name}", wt.name)
-            for wt in workflow_templates
-        ]
-        actual: list[tuple[str, str]] = []
-        for li in el.div.ul.li:
-            actual.append((li.a.get("href") or "", li.a.text or ""))
-        self.assertEqual(expected, actual)
+        workflow_list_base_url = reverse(
+            "workspaces:workflows:list",
+            kwargs={"wname": workspace.name},
+        )
+        menu = self.assertHasElement(nav, "*/ul")
+        for wt, li in zip(workflow_templates, menu.li):
+            a = li.a
+            self.assertTextContentEqual(a, wt.name)
+            url = a.get("href")
+            assert url is not None
+            self.assertIn(workflow_list_base_url, url)
+            paginator = self.client.get(url).context["paginator"]
+            self.assertEqual(
+                paginator.table.filters["workflow_templates"].value,
+                wt.name,
+            )
 
     def assertNavNoCollections(
         self, tree: lxml.objectify.ObjectifiedElement

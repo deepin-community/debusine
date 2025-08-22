@@ -17,6 +17,7 @@ from debusine.db.playground import scenarios
 from debusine.server.workflows import CreateExperimentWorkspaceWorkflow
 from debusine.server.workflows.base import orchestrate_workflow
 from debusine.server.workflows.models import ExperimentWorkspaceData
+from debusine.tasks.models import BaseTaskData
 from debusine.test.django import TestCase
 
 
@@ -91,6 +92,8 @@ class CreateExperimentWorkspaceWorkflowTests(TestCase):
                 "owner_group": None,
                 "public": True,
                 "workflow_template_names": [],
-                "task_configuration": None,
+                "task_configuration": (
+                    BaseTaskData.DEFAULT_TASK_CONFIGURATION_LOOKUP
+                ),
             },
         )

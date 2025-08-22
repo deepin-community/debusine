@@ -108,7 +108,11 @@ class ArtifactView(GenericAPIViewBase[Artifact], BaseAPIView):
         )
 
         file_in_artifact = FileInArtifact.objects.create(
-            artifact=artifact, file=fileobj, path=path, complete=False
+            artifact=artifact,
+            file=fileobj,
+            path=path,
+            complete=False,
+            content_type=file_deserialized.get("content_type"),
         )
 
         if created or artifact.workspace.file_needs_upload(fileobj):
@@ -372,7 +376,7 @@ class UploadFileView(BaseAPIView):
         try:
             artifact = (
                 Artifact.objects.in_current_scope()
-                .can_display(context.require_user())
+                .can_display(context.user)
                 .get(id=artifact_id)
             )
         except Artifact.DoesNotExist:
@@ -518,7 +522,7 @@ class ArtifactRelationsView(
                 )
             try:
                 Artifact.objects.in_current_scope().can_display(
-                    context.require_user()
+                    context.user
                 ).get(id=required_artifact_id)
             except Artifact.DoesNotExist:
                 raise DebusineAPIException(
@@ -539,4 +543,14 @@ class ArtifactRelationsView(
         # rather than on can_display.
         self.enforce(artifact.can_display)
         self.enforce(target.can_display)
+        if artifact.fileinartifact_set.filter(complete=False).exists():
+            raise DebusineAPIException(
+                f"Cannot create relation: source artifact {artifact.id} is "
+                f"incomplete"
+            )
+        if target.fileinartifact_set.filter(complete=False).exists():
+            raise DebusineAPIException(
+                f"Cannot create relation: target artifact {target.id} is "
+                f"incomplete"
+            )
         super().perform_create(serializer)

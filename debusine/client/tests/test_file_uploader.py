@@ -60,6 +60,7 @@ class UnexpectedStatusCodeErrorTests(TestCase):
 
     def setUp(self) -> None:
         """Set up object with fake response."""
+        super().setUp()
         mocked_request = mock.create_autospec(spec=requests.models.Request)
         mocked_request.method = "PUT"
         mocked_request.headers = {}
@@ -109,6 +110,7 @@ class FileUploaderTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.url = "https://localhost:8011/1.0/artifact/2/README.md"
         self.token = "21efb7587bd10b8eb2c56b4280b4c4a92a9"
 
@@ -144,9 +146,7 @@ class FileUploaderTests(TestCase):
         """Set up responses for a file partially uploaded."""
         file_size = len(self.file_content)
 
-        self.add_partial_response(
-            status_code_file_status, f"0-{uploaded_size}/{file_size}"
-        )
+        self.add_partial_response(status_code_file_status, f"0-{uploaded_size}")
 
         responses.add(
             responses.PUT,
@@ -330,12 +330,12 @@ class FileUploaderTests(TestCase):
     def test_parse_range_or_raise_exception_return_range(self) -> None:
         """Return the range (range is in the header and well formatted)."""
         response = mock.create_autospec(
-            spec=requests.models.Response, headers={"Range": "bytes=0-20/20"}
+            spec=requests.models.Response, headers={"Range": "bytes=0-20"}
         )
 
         self.assertEqual(
-            FileUploader._parse_range_or_raise_exception(response),
-            parse_range_header(response.headers),
+            FileUploader._parse_range_or_raise_exception(response, 20),
+            parse_range_header(response.headers, 20),
         )
 
     def test_parse_range_or_raise_exception_exception_no_header(self) -> None:
@@ -354,7 +354,7 @@ class FileUploaderTests(TestCase):
             f"^Required range header not in response or invalid for: {method} "
             f"{url} content-range header: None$",
         ):
-            FileUploader._parse_range_or_raise_exception(response)
+            FileUploader._parse_range_or_raise_exception(response, 20)
 
     def test_parse_range_or_raise_exception_exception_invalid_header(
         self,
@@ -374,7 +374,7 @@ class FileUploaderTests(TestCase):
             RuntimeError,
             "^Required range header not in response or invalid for: ",
         ):
-            FileUploader._parse_range_or_raise_exception(response)
+            FileUploader._parse_range_or_raise_exception(response, 20)
 
     @responses.activate
     def test_file_upload_server_does_not_return_range(self) -> None:

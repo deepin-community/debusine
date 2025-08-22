@@ -14,8 +14,8 @@ from debusine.artifacts.models import (
     ArtifactCategory,
     BareDataCategory,
     CollectionCategory,
+    TaskTypes,
 )
-from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
     CollectionItem,
@@ -38,7 +38,6 @@ from debusine.tasks.models import (
     BackendType,
     BaseDynamicTaskData,
     SbuildInput,
-    TaskTypes,
 )
 from debusine.test.django import TestCase
 from debusine.test.test_utils import create_system_tarball_data
@@ -123,10 +122,11 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
             ),
         )
 
-    @context.disable_permission_checks()
     def test_validate_input(self) -> None:
         """Test that validate_input passes a valid case."""
-        tarball_item = self.playground.create_debian_environment()
+        tarball_item = self.playground.create_debian_environment(
+            variant="sbuild"
+        )
 
         source = self.create_source_package(
             "hello", "1.0", dsc_fields={"Architecture": "all"}
@@ -179,7 +179,6 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
         self.assertEqual(o._get_environment("amd64"), tarball_item.artifact)
         o.validate_input()
 
-    @context.disable_permission_checks()
     def test_computation_of_architecture_intersection(self) -> None:
         """Test computation of architectures to build."""
         template = self.create_sbuild_template()
@@ -229,53 +228,50 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
 
     def test_create_work_request_unshare(self) -> None:
         """Test creating a Sbuild workflow workrequest with unshare."""
-        with context.disable_permission_checks():
-            environments = (
-                self.playground.create_debian_environments_collection()
+        environments = self.playground.create_debian_environments_collection()
+        tarballs = {
+            arch: self.playground.create_artifact(
+                category=ArtifactCategory.SYSTEM_TARBALL,
+                data=create_system_tarball_data(
+                    codename="bookworm", variant="apt", architecture=arch
+                ),
+            )[0]
+            for arch in ("amd64", "s390x")
+        }
+        for arch in ("amd64", "s390x"):
+            environments.manager.add_artifact(
+                tarballs[arch],
+                user=self.playground.get_default_user(),
+                variables={"backend": "unshare"},
             )
-            tarballs = {
-                arch: self.playground.create_artifact(
-                    category=ArtifactCategory.SYSTEM_TARBALL,
-                    data=create_system_tarball_data(
-                        codename="bookworm", variant="apt", architecture=arch
-                    ),
-                )[0]
-                for arch in ("amd64", "s390x")
-            }
-            for arch in ("amd64", "s390x"):
-                environments.manager.add_artifact(
-                    tarballs[arch],
-                    user=self.playground.get_default_user(),
-                    variables={"backend": "unshare"},
-                )
-            default_workspace().collections.filter(
-                category=CollectionCategory.PACKAGE_BUILD_LOGS
-            ).delete()
+        default_workspace().collections.filter(
+            category=CollectionCategory.PACKAGE_BUILD_LOGS
+        ).delete()
 
-            # Create a source package
-            source = self.create_source_package(
-                "hello",
-                "1.0",
-                dsc_fields={
-                    "Binary": "hello, hello-dev",
-                    "Architecture": "all amd64 s390x",
-                },
-            )
+        # Create a source package
+        source = self.create_source_package(
+            "hello",
+            "1.0",
+            dsc_fields={
+                "Binary": "hello, hello-dev",
+                "Architecture": "all amd64 s390x",
+            },
+        )
 
-            template = self.create_sbuild_template()
-            wr = self.playground.create_workflow(
-                template,
-                task_data={
-                    "input": {
-                        "source_artifact": source.pk,
-                    },
-                    "backend": "unshare",
-                    "target_distribution": "debian:bookworm",
-                    "architectures": ["all", "amd64", "s390x"],
+        template = self.create_sbuild_template()
+        wr = self.playground.create_workflow(
+            template,
+            task_data={
+                "input": {
+                    "source_artifact": source.pk,
                 },
-            )
-            self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
-            wr.mark_running()
+                "backend": "unshare",
+                "target_distribution": "debian:bookworm",
+                "architectures": ["all", "amd64", "s390x"],
+            },
+        )
+        self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
+        wr.mark_running()
         orchestrate_workflow(wr)
 
         expected_children = [
@@ -321,6 +317,8 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                     'input': {'source_artifact': source.pk},
                     'binnmu': None,
                     'extra_repositories': None,
+                    'build_dep_resolver': None,
+                    'aspcud_criteria': None,
                     **expected_data,
                 },
             )
@@ -350,13 +348,26 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                             "category": ArtifactCategory.UPLOAD
                         },
                         "collection": "internal@collections",
+                        "created_at": None,
                         "name_template": f"build-{expected_arch}",
                         "variables": {
                             "binary_names": ["hello", "hello-dev"],
                             "source_package_name": "hello",
                             "architecture": expected_arch,
                         },
-                    }
+                    },
+                    {
+                        "action": ActionTypes.UPDATE_COLLECTION_WITH_ARTIFACTS,
+                        "artifact_filters": {
+                            "category": ArtifactCategory.PACKAGE_BUILD_LOG
+                        },
+                        "collection": "internal@collections",
+                        "name_template": f"buildlog-{expected_arch}",
+                        "variables": {
+                            "architecture": expected_arch,
+                        },
+                        "created_at": None,
+                    },
                 ],
             )
             self.assertQuerySetEqual(child.dependencies.all(), [])
@@ -376,43 +387,40 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
 
     def test_create_work_request_arch_all_host_architecture(self) -> None:
         """Test using a non-default `arch_all_host_architecture`."""
-        with context.disable_permission_checks():
-            environments = (
-                self.playground.create_debian_environments_collection()
+        environments = self.playground.create_debian_environments_collection()
+        tarballs = {
+            arch: self.playground.create_artifact(
+                category=ArtifactCategory.SYSTEM_TARBALL,
+                data=create_system_tarball_data(
+                    codename="bookworm", variant="apt", architecture=arch
+                ),
+            )[0]
+            for arch in ("amd64", "s390x")
+        }
+        for arch in ("amd64", "s390x"):
+            environments.manager.add_artifact(
+                tarballs[arch],
+                user=self.playground.get_default_user(),
+                variables={"backend": "unshare"},
             )
-            tarballs = {
-                arch: self.playground.create_artifact(
-                    category=ArtifactCategory.SYSTEM_TARBALL,
-                    data=create_system_tarball_data(
-                        codename="bookworm", variant="apt", architecture=arch
-                    ),
-                )[0]
-                for arch in ("amd64", "s390x")
-            }
-            for arch in ("amd64", "s390x"):
-                environments.manager.add_artifact(
-                    tarballs[arch],
-                    user=self.playground.get_default_user(),
-                    variables={"backend": "unshare"},
-                )
-            source = self.create_source_package(
-                "hello", "1.0", dsc_fields={"Architecture": "all amd64 s390x"}
-            )
-            template = self.create_sbuild_template()
-            wr = self.playground.create_workflow(
-                template,
-                task_data={
-                    "input": {
-                        "source_artifact": source.pk,
-                    },
-                    "backend": "unshare",
-                    "target_distribution": "debian:bookworm",
-                    "architectures": ["all", "amd64", "s390x"],
-                    "arch_all_host_architecture": "s390x",
+        source = self.create_source_package(
+            "hello", "1.0", dsc_fields={"Architecture": "all amd64 s390x"}
+        )
+        template = self.create_sbuild_template()
+        wr = self.playground.create_workflow(
+            template,
+            task_data={
+                "input": {
+                    "source_artifact": source.pk,
                 },
-            )
-            self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
-            wr.mark_running()
+                "backend": "unshare",
+                "target_distribution": "debian:bookworm",
+                "architectures": ["all", "amd64", "s390x"],
+                "arch_all_host_architecture": "s390x",
+            },
+        )
+        self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
+        wr.mark_running()
         orchestrate_workflow(wr)
 
         expected_children = [
@@ -447,48 +455,45 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
 
     def test_create_work_request_retain_build_logs(self) -> None:
         """Test retaining build logs in a collection."""
-        with context.disable_permission_checks():
-            environments = (
-                self.playground.create_debian_environments_collection()
-            )
-            tarball, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data=create_system_tarball_data(
-                    codename="bookworm", variant="apt", architecture="amd64"
-                ),
-            )
-            environments.manager.add_artifact(
-                tarball,
-                user=self.playground.get_default_user(),
-                variables={"backend": "unshare"},
-            )
-            build_logs = default_workspace().get_singleton_collection(
-                user=self.playground.get_default_user(),
-                category=CollectionCategory.PACKAGE_BUILD_LOGS,
-            )
+        environments = self.playground.create_debian_environments_collection()
+        tarball, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data=create_system_tarball_data(
+                codename="bookworm", variant="apt", architecture="amd64"
+            ),
+        )
+        environments.manager.add_artifact(
+            tarball,
+            user=self.playground.get_default_user(),
+            variables={"backend": "unshare"},
+        )
+        build_logs = default_workspace().get_singleton_collection(
+            user=self.playground.get_default_user(),
+            category=CollectionCategory.PACKAGE_BUILD_LOGS,
+        )
 
-            # Create a source package
-            source = self.create_source_package(
-                "hello",
-                "1.0",
-                dsc_fields={
-                    "Binary": "hello, hello-dev",
-                    "Architecture": "amd64",
-                },
-            )
+        # Create a source package
+        source = self.create_source_package(
+            "hello",
+            "1.0",
+            dsc_fields={
+                "Binary": "hello, hello-dev",
+                "Architecture": "amd64",
+            },
+        )
 
-            template = self.create_sbuild_template()
-            wr = self.playground.create_workflow(
-                template,
-                task_data={
-                    "input": {"source_artifact": source.pk},
-                    "backend": "unshare",
-                    "target_distribution": "debian:bookworm",
-                    "architectures": ["amd64"],
-                },
-            )
-            self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
-            wr.mark_running()
+        template = self.create_sbuild_template()
+        wr = self.playground.create_workflow(
+            template,
+            task_data={
+                "input": {"source_artifact": source.pk},
+                "backend": "unshare",
+                "target_distribution": "debian:bookworm",
+                "architectures": ["amd64"],
+            },
+        )
+        self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
+        wr.mark_running()
         orchestrate_workflow(wr)
 
         child = WorkRequest.objects.get(parent=wr)
@@ -504,6 +509,8 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                 "build_profiles": None,
                 "binnmu": None,
                 "extra_repositories": None,
+                "build_dep_resolver": None,
+                "aspcud_criteria": None,
                 "backend": "unshare",
                 "environment": "debian/match:codename=bookworm",
             },
@@ -541,6 +548,7 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                         "srcpkg_name": "hello",
                         "srcpkg_version": "1.0",
                     },
+                    "created_at": None,
                 },
             ],
             on_unblock=[],
@@ -549,12 +557,25 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                     "action": ActionTypes.UPDATE_COLLECTION_WITH_ARTIFACTS,
                     "artifact_filters": {"category": ArtifactCategory.UPLOAD},
                     "collection": "internal@collections",
+                    "created_at": None,
                     "name_template": "build-amd64",
                     "variables": {
                         "binary_names": ["hello", "hello-dev"],
                         "architecture": "amd64",
                         "source_package_name": "hello",
                     },
+                },
+                {
+                    "action": ActionTypes.UPDATE_COLLECTION_WITH_ARTIFACTS,
+                    "artifact_filters": {
+                        "category": ArtifactCategory.PACKAGE_BUILD_LOG
+                    },
+                    "collection": "internal@collections",
+                    "name_template": "buildlog-amd64",
+                    "variables": {
+                        "architecture": "amd64",
+                    },
+                    "created_at": None,
                 },
                 {
                     "action": ActionTypes.UPDATE_COLLECTION_WITH_ARTIFACTS,
@@ -571,6 +592,7 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                     "artifact_filters": {
                         "category": ArtifactCategory.PACKAGE_BUILD_LOG
                     },
+                    "created_at": None,
                 },
             ],
             on_failure=[],
@@ -583,42 +605,39 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
 
     def test_create_work_request_retry_delays(self) -> None:
         """Test adding automatic retries with delays."""
-        with context.disable_permission_checks():
-            environments = (
-                self.playground.create_debian_environments_collection()
-            )
-            tarball, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data=create_system_tarball_data(
-                    codename="bookworm", variant="apt", architecture="amd64"
-                ),
-            )
-            environments.manager.add_artifact(
-                tarball,
-                user=self.playground.get_default_user(),
-                variables={"backend": "unshare"},
-            )
-            source = self.create_source_package(
-                "hello",
-                "1.0",
-                dsc_fields={
-                    "Binary": "hello, hello-dev",
-                    "Architecture": "amd64",
-                },
-            )
-            template = self.create_sbuild_template()
-            wr = self.playground.create_workflow(
-                template,
-                task_data={
-                    "input": {"source_artifact": source.pk},
-                    "backend": "unshare",
-                    "target_distribution": "debian:bookworm",
-                    "architectures": ["amd64"],
-                    "retry_delays": ["1h", "1d"],
-                },
-            )
-            self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
-            wr.mark_running()
+        environments = self.playground.create_debian_environments_collection()
+        tarball, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data=create_system_tarball_data(
+                codename="bookworm", variant="apt", architecture="amd64"
+            ),
+        )
+        environments.manager.add_artifact(
+            tarball,
+            user=self.playground.get_default_user(),
+            variables={"backend": "unshare"},
+        )
+        source = self.create_source_package(
+            "hello",
+            "1.0",
+            dsc_fields={
+                "Binary": "hello, hello-dev",
+                "Architecture": "amd64",
+            },
+        )
+        template = self.create_sbuild_template()
+        wr = self.playground.create_workflow(
+            template,
+            task_data={
+                "input": {"source_artifact": source.pk},
+                "backend": "unshare",
+                "target_distribution": "debian:bookworm",
+                "architectures": ["amd64"],
+                "retry_delays": ["1h", "1d"],
+            },
+        )
+        self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
+        wr.mark_running()
         orchestrate_workflow(wr)
 
         child = WorkRequest.objects.get(parent=wr)
@@ -634,6 +653,8 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                 "build_profiles": None,
                 "binnmu": None,
                 "extra_repositories": None,
+                "build_dep_resolver": None,
+                "aspcud_criteria": None,
                 "backend": "unshare",
                 "environment": "debian/match:codename=bookworm",
             },
@@ -643,6 +664,7 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                 "action": ActionTypes.UPDATE_COLLECTION_WITH_ARTIFACTS,
                 "artifact_filters": {"category": ArtifactCategory.UPLOAD},
                 "collection": "internal@collections",
+                "created_at": None,
                 "name_template": "build-amd64",
                 "variables": {
                     "binary_names": ["hello", "hello-dev"],
@@ -662,42 +684,39 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
 
     def test_create_work_request_signing_template_names(self) -> None:
         """Test signing template handling."""
-        with context.disable_permission_checks():
-            environments = (
-                self.playground.create_debian_environments_collection()
-            )
-            tarball, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data=create_system_tarball_data(
-                    codename="bookworm", variant="apt", architecture="amd64"
-                ),
-            )
-            environments.manager.add_artifact(
-                tarball,
-                user=self.playground.get_default_user(),
-                variables={"backend": "unshare"},
-            )
-            source = self.create_source_package(
-                "hello",
-                "1.0",
-                dsc_fields={
-                    "Binary": "hello-unsigned",
-                    "Architecture": "amd64",
-                },
-            )
-            template = self.create_sbuild_template()
-            wr = self.playground.create_workflow(
-                template,
-                task_data={
-                    "input": {"source_artifact": source.pk},
-                    "backend": "unshare",
-                    "target_distribution": "debian:bookworm",
-                    "architectures": ["amd64"],
-                    "signing_template_names": {"amd64": ["hello-unsigned"]},
-                },
-            )
-            self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
-            wr.mark_running()
+        environments = self.playground.create_debian_environments_collection()
+        tarball, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data=create_system_tarball_data(
+                codename="bookworm", variant="apt", architecture="amd64"
+            ),
+        )
+        environments.manager.add_artifact(
+            tarball,
+            user=self.playground.get_default_user(),
+            variables={"backend": "unshare"},
+        )
+        source = self.create_source_package(
+            "hello",
+            "1.0",
+            dsc_fields={
+                "Binary": "hello-unsigned",
+                "Architecture": "amd64",
+            },
+        )
+        template = self.create_sbuild_template()
+        wr = self.playground.create_workflow(
+            template,
+            task_data={
+                "input": {"source_artifact": source.pk},
+                "backend": "unshare",
+                "target_distribution": "debian:bookworm",
+                "architectures": ["amd64"],
+                "signing_template_names": {"amd64": ["hello-unsigned"]},
+            },
+        )
+        self.assertEqual(wr.status, WorkRequest.Statuses.PENDING)
+        wr.mark_running()
         orchestrate_workflow(wr)
 
         child = WorkRequest.objects.get(parent=wr)
@@ -709,6 +728,7 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                 "action": ActionTypes.UPDATE_COLLECTION_WITH_ARTIFACTS,
                 "artifact_filters": {"category": ArtifactCategory.UPLOAD},
                 "collection": "internal@collections",
+                "created_at": None,
                 "name_template": "build-amd64",
                 "variables": {
                     "binary_names": ["hello-unsigned"],
@@ -726,6 +746,7 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                     "data__deb_fields__Package": "hello-unsigned",
                 },
                 "collection": "internal@collections",
+                "created_at": None,
                 "name_template": "signing-template-amd64-hello-unsigned",
                 "variables": {
                     "architecture": "amd64",
@@ -735,7 +756,6 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
             child.event_reactions_json["on_success"],
         )
 
-    @context.disable_permission_checks()
     def test_source_package_error_handling(self) -> None:
         """Test source_package error handling."""
         template = self.create_sbuild_template()
@@ -856,8 +876,12 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
 
     def test_populate_experimental(self) -> None:
         """The workflow handles overlay distributions."""
-        source_artifact = self.playground.create_source_artifact()
-        self.playground.create_debian_environment(codename="experimental")
+        source_artifact = self.playground.create_source_artifact(
+            architectures={"all"}
+        )
+        self.playground.create_debian_environment(
+            codename="experimental", variant="sbuild"
+        )
         wr = self.playground.create_workflow(
             task_name="sbuild",
             task_data=SbuildWorkflowData(
@@ -865,7 +889,8 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
                     source_artifact=source_artifact.id,
                 ),
                 target_distribution="debian:experimental",
-                architectures=["amd64"],
+                arch_all_host_architecture="amd64",
+                architectures=["all"],
             ),
         )
         SbuildWorkflow(wr).populate()
@@ -876,18 +901,32 @@ class SbuildWorkflowTests(CollectionTestMixin, TestCase):
         repo = child.task_data["extra_repositories"][0]
         self.assertEqual(repo["suite"], "experimental")
 
+        self.assertEqual(child.task_data["build_dep_resolver"], "aspcud")
+        self.assertEqual(
+            child.task_data["aspcud_criteria"],
+            (
+                "-count(down),-count(changed,APT-Release:=/experimental/),"
+                "-removed,-changed,-new"
+            ),
+        )
+
     def test_label(self) -> None:
         """Test get_label."""
-        wr = WorkRequest(
+        source = self.create_source_package(
+            "hello", "1.0", dsc_fields={"Architecture": "all"}
+        )
+        self.playground.create_debian_environment(codename="bookworm")
+        template = self.create_sbuild_template()
+        wr = self.playground.create_workflow(
+            template,
             task_data={
-                "prefix": "signed-source|",
                 "input": {
-                    "source_artifact": 42,
+                    "source_artifact": source.id,
                 },
                 "target_distribution": "debian:bookworm",
                 "architectures": ["all", "amd64"],
             },
-            workspace=default_workspace(),
         )
-        w = SbuildWorkflow(wr)
-        self.assertEqual(w.get_label(), "signed-source|build a package")
+
+        workflow = SbuildWorkflow(wr)
+        self.assertEqual(workflow.get_label(), "sbuild")

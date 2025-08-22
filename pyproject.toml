@@ -37,6 +37,7 @@ dependencies = [
   "prometheus-client",              # deb: python3-prometheus-client
   "python-dateutil",                # deb: python3-dateutil
   "python_debian >= 0.1.49",        # deb: python3-debian (>= 0.1.49)
+  "python-magic",                   # deb: python3-magic
   "PyYAML >= 6.0",                  # deb: python3-yaml (>= 6.0)
   "requests >= 2.28.1",             # deb: python3-requests (>= 2.28.1)
   "requests-file",                  # deb: python3-requests-file
@@ -76,8 +77,13 @@ server = [
   "pygments >= 2.14.0",             # deb: python3-pygments (>= 2.14.0)
   "requests-oauthlib >= 1.3.0",     # deb: python3-requests-oauthlib (>= 1.3.0)
   "unidiff",                        # deb: python3-unidiff
+                                    # Packages not (usefully) in pypi
+                                    # deb: libjs-bootstrap5
+                                    # deb: node-popper2
+                                    # deb: python3-apt
 ]
 client = [
+  "argcomplete",                    # deb: python3-argcomplete
   "configobj >= 5.0.8",             # deb: python3-configobj (>= 5.0.8)
   "xkcdpass >= 1.19.3",             # deb: xkcdpass (>= 1.19.3)
 ]
@@ -93,14 +99,21 @@ signing = [
 ]
 tests = [
   "cryptography",                   # deb: python3-cryptography
-  # https://salsa.debian.org/freexian-team/debusine/-/issues/953
-  "lxml >= 4.9.23, < 6.0.0",        # deb: python3-lxml
+  "lxml >= 4.9.23",                 # deb: python3-lxml
   "paramiko",                       # deb: python3-paramiko
   "pyftpdlib",                      # deb: python3-pyftpdlib
+  "pytest",                         # deb: python3-pytest
+  "pytest-asyncio",                 # deb: python3-pytest-asyncio
+  "pytest-cov",                     # deb: python3-pytest-cov
+  "pytest-django",                  # deb: python3-pytest-django
+  # https://github.com/pytest-dev/pytest-subtests/issues/202
+  "pytest-subtests < 0.14.2",       # deb: python3-pytest-subtests
+  "pytest-xdist",                   # deb: python3-pytest-xdist
   "responses >= 0.18.0",            # deb: python3-responses (>= 0.18.0)
                                     # Packages not in pypi
                                     # deb: dpkg-dev
                                     # deb: dput-ng
+                                    # deb: git
 ]
 dev = [
   "black >= 23.1",                  # deb: black (>= 23.1)
@@ -131,10 +144,29 @@ debusine-worker = "debusine.worker.__main__:entry_point"
 debusine-admin = "debusine.__main__:main"
 debusine-signing = "debusine.__main__:main"
 
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "debusine.project.settings"
+addopts = "-n auto --dist=loadgroup"
+asyncio_mode = "strict"
+filterwarnings = [
+    # Ignore warnings in our dependencies that we can't do anything about.
+    "ignore:The asyncore module is deprecated and will be removed:DeprecationWarning:asynchat",
+    "ignore:SelectableGroups dict interface is deprecated:DeprecationWarning:celery.utils.imports",
+    "ignore:the imp module is deprecated in favour of importlib and slated for removal:DeprecationWarning:invoke.loader",
+    "ignore:SelectableGroups dict interface is deprecated:DeprecationWarning:kombu.utils.compat",
+    "ignore:'crypt' is deprecated and slated for removal:DeprecationWarning:pyftpdlib.authorizers",
+    "ignore:'spwd' is deprecated and slated for removal:DeprecationWarning:pyftpdlib.authorizers",
+    "ignore:The asynchat module is deprecated and will be removed:DeprecationWarning:pyftpdlib.handlers",
+    "ignore:'cgi' is deprecated and slated for removal:DeprecationWarning:twisted.web.http",
+    "ignore:The --rsyncdir command line argument and rsyncdirs config variable are deprecated:DeprecationWarning:xdist.plugin",
+]
+python_files = ["test_*.py"]
+
 [tool.mypy]
 mypy_path = ["debian/tests"]
 packages = [
     "debusine",
+    "docs._ext",
     "utils",
 ]
 modules = [
@@ -154,6 +186,10 @@ plugins = [
     "pydantic.mypy",
 ]
 strict = true
+
+[[tool.mypy.overrides]]
+module = "apt_pkg"
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "celery.*"
@@ -179,6 +215,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "debusine.signing.settings.local"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "django_celery_results.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -210,11 +250,11 @@ module = "jwcrypto.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "packaging.*"
+module = "pyftpdlib.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "pyftpdlib.*"
+module = "pytest.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -247,8 +287,6 @@ skip-string-normalization = true
 
 [tool.codespell]
 skip = '.git,*.pdf,*.svg,*.min.js,.coverage,_build'
-# assertIn: https://github.com/codespell-project/codespell/issues/3430
-ignore-words-list = 'assertIn,buildd,bu,filetests'
 
 [tool.isort]
 # Align isort with flake8
@@ -293,7 +331,7 @@ ignore_names = [
 directory = "newsfragments"
 filename = "docs/reference/release-history.rst"
 template = "newsfragments/release-history-template.rst"
-issue_format = "`#{issue} <https://salsa.debian.org/freexian-team/debusine/-/issues/{issue}>`__"
+issue_format = ":issue:`{issue}`"
 underlines = ["-", "~", "^"]
 wrap = true
 

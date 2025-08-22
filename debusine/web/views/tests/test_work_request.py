@@ -8,26 +8,36 @@
 # contained in the LICENSE file.
 
 """Tests for the work request views."""
-
+import copy
+import json
 import textwrap
+from collections.abc import Iterable
 from datetime import timedelta
-from typing import Any, ClassVar
+from itertools import zip_longest
+from typing import Any, ClassVar, Literal
+from unittest.mock import patch
 
 import lxml
 import yaml
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.messages import constants as messages_constants
 from django.contrib.messages import get_messages
 from django.contrib.messages.storage.base import Message
-from django.core.exceptions import ValidationError
 from django.core.validators import ProhibitNullCharactersValidator
 from django.template.response import SimpleTemplateResponse
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.timesince import timesince
 from lxml import etree, html
 from rest_framework import status
 
 from debusine.artifacts import LintianArtifact
+from debusine.artifacts.models import (
+    CollectionCategory,
+    RuntimeStatistics,
+    TaskTypes,
+)
 from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
@@ -43,22 +53,24 @@ from debusine.server.workflows.models import (
     WorkRequestManualUnblockLog,
     WorkRequestWorkflowData,
 )
-from debusine.tasks import Lintian
+from debusine.tasks import Lintian, Noop
 from debusine.tasks.models import (
+    BaseDynamicTaskData,
     MmDebstrapBootstrapOptions,
     MmDebstrapData,
     NoopData,
     OutputData,
     OutputDataError,
     SystemBootstrapRepository,
-    TaskTypes,
 )
 from debusine.test.django import AllowAll, TestCase, override_permission
 from debusine.web.templatetags.artifacts import artifact_category_label
 from debusine.web.views import ui_shortcuts
-from debusine.web.views.lintian import LintianView
 from debusine.web.views.tests.utils import ViewTestMixin
-from debusine.web.views.work_request import WorkRequestDetailView
+from debusine.web.views.work_request import (
+    WorkRequestDetailView,
+    WorkRequestPlugin,
+)
 
 
 class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
@@ -68,8 +80,9 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
     source: ClassVar[Artifact]
     work_request: ClassVar[WorkRequest]
 
+    INTERNAL_COLLECTION_ID = "internal-collection"
+
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common objects."""
         super().setUpTestData()
@@ -109,58 +122,43 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
     def assertArtifacts(
         self,
         tree: lxml.objectify.ObjectifiedElement,
-        input_artifacts: list[Artifact],
-        output_artifacts: list[Artifact],
+        table_id: Literal["input-artifacts", "output-artifacts"],
+        artifacts: Iterable[Artifact],
     ) -> None:
         """Ensure that the given artifacts are listed."""
-        table = tree.xpath("//table[@id='artifacts']")[0]
-        for tbody, title, artifacts in (
-            (table.tbody[0], "Input artifacts", input_artifacts),
-            (table.tbody[1], "Output artifacts", output_artifacts),
-        ):
-            self.assertEqual(tbody.tr.th.get("title"), title)
-            for tr, artifact in zip(tbody.tr[1:], artifacts):
-                with self.subTest(str(tr)):
-                    self.assertTextContentEqual(
-                        tr.td[0], artifact_category_label(artifact).capitalize()
-                    )
-                    self.assertEqual(
-                        tr.td[1].a.get("href"), artifact.get_absolute_url()
-                    )
-                    label = artifact.get_label()
-                    self.assertTextContentEqual(tr.td[1].a, label)
-                    if artifact.fileinartifact_set.filter(
-                        complete=False
-                    ).exists():
-                        self.assertTextContentEqual(
-                            tr.td[1], f"{label} (incomplete)"
-                        )
-                    else:
-                        self.assertTextContentEqual(tr.td[1], label)
+        table = tree.xpath(f"//table[@id='{table_id}']")[0]
+        tbody = table.tbody[0]
 
-    def assertHasMetadata(self, tree: lxml.objectify.ObjectifiedElement) -> Any:
+        for tr, artifact in zip_longest(tbody.tr, artifacts):
+            with self.subTest(str(artifact)):
+                self.assertTextContentEqual(
+                    tr.td[0], artifact_category_label(artifact).capitalize()
+                )
+                self.assertEqual(
+                    tr.td[1].a.get("href"), artifact.get_absolute_url()
+                )
+                label = artifact.get_label()
+                self.assertTextContentEqual(tr.td[1].a, label)
+                if artifact.fileinartifact_set.filter(complete=False).exists():
+                    self.assertTextContentEqual(
+                        tr.td[1], f"{label} (incomplete)"
+                    )
+                else:
+                    self.assertTextContentEqual(tr.td[1], label)
+
+    def assertHasCardYaml(
+        self, tree: lxml.objectify.ObjectifiedElement, *, div_id: str
+    ) -> Any:
         """Ensure that metadata is shown in the page, and return it parsed."""
-        metadata = self.assertHasElement(tree, "//div[@id='metadata']")
-        if metadata.xpath("div/ul"):
-            # Orig/configured
-            return (
-                yaml.safe_load(
-                    "".join(
-                        metadata.xpath("//div[@id='task_data_configured']")[
-                            0
-                        ].itertext()
-                    )
-                ),
-                yaml.safe_load(
-                    "".join(
-                        metadata.xpath("//div[@id='task_data_original']")[
-                            0
-                        ].itertext()
-                    )
-                ),
-            )
-        else:
-            return yaml.safe_load("".join(metadata.div[1].itertext()))
+        metadata = self.assertHasElement(tree, f"//div[@id='{div_id}']")
+        return yaml.safe_load("".join(metadata.div[0].itertext()))
+
+    def assertHasCardJson(
+        self, tree: lxml.objectify.ObjectifiedElement, *, div_id: str
+    ) -> Any:
+        """Ensure that metadata is shown in the page, and return it parsed."""
+        metadata = self.assertHasElement(tree, f"//div[@id='{div_id}']")
+        return json.loads("".join(metadata.div[0].itertext()))
 
     def test_get_title(self) -> None:
         """Test get_title method."""
@@ -173,10 +171,9 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
 
     def test_get_work_request(self) -> None:
         """View detail return work request information."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact()
-            artifact.created_by_work_request = self.work_request
-            artifact.save()
+        artifact, _ = self.playground.create_artifact(
+            work_request=self.work_request
+        )
 
         response = self.client.get(self.work_request.get_absolute_url())
         tree = self.assertResponseHTML(response)
@@ -199,20 +196,44 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         self.assertEqual(sidebar[6].content, self.work_request.worker.name)
         self.assertEqual(sidebar[7].content, "0\xa0minutes")
         self.assertEqual(sidebar[8].content, "1\xa0minute")
-        self.assertEqual(sidebar[9].content, "never")
+        self.assertEqual(sidebar[9].content, "Never")
 
-        # Check artifact list
-        self.assertArtifacts(tree, [], [artifact])
+        self.assertArtifacts(
+            tree,
+            "input-artifacts",
+            Artifact.objects.filter(
+                pk__in=self.work_request.get_task().get_input_artifacts_ids()
+            ).order_by("id"),
+        )
+        self.assertEqual(
+            tree.xpath("//p[@id='generic-description']")[0],
+            "Task implementing a Debian package build with sbuild.",
+        )
+        self.assertArtifacts(tree, "output-artifacts", [artifact])
 
         # Not in a workflow
         self.assertNotContains(
             response, "<h2>Workflow information</h2>", html=True
         )
 
-        metadata = self.assertHasMetadata(tree)
-        self.assertEqual(metadata["host_architecture"], "amd64")
-        self.assertNotIn("task_data_original", response.context)
-        self.assertFalse(response.context["task_data_configured"])
+        self.assertNotIn("task_data_original-work_request", response.context)
+
+        self.assertFalse(tree.xpath("//p[@id='task_data_not_configured']"))
+
+    def test_get_work_request_no_input_output_artifacts(self) -> None:
+        work_request = self.playground.create_work_request()
+
+        response = self.client.get(work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        self.assertTextContentEqual(
+            self.assertHasElement(tree, "//p[@id='no-input-artifacts']"),
+            "No input artifacts.",
+        )
+        self.assertTextContentEqual(
+            self.assertHasElement(tree, "//p[@id='no-output-artifacts']"),
+            "No artifacts produced.",
+        )
 
     def test_get_configured_work_request(self) -> None:
         """View detail return work request information."""
@@ -225,11 +246,64 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
 
         response = self.client.get(self.work_request.get_absolute_url())
         tree = self.assertResponseHTML(response)
-        self.assertIn("task_data_original", response.context)
+        self.assertIn("task_data", response.context)
         self.assertTrue(response.context["task_data_configured"])
-        configured, orig = self.assertHasMetadata(tree)
+        orig = self.assertHasCardYaml(tree, div_id="card-task_data")
+        configured = self.assertHasCardYaml(
+            tree, div_id="card-configured_task_data"
+        )
+
+        self.assertEqual(orig["host_architecture"], "amd64")
         self.assertEqual(configured["host_architecture"], "arm64")
         self.assertEqual(orig["host_architecture"], "amd64")
+
+        dynamic_data = self.assertHasCardYaml(tree, div_id="card-dynamic_data")
+        configured_task_data = self.assertHasCardYaml(
+            tree, div_id="card-configured_task_data"
+        )
+
+        self.assertEqual(dynamic_data, self.work_request.dynamic_task_data)
+        self.assertEqual(
+            configured_task_data, self.work_request.configured_task_data
+        )
+
+    def test_get_work_request_task_data_not_configured(self) -> None:
+        self.work_request.configured_task_data = None
+        self.work_request.save()
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        task_data_not_configured_p = self.assertHasElement(
+            tree, "//p[@id='task_data_not_configured']"
+        )
+        self.assertTextContentEqual(
+            task_data_not_configured_p, "Work request is not configured."
+        )
+        self.assertFalse(tree.xpath("//p[@id='dynamic_data_not_available']"))
+
+    def test_get_work_request_dynamic_data_not_available(self) -> None:
+        self.work_request.dynamic_task_data = None
+        self.work_request.save()
+
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        task_dynamic_data_not_available_p = self.assertHasElement(
+            tree, "//p[@id='dynamic_data_not_available']"
+        )
+        self.assertTextContentEqual(
+            task_dynamic_data_not_available_p, "No dynamic task data."
+        )
+
+    def test_get_work_request_dynamic_data(self) -> None:
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        dynamic_task_data = self.assertHasCardYaml(
+            tree, div_id="card-dynamic_data"
+        )
+
+        self.assertEqual(dynamic_task_data, self.work_request.dynamic_task_data)
 
     def test_get_work_request_incomplete(self) -> None:
         """Artifacts with incomplete files are marked as incomplete."""
@@ -243,7 +317,14 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
 
         response = self.client.get(self.work_request.get_absolute_url())
         tree = self.assertResponseHTML(response)
-        self.assertArtifacts(tree, [], [artifact])
+        self.assertArtifacts(
+            tree,
+            "input-artifacts",
+            Artifact.objects.filter(
+                pk__in=self.work_request.get_task().get_input_artifacts_ids()
+            ).order_by("id"),
+        )
+        self.assertArtifacts(tree, "output-artifacts", [artifact])
 
     def test_get_work_request_private_workspace_unauthenticated(self) -> None:
         """Work requests in private workspaces 403 to the unauthenticated."""
@@ -252,10 +333,11 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         self.work_request.save()
 
         response = self.client.get(self.work_request.get_absolute_url())
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertResponseHTML(response, status.HTTP_404_NOT_FOUND)
         self.assertEqual(
             response.context["exception"],
-            "Workspace Private not found in scope debusine",
+            "Workspace Private not found in scope debusine, or you are not "
+            "authorized to see it",
         )
 
     def test_get_work_request_private_workspace_authenticated(self) -> None:
@@ -270,7 +352,7 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         self.client.force_login(self.scenario.user)
 
         response = self.client.get(self.work_request.get_absolute_url())
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertResponseHTML(response)
 
     def test_get_work_request_no_retry_if_logged_out(self) -> None:
         """No retry link if the user is logged out."""
@@ -281,7 +363,7 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         self.work_request.save()
 
         response = self.client.get(self.work_request.get_absolute_url())
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertResponseHTML(response)
         self.assertEqual(response.context["main_ui_shortcuts"], [])
 
     def test_get_work_request_no_retry_if_successful(self) -> None:
@@ -291,26 +373,71 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         self.work_request.dynamic_task_data = {}
         self.work_request.save()
 
-        self.client.force_login(self.playground.get_default_user())
+        self.playground.create_group_role(
+            self.scenario.workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
+        self.client.force_login(self.scenario.user)
         response = self.client.get(self.work_request.get_absolute_url())
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertResponseHTML(response)
         self.assertEqual(response.context["main_ui_shortcuts"], [])
 
     def test_get_work_request_verify_retry(self) -> None:
         """Show the retry link if a work request can be retried."""
         self.work_request.task_name = "noop"
         self.work_request.task_data = {}
+        self.work_request.configured_task_data = {}
         self.work_request.dynamic_task_data = {}
         self.work_request.status = WorkRequest.Statuses.ABORTED
         self.work_request.save()
 
-        self.client.force_login(self.playground.get_default_user())
+        self.playground.create_group_role(
+            self.scenario.workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
+        self.client.force_login(self.scenario.user)
         response = self.client.get(self.work_request.get_absolute_url())
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertResponseHTML(response)
         self.assertEqual(
             response.context["main_ui_shortcuts"],
             [
                 ui_shortcuts.create_work_request_retry(self.work_request),
+            ],
+        )
+
+    def test_get_work_request_no_abort_if_logged_out(self) -> None:
+        """No abort link if the user is logged out."""
+        self.work_request.status = WorkRequest.Statuses.PENDING
+        self.work_request.save()
+
+        response = self.client.get(self.work_request.get_absolute_url())
+        self.assertResponseHTML(response)
+        self.assertEqual(response.context["main_ui_shortcuts"], [])
+
+    def test_get_work_request_no_abort_if_completed(self) -> None:
+        """No abort link if the work request is completed."""
+        self.assertEqual(
+            self.work_request.status, WorkRequest.Statuses.COMPLETED
+        )
+        self.client.force_login(self.playground.get_default_user())
+        response = self.client.get(self.work_request.get_absolute_url())
+        self.assertResponseHTML(response)
+        self.assertEqual(response.context["main_ui_shortcuts"], [])
+
+    def test_get_work_request_verify_abort(self) -> None:
+        """Show the abort link if a work request can be aborted."""
+        self.work_request.status = WorkRequest.Statuses.PENDING
+        self.work_request.save()
+
+        self.client.force_login(self.playground.get_default_user())
+        response = self.client.get(self.work_request.get_absolute_url())
+        self.assertResponseHTML(response)
+        self.assertEqual(
+            response.context["main_ui_shortcuts"],
+            [
+                ui_shortcuts.create_work_request_abort(self.work_request),
             ],
         )
 
@@ -323,7 +450,7 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
             wr_new = self.work_request.retry()
 
         response = self.client.get(self.work_request.get_absolute_url())
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertResponseHTML(response)
 
         sidebar = response.context["sidebar_items"]
         self.assertEqual(sidebar[1].value, str(wr_new))
@@ -331,11 +458,25 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         self.assertEqual(sidebar[1].url, wr_new.get_absolute_url())
 
         response = self.client.get(wr_new.get_absolute_url())
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertResponseHTML(response)
         sidebar = response.context["sidebar_items"]
         self.assertEqual(sidebar[1].value, str(self.work_request))
         self.assertEqual(sidebar[1].label, "Supersedes")
         self.assertEqual(sidebar[1].url, self.work_request.get_absolute_url())
+
+    def test_get_work_request_expire_at(self) -> None:
+        self.work_request.expiration_delay = timedelta(days=2)
+        self.work_request.save()
+        response = self.client.get(self.work_request.get_absolute_url())
+
+        sidebar = response.context["sidebar_items"]
+
+        assert self.work_request.expire_at
+        self.assertEqual(
+            sidebar[9].value,
+            timesince(self.work_request.expire_at, reversed=True),
+        )
+        self.assertEqual(sidebar[9].label, "Expiration date")
 
     def test_get_work_request_running(self) -> None:
         """Check that elapsed execution time displays."""
@@ -346,7 +487,7 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         self.work_request.save()
 
         response = self.client.get(self.work_request.get_absolute_url())
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertResponseHTML(response)
 
         sidebar = response.context["sidebar_items"]
         self.assertEqual(
@@ -360,6 +501,16 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         tree = self.assertResponseHTML(response)
         self.assertFalse(tree.xpath("//ul[@id='errors']"))
         self.assertNotContains(response, "<h2>Errors</h2>")
+
+        output_no_output_data = self.assertHasElement(
+            tree, "//p[@id='internals-no-output-data']"
+        )
+        self.assertTextContentEqual(output_no_output_data, "No output data.")
+
+        internals_no_output_data = self.assertHasElement(
+            tree, "//p[@id='internals-no-output-data']"
+        )
+        self.assertTextContentEqual(internals_no_output_data, "No output data.")
 
     def test_get_work_request_output_data_errors(self) -> None:
         """If the work request has output data errors, they are shown."""
@@ -379,7 +530,6 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         self.assertTextContentEqual(errors.li[0], "One error")
         self.assertTextContentEqual(errors.li[1], "Another error")
 
-    @context.disable_permission_checks()
     def make_work_request_lintian(self, work_request: WorkRequest) -> None:
         """Change work_request to "lintian", create source artifact."""
         work_request.task_name = "lintian"
@@ -394,22 +544,6 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         work_request.save()
         work_request.artifact_set.add(self.create_lintian_source_artifact())
 
-    def test_use_specific_plugin(self) -> None:
-        """Test usage of a plugin instead of generic view."""
-        self.make_work_request_lintian(self.work_request)
-
-        response = self.client.get(self.work_request.get_absolute_url())
-
-        # WorkRequest_get_template_names() return the correct template name
-        assert isinstance(response, SimpleTemplateResponse)
-        self.assertIn(LintianView.template_name, response.template_name)
-
-        # The LintianView().get_context_data() is in the response
-        self.assertDictContainsAll(
-            response.context_data,
-            LintianView(self.work_request).get_context_data(),
-        )
-
     def create_lintian_source_artifact(self) -> Artifact:
         """
         Create a Lintian source artifact result.
@@ -421,6 +555,7 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
             create_files=True,
             category=LintianArtifact._category,
             data={
+                "architecture": "source",
                 "summary": {
                     "package_filename": {"hello": "hello.dsc"},
                     "tags_count_by_severity": {},
@@ -434,75 +569,6 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         artifact.created_by_work_request = self.work_request
         artifact.save()
         return artifact
-
-    def test_do_not_use_available_plugin_use_default(self) -> None:
-        """Request to detail with view=generic: do not use plugin."""
-        self.make_work_request_lintian(self.work_request)
-
-        path = self.work_request.get_absolute_url()
-        response = self.client.get(path + "?view=generic")
-
-        assert isinstance(response, SimpleTemplateResponse)
-        self.assertIn(
-            WorkRequestDetailView.default_template_name, response.template_name
-        )
-
-        with self.assertRaises(AssertionError):
-            # The context_data does not contain the specific Lintian
-            # work request plugin data
-            self.assertDictContainsAll(
-                response.context_data,
-                LintianView(self.work_request).get_context_data(),
-            )
-
-        specialized_view_path = path
-        self.assertContains(
-            response,
-            f'<p><a href="{specialized_view_path}">'
-            f'{self.work_request.task_name} view</a></p>',
-            html=True,
-        )
-
-    def test_do_not_use_available_plugin_invalid_task_data(self) -> None:
-        """If task data is invalid, do not use plugin."""
-        self.make_work_request_lintian(self.work_request)
-        self.work_request.task_data["input"]["binary_artifacts_ids"] = 1
-        self.work_request.dynamic_task_data = {}
-        self.work_request.save()
-
-        with self.assertRaises(ValidationError) as cm:
-            self.work_request.full_clean()
-        validation_error = str(cm.exception)
-
-        path = self.work_request.get_absolute_url()
-        response = self.client.get(path)
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-        assert isinstance(response, SimpleTemplateResponse)
-        self.assertIn(
-            WorkRequestDetailView.default_template_name, response.template_name
-        )
-
-        # The context_data does not contain the specific Lintian work
-        # request plugin data
-        self.assertNotIn("lintian_txt_path", response.context_data)
-
-        # The page does not link to the specialized view; instead, it shows
-        # the validation error.
-        specialized_view_path = path
-        self.assertNotContains(
-            response,
-            f'<p><a href="{specialized_view_path}">'
-            f'{self.work_request.task_name} view</a></p>',
-            html=True,
-        )
-        self.assertContains(
-            response,
-            "<h2>Validation error</h2>"
-            f"<pre><code>{validation_error}</code></pre>",
-            html=True,
-        )
 
     def test_multi_line_string(self) -> None:
         """Multi-line strings are rendered using the literal style."""
@@ -519,10 +585,10 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
 
         response = self.client.get(self.work_request.get_absolute_url())
         tree = self.assertResponseHTML(response)
-        card = tree.xpath("//div[@id='metadata']")[0]
+        card = tree.xpath("//div[@id='card-task_data']")[0]
 
         self.assertTextContentEqual(
-            card.div[1],
+            card.div[0],
             """\
             bootstrap_options:
               architecture: amd64
@@ -553,6 +619,9 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         child = self.playground.create_workflow(
             child_template, task_data={}, parent=root
         )
+        WorkRequest.objects.create_workflow_callback(
+            parent=root, step="invisible", visible=False
+        )
         grandchildren = []
         for i in range(2):
             wr = self.playground.create_work_request(
@@ -566,9 +635,11 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
             self.make_work_request_lintian(wr)
             grandchildren.append(wr)
 
-        response = self.client.get(root.get_absolute_url())
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # There's still room for improvement, but the important thing is
+        # that this doesn't make a query for each child work request.
+        with self.assertNumQueries(24):
+            response = self.client.get(root.get_absolute_url())
+        self.assertResponseHTML(response)
 
         def wr_url(wr: WorkRequest) -> str:
             return wr.get_absolute_url()
@@ -652,9 +723,11 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         grandchildren[0].mark_completed(WorkRequest.Results.SUCCESS)
         grandchildren[1].add_dependency(child)
 
-        response = self.client.get(child.get_absolute_url())
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # There's still room for improvement, but the important thing is
+        # that this doesn't make a query for each child work request.
+        with self.assertNumQueries(29):
+            response = self.client.get(child.get_absolute_url())
+        self.assertResponseHTML(response)
 
         def wr_url(wr: WorkRequest) -> str:
             return wr.get_absolute_url()
@@ -680,8 +753,10 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
                 f"""
                 <h2>Workflow information</h2>
                 <ul>
-                    <li>Root: {root_link}</li>
-                    <li>Parent: {root_link}</li>
+                    <li class="workflow-ancestor">
+                        <span title="Root workflow">⬆️</span>
+                        {root_link} ({pending})
+                    </li>
                     <li>
                         <details open>
                             <summary>{child_link} ({pending})</summary>
@@ -740,6 +815,10 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         )
         self.assertTextContentEqual(tbody.tr.td[3], "LGTM")
 
+        self.assertTextContentEqual(
+            tree.xpath("//p[@id='generic-description']")[0], "-"
+        )
+
         form = tree.xpath("//form[@id='manual-unblock-form']")[0]
         self.assertEqual(
             form.get("action"), work_request.get_absolute_url_unblock()
@@ -770,12 +849,25 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         self.assertTextContentEqual(
             requires_signature.div[0], "Waiting for signature"
         )
+        csrf_token = requires_signature.div[1].xpath(
+            '//input[@name="csrfmiddlewaretoken"]/@value'
+        )[0]
         self.assertHTMLContentsEquivalent(
             requires_signature.div[1],
             f'<div class="card-body">'
-            f"Run <code>debusine provide-signature {work_request.id}</code> "
-            f"to sign this request."
-            f"</div>",
+            f'Run <code>debusine --server '
+            f'{settings.DEBUSINE_FQDN}/{work_request.workspace.scope.name} '
+            f'provide-signature {work_request.id}</code> '
+            f'to sign this request. '
+            f'<form method="post"'
+            f' action="{work_request.get_absolute_url_abort()}">'
+            f'<input type="hidden" name="csrfmiddlewaretoken"'
+            f' value="{csrf_token}" />'
+            f'If you do not want to sign it, you can '
+            f'<button class="btn btn-link in-running-text" type="submit">'
+            f'abort</button> it instead.'
+            f'</form>'
+            f'</div>',
         )
 
     def test_external_debsign_wrong_user(self) -> None:
@@ -794,6 +886,178 @@ class WorkRequestDetailViewTests(ViewTestMixin, TestCase):
         response = self.client.get(work_request.get_absolute_url())
         tree = self.assertResponseHTML(response)
         self.assertEqual(tree.xpath("//div[@id='requires-signature']"), [])
+
+    def test_internals_event_reactions_json(self) -> None:
+        """Assert event_reactions_json card in "Internals" tab."""
+        self.work_request.event_reactions_json = {"a": "b"}
+        self.work_request.save()
+
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        event_reactions_json = self.assertHasCardJson(
+            tree, div_id="card-event_reactions"
+        )
+
+        self.assertEqual(
+            event_reactions_json,
+            self.work_request.event_reactions_json,
+        )
+
+    def test_internals_output_data(self) -> None:
+        """Assert output_data_field" in "Internals" tab with data."""
+        self.work_request.output_data = OutputData(
+            runtime_statistics=RuntimeStatistics(duration=10)
+        )
+        self.work_request.save()
+
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        output_data = self.assertHasCardJson(tree, div_id="card-output_data")
+
+        self.assertEqual(output_data["runtime_statistics"]["duration"], 10)
+
+    def test_internals_workflow_data(self) -> None:
+        """Assert "workflow_data" in "Internals" tab with data."""
+        workflow = self.playground.create_workflow()
+        workflow.workflow_data = WorkRequestWorkflowData(
+            step="test", display_name="test"
+        )
+        workflow.save()
+
+        response = self.client.get(workflow.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        workflow_json = self.assertHasCardJson(
+            tree, div_id="card-workflow_data"
+        )
+
+        self.assertEqual(
+            workflow_json,
+            workflow.workflow_data_json,
+        )
+
+    def test_internals_collection_name_root_workflow(self) -> None:
+        collection = self.playground.create_collection(
+            name="Test", category=CollectionCategory.TEST
+        )
+        root_workflow = self.playground.create_workflow()
+        root_workflow.internal_collection = collection
+        root_workflow.save()
+
+        workflow = self.playground.create_workflow(parent=root_workflow)
+
+        self.work_request.internal_collection = (
+            self.playground.create_collection(
+                name="Collection", category=CollectionCategory.TEST
+            )
+        )
+        self.work_request.parent = workflow
+        self.work_request.save()
+
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        collection_p = self.assertHasElement(
+            tree, f"//p[@id='{self.INTERNAL_COLLECTION_ID}']"
+        )
+        self.assertTextContentEqual(collection_p, "Internal collection: Test")
+        self.assertEqual(
+            collection_p.a.attrib["href"], collection.get_absolute_url()
+        )
+
+    def test_internals_collection_no_internal_collection(self) -> None:
+        # Work requests that are not part of a workflow do not have an
+        # internal collection. We are skipping the section
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        self.assertFalse(
+            tree.xpath(f"//p[@id='{self.INTERNAL_COLLECTION_ID}']")
+        )
+
+    def test_format_output_data_empty(self) -> None:
+        output_data = OutputData()
+
+        self.assertEqual(
+            WorkRequestDetailView._format_output_data(output_data),
+            {"Runtime statistics": {}, "Errors": []},
+        )
+
+    def test_format_output_data_none(self) -> None:
+        self.assertEqual(WorkRequestDetailView._format_output_data(None), {})
+
+    def test_format_output_data_to_dict(self) -> None:
+        output_data = OutputData(
+            runtime_statistics=RuntimeStatistics(
+                disk_space=11 * 1024 * 1024, duration=7400, cpu_time=2000
+            ),
+            errors=[OutputDataError(message="File not found", code="ENOENT")],
+        )
+
+        self.assertEqual(
+            WorkRequestDetailView._format_output_data(output_data),
+            {
+                "Errors": [{"code": "ENOENT", "message": "File not found"}],
+                "Runtime statistics": {
+                    "Available disk space": None,
+                    "Available memory": None,
+                    "CPU count": None,
+                    "CPU time": "00:33:20",
+                    "Disk space": "11.0\xa0MB",
+                    "Duration": "02:03:20",
+                    "Memory": None,
+                },
+            },
+        )
+
+    def test_format_output_data_with_skip_reason(self) -> None:
+        output_data = OutputData(skip_reason="Boring")
+
+        self.assertEqual(
+            WorkRequestDetailView._format_output_data(output_data),
+            {"Runtime statistics": {}, "Errors": [], "Skipped": "Boring"},
+        )
+
+    def test_dependencies_empty(self) -> None:
+        """Test when there are no dependencies."""
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+        self.assertHasElement(
+            tree,
+            "//p[normalize-space(text()) = 'This work request does "
+            "not depend on any other one.']",
+        )
+        self.assertHasElement(
+            tree,
+            "//p[normalize-space(text()) = 'This work request is "
+            "not required by any other one.']",
+        )
+
+    def test_dependencies_tab_dependencies(self) -> None:
+        dependency = self.playground.create_work_request()
+        self.work_request.dependencies.add(dependency)
+
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        table = self.assertHasElement(
+            tree, "//table[@id='dependencies-work_request-list']"
+        )
+        self.assertWorkRequestRow(table.tbody.tr[0], dependency)
+
+    def test_dependencies_tab_reverse_dependencies(self) -> None:
+        dependent = self.playground.create_work_request()
+        dependent.dependencies.add(self.work_request)
+
+        response = self.client.get(self.work_request.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        table = self.assertHasElement(
+            tree, "//table[@id='reverse_dependencies-work_request-list']"
+        )
+        self.assertWorkRequestRow(table.tbody.tr[0], dependent)
 
 
 class WorkRequestListViewTests(ViewTestMixin, TestCase):
@@ -893,6 +1157,7 @@ class WorkRequestListViewTests(ViewTestMixin, TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         tree = self.assertResponseHTML(response)
         assert isinstance(response, SimpleTemplateResponse)
+        assert response.context_data is not None
         self.assertQuerySetEqual(response.context_data["object_list"], [root])
 
         table = tree.xpath("//table[@id='work_request-list']")[0]
@@ -949,6 +1214,7 @@ class WorkRequestListViewTests(ViewTestMixin, TestCase):
                     + f"?status={work_request_status}"
                 )
                 assert isinstance(response, SimpleTemplateResponse)
+                assert response.context_data is not None
                 self.assertQuerySetEqual(
                     response.context_data["work_request_list"], [work_request]
                 )
@@ -984,6 +1250,7 @@ class WorkRequestListViewTests(ViewTestMixin, TestCase):
         )
 
         assert isinstance(response, SimpleTemplateResponse)
+        assert response.context_data is not None
         self.assertQuerySetEqual(
             response.context_data["paginator"].page_obj.object_list,
             [work_request],
@@ -1018,6 +1285,7 @@ class WorkRequestListViewTests(ViewTestMixin, TestCase):
         )
 
         assert isinstance(response, SimpleTemplateResponse)
+        assert response.context_data is not None
         self.assertQuerySetEqual(
             response.context_data["work_request_list"], [work_request]
         )
@@ -1082,6 +1350,7 @@ class WorkRequestListViewTests(ViewTestMixin, TestCase):
         )
 
         assert isinstance(response, SimpleTemplateResponse)
+        assert response.context_data is not None
         self.assertQuerySetEqual(
             response.context_data["paginator"].page_obj.object_list,
             [work_request_amd64_2, work_request_amd64_1],
@@ -1319,6 +1588,90 @@ class WorkRequestRetryViewTests(ViewTestMixin, TestCase):
         self.assertRedirects(response, new_wr.get_absolute_url())
 
 
+class WorkRequestAbortViewTests(ViewTestMixin, TestCase):
+    """Tests for WorkRequestAbortView."""
+
+    scenario = scenarios.DefaultContext()
+
+    work_request: ClassVar[WorkRequest]
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        """Initialize class data."""
+        super().setUpTestData()
+        cls.work_request = cls.playground.create_work_request(
+            task_name="noop", task_data=NoopData()
+        )
+
+    def test_permissions(self) -> None:
+        """Test that the right permissions are enforced."""
+        self.assertSetsCurrentWorkspace(
+            self.scenario.workspace,
+            self.work_request.get_absolute_url_abort(),
+            method="post",
+        )
+
+        self.assertEnforcesPermission(
+            self.work_request.can_abort,
+            self.work_request.get_absolute_url_abort(),
+            "abort",
+            method="post",
+        )
+
+    def test_no_get(self) -> None:
+        """Test that GET requests are rejected."""
+        response = self.client.get(self.work_request.get_absolute_url_abort())
+        self.assertEqual(
+            response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED
+        )
+
+    def test_abort_invalid(self) -> None:
+        """Try aborting a work request that cannot be aborted."""
+        self.work_request.status = WorkRequest.Statuses.ABORTED
+        self.work_request.save()
+
+        self.client.force_login(self.scenario.user)
+        with override_permission(WorkRequest, "can_abort", AllowAll):
+            response = self.client.post(
+                self.work_request.get_absolute_url_abort()
+            )
+        self.assertRedirects(response, self.work_request.get_absolute_url())
+        messages = list(get_messages(response.wsgi_request))
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0].message,
+            "Cannot abort: Only pending, blocked, or running tasks can be "
+            "aborted",
+        )
+
+    def test_abort_does_not_exist(self) -> None:
+        """Try aborting a nonexistent work request."""
+        url = self.work_request.get_absolute_url_abort()
+        self.work_request.delete()
+
+        self.client.force_login(self.scenario.user)
+        with override_permission(WorkRequest, "can_abort", AllowAll):
+            response = self.client.post(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            response.context["exception"],
+            "No work request found matching the query",
+        )
+
+    def test_abort(self) -> None:
+        """Try aborting a work request that can be aborted."""
+        self.client.force_login(self.scenario.user)
+        with override_permission(WorkRequest, "can_abort", AllowAll):
+            response = self.client.post(
+                self.work_request.get_absolute_url_abort()
+            )
+
+        self.work_request.refresh_from_db()
+        self.assertEqual(self.work_request.aborted_by, self.scenario.user)
+        self.assertEqual(self.work_request.status, WorkRequest.Statuses.ABORTED)
+        self.assertRedirects(response, self.work_request.get_absolute_url())
+
+
 class WorkRequestUnblockViewTests(ViewTestMixin, TestCase):
     """Tests for WorkRequestUnblockView."""
 
@@ -1501,3 +1854,56 @@ class WorkRequestUnblockViewTests(ViewTestMixin, TestCase):
         self.assertLess(manual_unblock.log[0].timestamp, timezone.now())
         self.assertEqual(manual_unblock.log[0].notes, "Not sure")
         self.assertIsNone(manual_unblock.log[0].action)
+
+
+class WorkRequestPluginTests(TestCase):
+    """Tests for WorkRequestPlugin."""
+
+    def setUp(self) -> None:
+        super().setUp()
+
+        # Copy it to unregister the temporary NoopPlugin
+        self._work_request_plugin_orig = copy.deepcopy(
+            WorkRequestPlugin._work_request_plugins
+        )
+
+        class NoopPlugin(WorkRequestPlugin):
+            """Noop plugin."""
+
+            task_type = TaskTypes.WORKER
+            task_name = "noop"
+
+        work_request = self.playground.create_work_request(task_name="noop")
+        self.plugin = NoopPlugin(work_request)
+
+    def tearDown(self) -> None:
+        # WorkRequestPlugins as before
+        WorkRequestPlugin._work_request_plugins = self._work_request_plugin_orig
+        super().tearDown()
+
+    def test_get_description_data(self) -> None:
+        """Return value from do_get_description_data() (dynamic_data is set)."""
+        self.plugin.task.dynamic_data = BaseDynamicTaskData()
+
+        with patch.object(
+            self.plugin, "do_get_description_data", return_value="X"
+        ) as mocked:
+            self.assertEqual(self.plugin.get_description_data(), "X")
+            mocked.assert_called_once()
+
+    def test_get_description_data_dynamic_data_is_none(self) -> None:
+        """Return empty dictionary (dynamic data is None)."""
+        self.plugin.task.dynamic_data = None
+
+        with patch.object(self.plugin, "do_get_description_data") as mocked:
+            result = self.plugin.get_description_data()
+            self.assertEqual(result, {})
+            mocked.assert_not_called()
+
+    def test_do_get_description_data(self) -> None:
+        """Default implementation do_get_description_data() return {}."""
+        self.assertEqual(self.plugin.do_get_description_data(), {})
+
+    def test_task(self) -> None:
+        """WorkRequestPlugin.task return the Task."""
+        self.assertIsInstance(self.plugin.task, Noop)

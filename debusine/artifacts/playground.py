@@ -76,10 +76,16 @@ class ArtifactPlayground:
         name: str = "hello",
         version: str = "1.0-1",
         architecture: str = "all",
+        source_name: str | None = None,
+        source_version: str | None = None,
     ) -> BinaryPackage:
         """Create a BinaryPackage artifact."""
         deb = destdir / f"{name}_{version}_{architecture}.deb"
-        cls.write_deb_file(deb, source_name=name, source_version=version)
+        cls.write_deb_file(
+            deb,
+            source_name=source_name or name,
+            source_version=source_version or version,
+        )
         return BinaryPackage.create(file=deb)
 
     @classmethod
@@ -153,6 +159,7 @@ class ArtifactPlayground:
         *,
         source: str | None = None,
         version: str | None = None,
+        architecture: str | None = None,
     ) -> PackageBuildLog:
         """Create a PackageBuildLog artifact."""
         if source is None or version is None:
@@ -176,6 +183,7 @@ class ArtifactPlayground:
             file=file,
             source=source,
             version=version,
+            architecture=architecture,
         )
 
     @classmethod
@@ -238,7 +246,13 @@ class ArtifactPlayground:
                     )
                     (build_directory / data_path).symlink_to(target)
             subprocess.run(
-                ["dpkg-deb", "--build", build_directory, path],
+                [
+                    "dpkg-deb",
+                    "--root-owner-group",
+                    "--build",
+                    build_directory,
+                    path,
+                ],
                 stdout=subprocess.DEVNULL,
             )
 
@@ -297,14 +311,19 @@ class ArtifactPlayground:
             case deb822.Dsc:
                 if binaries is None:
                     binaries = [source]
-                changes_contents += textwrap.dedent(
-                    f"""\
-                    Binary: {', '.join(binaries)}
-                    Homepage: http://www.gnu.org/software/{source}/
-                    Standards-Version: 4.3.0
-                    Package-List:
-                     {source} deb devel optional arch=any
-                    """
+                changes_contents += (
+                    textwrap.dedent(
+                        f"""\
+                        Binary: {', '.join(binaries)}
+                        Homepage: http://www.gnu.org/software/{source}/
+                        Standards-Version: 4.3.0
+                        Package-List:
+                        """
+                    )
+                    + "".join(
+                        f" {binary} deb devel optional arch=any\n"
+                        for binary in binaries
+                    )
                 )
             case deb822.Changes:
                 timestamp = datetime(

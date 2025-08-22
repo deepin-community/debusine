@@ -61,8 +61,8 @@ def source_package(workflow: "Workflow[Any, Any]") -> Artifact:
     ``workflow.data.input.source_artifact``, otherwise
     ``workflow.data.source_artifact``.
 
-    If the source artifact is a :ref:`debian:upload <artifact-upload>`,
-    returns its :ref:`debian:source-package <artifact-source-package>`.
+    If the source artifact is a :artifact:`debian:upload`, returns its
+    :artifact:`debian:source-package`.
     """
     if hasattr(workflow.data, "input"):
         lookup = workflow.data.input.source_artifact
@@ -122,7 +122,7 @@ def lookup_result_architecture(result: LookupResult) -> str:
     if result.artifact is not None:
         artifact_data = result.artifact.create_data()
         match artifact_data:
-            case DebianBinaryPackages():
+            case DebianBinaryPackages() | DebianPackageBuildLog():
                 architecture = artifact_data.architecture
             case DebianBinaryPackage():
                 architecture = artifact_data.deb_fields.get("Architecture")
@@ -191,7 +191,7 @@ def filter_artifact_lookup_by_arch(
         workflow_root=workflow_root,
         expect_type=LookupChildType.ARTIFACT_OR_PROMISE,
     )
-    relevant: list[LookupSingle] = []
+    relevant: list[str] = []
     for result in results:
         arch_in_lookup = lookup_result_architecture(result)
         if arch_in_lookup in architectures:
@@ -228,7 +228,7 @@ def locate_debian_source_package(
     """
     Accept a debian:upload or debian:source-package in a workflow.
 
-    Resolve to the :ref:`debian:source-package <artifact-source-package>`.
+    Resolve to the :artifact:`debian:source-package`.
     """
     BaseTask.ensure_artifact_categories(
         configuration_key=configuration_key,
@@ -278,11 +278,9 @@ def locate_debian_source_package_lookup(
     """
     Return a lookup to a debian:source-package.
 
-    If the specified lookup returns a :ref:`debian:source-package
-    <artifact-source-package>`, return it.  If it returns a
-    :ref:`debian:upload <artifact-upload>`, find the related
-    :ref:`debian:source-package <artifact-source-package>` and return a
-    lookup to it.
+    If the specified lookup returns a :artifact:`debian:source-package`,
+    return it.  If it returns a :artifact:`debian:upload`, find the related
+    :artifact:`debian:source-package` and return a lookup to it.
     """
     artifact = lookup_single(
         lookup,
@@ -417,15 +415,14 @@ def configure_for_overlay_suite(
     environment: LookupSingle,
     backend: BackendType,
     architecture: str,
+    try_variant: str,
 ) -> list[ExtraRepository] | None:
     """Return any needed extra repository to use an overlay suite."""
     match (vendor, codename):
         case ("debian", "experimental"):
-            components = ["main", "contrib"]  # TODO: There must be a better way
+            pass
         case _:
             return extra_repositories
-
-    assert components
 
     if extra_repositories is None:
         extra_repositories = []
@@ -434,12 +431,14 @@ def configure_for_overlay_suite(
     environment_artifact = get_environment(
         task_database,
         environment,
-        architecture,
-        backend,
+        architecture=architecture,
+        backend=backend,
         default_category=CollectionCategory.ENVIRONMENTS,
+        try_variant=try_variant,
     )
     assert isinstance(environment_artifact.data, DebianSystemTarball)
     mirror = environment_artifact.data.mirror
+    components = environment_artifact.data.components
 
     return extra_repositories + [
         ExtraRepository(

@@ -11,7 +11,15 @@
 
 import copy
 import hashlib
-from typing import Any, Generic, Optional, TYPE_CHECKING, TypeVar, cast
+from typing import (
+    Any,
+    Generic,
+    Optional,
+    TYPE_CHECKING,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from django.db import IntegrityError, models, transaction
 from django.db.models import (
@@ -148,10 +156,34 @@ class WorkerManager(models.Manager["Worker"]):
 
         return new_name
 
+    @overload
     def create_with_fqdn(
         self,
         fqdn: str,
+        *,
         token: Token,
+        activation_token: None = None,
+        worker_type: WorkerType = WorkerType.EXTERNAL,
+        worker_pool: WorkerPool | None = None,
+    ) -> "Worker": ...
+
+    @overload
+    def create_with_fqdn(
+        self,
+        fqdn: str,
+        *,
+        token: None = None,
+        activation_token: Token,
+        worker_type: WorkerType = WorkerType.EXTERNAL,
+        worker_pool: WorkerPool | None = None,
+    ) -> "Worker": ...
+
+    def create_with_fqdn(
+        self,
+        fqdn: str,
+        *,
+        token: Token | None = None,
+        activation_token: Token | None = None,
         worker_type: WorkerType = WorkerType.EXTERNAL,
         worker_pool: WorkerPool | None = None,
     ) -> "Worker":
@@ -165,6 +197,7 @@ class WorkerManager(models.Manager["Worker"]):
                     return self.create(
                         name=name,
                         token=token,
+                        activation_token=activation_token,
                         worker_type=worker_type,
                         registered_at=timezone.now(),
                         worker_pool=worker_pool,
@@ -253,7 +286,7 @@ class Worker(models.Model):
         on_delete=models.SET_NULL,
         related_name="activating_worker",
     )
-    # Set by debusine-admin edit_worker_metadata.
+    # Set by debusine-admin worker edit_metadata.
     # Note: contents will be displayed to users in the web UI
     static_metadata = JSONField(default=dict, blank=True)
     # Information about features supported by workers.
@@ -315,11 +348,21 @@ class Worker(models.Model):
         return self.connected_at is not None
 
     def is_busy(self) -> bool:
+        """Return True if the Worker has any active work requests."""
+        # Import here to prevent circular imports
+        from debusine.db.models.work_requests import WorkRequest
+
+        return (
+            WorkRequest.objects.running(worker=self)
+            | WorkRequest.objects.pending(worker=self)
+        ).exists()
+
+    def is_at_capacity(self) -> bool:
         """
         Return True if the Worker is busy with work requests.
 
-        A Worker is busy if it has as many running or pending work requests
-        as its concurrency level.
+        A Worker is at capacity if it has as many running or pending work
+        requests as its concurrency level.
         """
         # Import here to prevent circular imports
         from debusine.db.models.work_requests import WorkRequest

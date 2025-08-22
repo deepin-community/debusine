@@ -32,6 +32,7 @@ from debusine.tasks.models import (
     LookupDict,
     LookupMultiple,
     LookupSingle,
+    build_lookup_string_segments,
     parse_lookup_string_segments,
 )
 
@@ -52,9 +53,22 @@ class LookupResult:
     """
 
     result_type: CollectionItem.Types
+    parent_collection_lookup: LookupSingle | None = None
     collection_item: CollectionItem | None = None
     artifact: Artifact | None = None
     collection: Collection | None = None
+
+
+class LookupResultBare(LookupResult):
+    """
+    A collection item lookup containing bare data.
+
+    Used to assist type annotations.
+    """
+
+    result_type: Literal[CollectionItem.Types.BARE]
+    parent_collection_lookup: LookupSingle
+    collection_item: CollectionItem
 
 
 class LookupResultArtifact(LookupResult):
@@ -79,12 +93,49 @@ class LookupResultCollection(LookupResult):
     collection: Collection
 
 
+def _normalize_lookup_segments(
+    lookup: LookupSingle,
+    default_category: CollectionCategory | None = None,
+    expect_type: LookupChildType = LookupChildType.ANY,
+) -> list[str]:
+    """Normalize a single lookup into a list of segments."""
+    if isinstance(lookup, int):
+        if expect_type in (
+            LookupChildType.ARTIFACT,
+            LookupChildType.ARTIFACT_OR_PROMISE,
+        ):
+            lookup = f"{lookup}@artifacts"
+        elif expect_type == LookupChildType.COLLECTION:
+            lookup = f"{lookup}@collections"
+        else:
+            raise LookupError(
+                "Integer lookups only work in contexts that expect an "
+                "artifact or a collection"
+            )
+
+    if not lookup:
+        raise LookupError("Empty lookup")
+
+    segments = parse_lookup_string_segments(lookup)
+
+    first_segment = segments[0]
+    if "@" not in first_segment:
+        if default_category is not None:
+            first_segment = f"{first_segment}@{default_category}"
+        else:
+            raise LookupError(
+                f"{first_segment!r} does not specify a category and the "
+                f"context does not supply a default"
+            )
+
+    return [first_segment, *segments[1:]]
+
+
 def _lookup_single_first(
     lookup: str,
     workspace: Workspace,
     *,
     user: User | AnonymousUser,
-    default_category: CollectionCategory | None = None,
     workflow_root: WorkRequest | None = None,
 ) -> LookupResult:
     """
@@ -125,16 +176,10 @@ def _lookup_single_first(
                     )
                 name = f"workflow-{workflow_root.id}"
                 category = str(CollectionCategory.WORKFLOW_INTERNAL)
-            elif "@" in lookup:
-                name, category = lookup.rsplit("@", 1)
-            elif default_category is not None:
-                name = lookup
-                category = default_category
             else:
-                raise LookupError(
-                    f"{lookup!r} does not specify a category and the context "
-                    f"does not supply a default"
-                )
+                # Ensured by lookup_single.
+                assert "@" in lookup
+                name, category = lookup.rsplit("@", 1)
             return LookupResult(
                 result_type=CollectionItem.Types.COLLECTION,
                 collection=workspace.get_collection(
@@ -143,6 +188,18 @@ def _lookup_single_first(
             )
     except (Artifact.DoesNotExist, Collection.DoesNotExist):
         raise KeyError(f"{lookup!r} does not exist or is hidden")
+
+
+@overload
+def lookup_single(
+    lookup: LookupSingle,
+    workspace: Workspace,
+    *,
+    user: User | AnonymousUser,
+    default_category: CollectionCategory | None = None,
+    workflow_root: WorkRequest | None = None,
+    expect_type: Literal[LookupChildType.BARE],
+) -> LookupResultBare: ...
 
 
 @overload
@@ -196,40 +253,22 @@ def lookup_single(
     See :ref:`lookup-single`.
 
     :raises KeyError: if the lookup does not resolve to an item.
-    :raises LookupError: if the lookup is invalid in some way.
+    :raises LookupError: if the lookup is invalid in some way, or does not
+      resolve to the expected collection item type.
     """
-    if isinstance(lookup, int):
-        if expect_type in (
-            LookupChildType.ARTIFACT,
-            LookupChildType.ARTIFACT_OR_PROMISE,
-        ):
-            lookup = f"{lookup}@artifacts"
-        elif expect_type == LookupChildType.COLLECTION:
-            lookup = f"{lookup}@collections"
-        else:
-            raise LookupError(
-                "Integer lookups only work in contexts that expect an "
-                "artifact or a collection"
-            )
-
-    if not lookup:
-        raise LookupError("Empty lookup")
-
-    segments = parse_lookup_string_segments(lookup)
+    segments = _normalize_lookup_segments(
+        lookup, default_category=default_category, expect_type=expect_type
+    )
 
     # Look up the first segment as a collection by name and category.
     result = _lookup_single_first(
-        segments[0],
-        workspace,
-        user=user,
-        default_category=default_category,
-        workflow_root=workflow_root,
+        segments[0], workspace, user=user, workflow_root=workflow_root
     )
     container: Collection | None = None
 
     # Resolve each subsequent segment by calling `lookup`.
     for i, segment in enumerate(segments[1:], start=1):
-        container_name = "/".join(segments[:i])
+        container_name = build_lookup_string_segments(*segments[:i])
         if result.result_type != CollectionItem.Types.COLLECTION:
             raise LookupError(
                 f"{container_name!r} is of type"
@@ -245,6 +284,7 @@ def lookup_single(
             raise KeyError(f"{container_name!r} has no item {segment!r}")
         result = LookupResult(
             result_type=CollectionItem.Types(item.child_type),
+            parent_collection_lookup=container_name,
             collection_item=item,
             artifact=item.artifact,
             collection=item.collection,
@@ -304,6 +344,15 @@ def _lookup_dict(
             f"here"
         )
 
+    parent_collection_segments = _normalize_lookup_segments(
+        lookup.collection,
+        default_category=default_category,
+        expect_type=LookupChildType.COLLECTION,
+    )
+    parent_collection_lookup = build_lookup_string_segments(
+        *parent_collection_segments
+    )
+
     # Find the containing collection.
     collection = lookup_single(
         lookup.collection,
@@ -313,7 +362,9 @@ def _lookup_dict(
         workflow_root=workflow_root,
         expect_type=LookupChildType.COLLECTION,
     ).collection
-    objects = CollectionItem.active_objects.filter(parent_collection=collection)
+    objects = CollectionItem.objects.active().filter(
+        parent_collection=collection
+    )
 
     # Prepare query conditions.  We don't need to check the workspace here;
     # it's good enough if the item is in a collection we can see.
@@ -363,6 +414,7 @@ def _lookup_dict(
     return [
         LookupResult(
             result_type=CollectionItem.Types(item.child_type),
+            parent_collection_lookup=parent_collection_lookup,
             collection_item=item,
             artifact=item.artifact,
             collection=item.collection,
@@ -422,7 +474,8 @@ def lookup_multiple(
     See :ref:`lookup-multiple`.
 
     :raises KeyError: if any of the lookups does not resolve to an item.
-    :raises LookupError: if the lookup is invalid in some way.
+    :raises LookupError: if any of the lookups is invalid in some way, or
+      does not resolve to the expected collection item type.
     """
     results: list[LookupResult] = []
     for alternative in lookup:
@@ -456,7 +509,7 @@ def lookup_multiple(
 
 def _reconstruct_collection_lookup(
     collection_id: int, workflow_root: WorkRequest | None = None
-) -> LookupSingle:
+) -> str:
     """Reconstruct a lookup for a collection ID."""
     if (
         workflow_root is not None
@@ -469,7 +522,7 @@ def _reconstruct_collection_lookup(
 
 def reconstruct_lookup(
     result: LookupResult, workflow_root: WorkRequest | None = None
-) -> LookupSingle:
+) -> str:
     """
     Reconstruct a lookup matching a given result.
 
@@ -480,11 +533,14 @@ def reconstruct_lookup(
     Otherwise, it will resolve to the same artifact or collection, providing
     that it still exists.
     """
-    if (item := result.collection_item) is not None:
-        collection_lookup = _reconstruct_collection_lookup(
-            item.parent_collection_id, workflow_root=workflow_root
+    if (
+        result.parent_collection_lookup is not None
+        and result.collection_item is not None
+    ):
+        return (
+            f"{result.parent_collection_lookup}/"
+            f"name:{result.collection_item.name}"
         )
-        return f"{collection_lookup}/name:{item.name}"
     elif result.artifact is not None:
         return f"{result.artifact.id}@artifacts"
     else:

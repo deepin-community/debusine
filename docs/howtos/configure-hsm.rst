@@ -171,8 +171,7 @@ Register a UEFI signing key stored in the HSM
           uefi KEY-URI /etc/debusine/signing/certificates/KEY-NAME.crt \
           'some description of the new key'
 
-#. Create a :ref:`debusine:signing-key asset <asset-signing-key>`
-   corresponding to the new key:
+#. Create a :asset:`debusine:signing-key` corresponding to the new key:
 
    .. code-block:: console
 

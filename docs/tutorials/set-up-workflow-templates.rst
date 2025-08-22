@@ -35,11 +35,10 @@ Create a build environment
 ==========================
 
 Various :ref:`worker tasks <explanation-tasks>` require build environments,
-which are created using the :ref:`update_environments
-<workflow-update-environments>` workflow.
+which are created using the :workflow:`update_environments` workflow.
 
-Start by creating a :ref:`debian:environments <collection-environments>`
-collection on your server:
+Start by creating a :collection:`debian:environments` collection on your
+server:
 
 .. code-block:: console
 
@@ -81,22 +80,21 @@ running:
     END
 
 Once this workflow finishes (which will take a few minutes), you should have
-a ``debian:environments`` collection populated with some useful base
-tarballs for ``trixie/amd64`` that can be used with the ``unshare`` backend:
-a default variant containing only essential and required packages, and an
-``sbuild`` variant that also contains build-essential packages.  These can
-be :ref:`looked up by name <lookup-syntax>`.  If you wish, you can vary the
-``targets`` dictionary to build different environments, or automate this
-workflow to run regularly.
+a :collection:`debian:environments` collection populated with some useful
+base tarballs for ``trixie/amd64`` that can be used with the ``unshare``
+backend: a default variant containing only essential and required packages,
+and an ``sbuild`` variant that also contains build-essential packages.
+These can be :ref:`looked up by name <lookup-syntax>`.  If you wish, you can
+vary the ``targets`` dictionary to build different environments, or automate
+this workflow to run regularly.
 
 Set up the Debian pipeline
 ==========================
 
-The :ref:`debian_pipeline <workflow-debian-pipeline>` workflow is a powerful
-tool that coordinates all the steps typically involved in building and
-testing an upload to Debian; it also has options to run tests on other
-packages that depend on your package, and perform the upload for you at the
-end.
+The :workflow:`debian_pipeline` workflow is a powerful tool that coordinates
+all the steps typically involved in building and testing an upload to
+Debian; it also has options to run tests on other packages that depend on
+your package, and perform the upload for you at the end.
 
 On your client, create a suitable workflow template:
 

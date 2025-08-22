@@ -1,0 +1,21 @@
+{% load artifacts %}
+{% if data %}
+    {% if data.source_artifact_original_id %}
+        <p id="description-source_artifacts">
+            Compare source packages {% artifact_link data.source_artifact_original_id %} and {% artifact_link data.source_artifact_new_id %} with debdiff
+        </p>
+    {% else %}
+        <p id="description-binary_artifacts">
+            Compare binary packages {% artifact_links data.binary_artifacts_original_ids %} and {% artifact_links data.binary_artifacts_new_ids %} with debdiff
+        </p>
+    {% endif %}
+    <ul>
+        <li id="description-executed_in_environment">Executed in environment {% artifact_link data.environment_id %}</li>
+        {% if data.extra_arguments %}
+            <li id="description-extra_arguments">
+                Extra arguments:
+                {% include "web/_list_to_code.html" with values=data.extra_arguments only %}
+            </li>
+        {% endif %}
+    </ul>
+{% endif %}

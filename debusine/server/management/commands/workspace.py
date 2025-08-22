@@ -113,6 +113,11 @@ class Command(DebusineBaseCommand):
         delete.add_argument(
             '--yes', action='store_true', help='Skips confirmation of deletion'
         )
+        delete.add_argument(
+            "--force",
+            action="store_true",
+            help="Do not fail if trying to delete nonexistent workspaces",
+        )
 
         list_sp = subparsers.add_parser("list", help=self.handle_list.__doc__)
         list_sp.add_argument(
@@ -335,10 +340,16 @@ class Command(DebusineBaseCommand):
         raise SystemExit(0)
 
     def handle_delete(
-        self, *, scope_workspace: str, yes: bool, **options: Any
+        self, *, scope_workspace: str, yes: bool, force: bool, **options: Any
     ) -> NoReturn:
         """Delete a workspace with associated resources."""
-        workspace = get_workspace(scope_workspace)
+        try:
+            workspace = get_workspace(scope_workspace)
+        except CommandError:
+            if force:
+                raise SystemExit(0)
+            else:
+                raise
 
         # Prevent deletion of default workspace
         if workspace == default_workspace():

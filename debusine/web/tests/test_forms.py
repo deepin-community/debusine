@@ -26,9 +26,23 @@ except ImportError:
 import yaml
 
 from debusine.artifacts import PackageBuildLog
-from debusine.artifacts.models import ArtifactCategory, DebianPackageBuildLog
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    BareDataCategory,
+    CollectionCategory,
+    DebianPackageBuildLog,
+    DebusineTaskConfiguration,
+    TaskTypes,
+)
 from debusine.db.context import context
-from debusine.db.models import Artifact, Group, Token, User, Workspace
+from debusine.db.models import (
+    Artifact,
+    Collection,
+    Group,
+    Token,
+    User,
+    Workspace,
+)
 from debusine.db.playground import scenarios
 from debusine.tasks import BaseTask
 from debusine.test.django import TestCase
@@ -37,6 +51,7 @@ from debusine.web.forms import (
     BootstrapMixin,
     DaysField,
     GroupAddUserForm,
+    TaskConfigurationInspectorForm,
     TokenForm,
     WorkRequestForm,
     WorkflowFilterForm,
@@ -72,6 +87,7 @@ class BootstrapMixinForm(BootstrapMixin, forms.Form):
     boolean_field = forms.BooleanField(
         widget=forms.CheckboxInput(attrs={"class": existing_class})
     )
+    days_field = DaysField()
 
 
 class BootstrapMixinTests(TestCase):
@@ -148,6 +164,13 @@ class BootstrapMixinTests(TestCase):
         self.assertEqual(
             date_widget_class, f"{BootstrapMixinForm.existing_class}"
         )
+
+    def test_daysfield_bootstrap_class(self) -> None:
+        """Test DaysField has form-control."""
+        days_widget_class = self.form.fields["days_field"].widget.attrs.get(
+            "class"
+        )
+        self.assertEqual(days_widget_class, "form-control")
 
     def test_booleanfield_bootstrap_class(self) -> None:
         """Test BooleanField has form-check-input."""
@@ -459,7 +482,6 @@ class ArtifactFormTests(TestCase):
 
         self.assertEqual(instance.created_by, self.user)
 
-    @context.disable_permission_checks()
     def test_form_save_commit(self) -> None:
         """Form save(commit=True) set created_by and saves into the DB."""
         category = self.artifact_category
@@ -486,7 +508,8 @@ class ArtifactFormTests(TestCase):
 
         self.assertTrue(form.is_valid())
 
-        artifact = form.save(commit=True)
+        with context.disable_permission_checks():
+            artifact = form.save(commit=True)
 
         self.assertEqual(Artifact.objects.get(id=artifact.id), artifact)
 
@@ -608,6 +631,7 @@ class ArtifactFormTests(TestCase):
         data = {
             "source": "test-source",
             "version": "1.2.3",
+            "architecture": "amd64",
             "filename": "test",
         }
         file_name = "build.txt"
@@ -651,6 +675,7 @@ class ArtifactFormTests(TestCase):
         data = {
             "source": "test-source",
             "version": "1.2.3",
+            "architecture": "amd64",
             "filename": "test",
         }
         file_name = "build.txt"
@@ -728,10 +753,9 @@ class WorkspaceChoiceFieldTests(TestCase):
         default_workspace.public = False
         default_workspace.save()
 
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace(
-                name="It is public", public=True
-            )
+        workspace = self.playground.create_workspace(
+            name="It is public", public=True
+        )
 
         workspace_choice_field = WorkspaceChoiceField(user=None)
 
@@ -771,29 +795,6 @@ class WorkflowFilterFormTests(TestCase):
         super().setUp()
 
         self.form = WorkflowFilterForm()
-
-    def test_workflow_templates_field(self) -> None:
-        """Test workflow_templates field."""
-        self.playground.create_workflow_template(
-            "name-1", "noop", workspace=self.scenario.workspace
-        )
-
-        self.playground.create_workflow_template(
-            "name-2",
-            "sbuild",
-            workspace=self.playground.create_workspace(
-                name="unused", public=False
-            ),
-        )
-
-        self.form = WorkflowFilterForm()
-
-        self.assertEqual(
-            self.form.fields["workflow_templates"].widget.choices,
-            [
-                ("name-1", "name-1"),
-            ],
-        )
 
     def test_statuses_field(self) -> None:
         """Test statuses field."""
@@ -842,38 +843,8 @@ class WorkflowFilterFormTests(TestCase):
             [
                 ("error", "Error"),
                 ("failure", "Failure"),
+                ("skipped", "Skipped"),
                 ("success", "Success"),
-            ],
-        )
-
-    def test_started_by_field(self) -> None:
-        """Test started_by field."""
-        # "other-1" created a workflow in another workspace:
-        # not listed by started_by field
-        other_1 = self.playground.create_user(username="other-1")
-        workflow_1 = self.playground.create_workflow(created_by=other_1)
-        workflow_1.workspace = self.playground.create_workspace(
-            name="new-workspace"
-        )
-        workflow_1.save()
-
-        # "other-2" has not created any workflow (only a work request):
-        # not listed by started_by field
-        other_2 = self.playground.create_user(username="other-2")
-        self.playground.create_work_request(created_by=other_2)
-
-        # Creates a workflow with self.playground.get_default_user()
-        self.playground.create_workflow()
-
-        self.form = WorkflowFilterForm()
-
-        self.assertEqual(
-            self.form.fields["started_by"].widget.choices,
-            [
-                (
-                    self.scenario.user.username,
-                    self.scenario.user.username,
-                )
             ],
         )
 
@@ -914,6 +885,20 @@ class WorkspaceFormTests(TestCase):
     """Tests for WorkspaceForm."""
 
     scenario = scenarios.DefaultContext(set_current=True)
+
+    def test_labels(self) -> None:
+        form = WorkspaceForm(instance=self.scenario.workspace)
+        self.assertEqual(
+            form["expiration_delay"].help_text,
+            "If unset, workspace is permanent. Otherwise, the workspace gets "
+            "removed after the given period of inactivity (expressed as a "
+            "number of days after the completion of the last work request)",
+        )
+        self.assertEqual(
+            form["default_expiration_delay"].help_text,
+            "Number of days that new artifacts and work requests are kept "
+            "in the workspace before being expired (0 means no expiration)",
+        )
 
     def test_values_from_instances(self) -> None:
         """Test form field values."""
@@ -992,4 +977,86 @@ class GroupAddUserFormTests(TestCase):
         self.assertEqual(
             form.errors,
             {"username": ["User is already a member of debusine/test"]},
+        )
+
+
+class TaskConfigurationInspectorFormTests(TestCase):
+    """Tests for :py:class:`TaskConfigurationInspectorForm`."""
+
+    scenario = scenarios.DefaultContext(set_current=True)
+    collection: ClassVar[Collection]
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        """Set up common data for tests."""
+        super().setUpTestData()
+        cls.collection = cls.scenario.workspace.collections.get(
+            name="default", category=CollectionCategory.TASK_CONFIGURATION
+        )
+
+    @classmethod
+    def add_config(cls, entry: DebusineTaskConfiguration) -> None:
+        """Add a config entry to config_collection."""
+        cls.collection.manager.add_bare_data(
+            BareDataCategory.TASK_CONFIGURATION,
+            user=cls.scenario.user,
+            data=entry,
+        )
+
+    def test_empty_collection(self) -> None:
+        form = TaskConfigurationInspectorForm(collection=self.collection)
+        unspecified = ('', '(unspecified)')
+        self.assertEqual(form.fields["task"].widget.choices, [])
+        self.assertEqual(form.fields["subject"].widget.choices, [unspecified])
+        self.assertEqual(form.fields["context"].widget.choices, [unspecified])
+
+    def test_choices(self) -> None:
+        self.add_config(
+            DebusineTaskConfiguration(
+                task_type=TaskTypes.WORKER, task_name="noop"
+            )
+        )
+        self.add_config(
+            DebusineTaskConfiguration(
+                task_type=TaskTypes.WORKER, task_name="sbuild"
+            )
+        )
+        self.add_config(
+            DebusineTaskConfiguration(
+                task_type=TaskTypes.WORKER, task_name="noop", context="context1"
+            )
+        )
+        self.add_config(
+            DebusineTaskConfiguration(
+                task_type=TaskTypes.WORKER,
+                task_name="noop",
+                context="context2",
+                subject="subject1",
+            )
+        )
+        self.add_config(
+            DebusineTaskConfiguration(
+                task_type=TaskTypes.WORKER,
+                task_name="sbuild",
+                context="context1",
+                subject="subject2",
+            )
+        )
+
+        form = TaskConfigurationInspectorForm(collection=self.collection)
+        unspecified = ('', '(unspecified)')
+        self.assertEqual(
+            form.fields["task"].widget.choices,
+            [
+                ('Worker:noop', 'Worker:noop'),
+                ('Worker:sbuild', 'Worker:sbuild'),
+            ],
+        )
+        self.assertEqual(
+            form.fields["subject"].widget.choices,
+            [unspecified, ('subject1', 'subject1'), ('subject2', 'subject2')],
+        )
+        self.assertEqual(
+            form.fields["context"].widget.choices,
+            [unspecified, ('context1', 'context1'), ('context2', 'context2')],
         )

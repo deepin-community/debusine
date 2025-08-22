@@ -15,11 +15,14 @@ import tempfile
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime
+from importlib.metadata import version
 from pathlib import Path
 from typing import Self, TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import boto3
+from botocore.config import Config
+from packaging.version import Version
 
 from debusine.assets.models import AWSProviderAccountData, CloudProvidersType
 from debusine.db.models import File, FileStore
@@ -99,12 +102,7 @@ class S3FileBackendEntry(FileBackendEntryInterface["S3FileBackend", str]):
         # protection for uploads.  See:
         #   https://status.hetzner.com/incident/b6382a74-0fd9-4789-b997-65249187fbc7
         #   https://github.com/boto/boto3/issues/4392
-        # This may be a problem on trixie if not fixed by the provider, but
-        # for the time being we can at least make things work on bookworm by
-        # not adding the header manually.
-        if not urlsplit(self.backend.client.meta.endpoint_url).netloc.endswith(
-            ".your-objectstorage.com"
-        ):
+        if not self.backend._is_hetzner:
             extra_args["ChecksumAlgorithm"] = "SHA256"
         if self.backend.configuration.storage_class is not None:
             extra_args["StorageClass"] = (
@@ -154,6 +152,10 @@ class S3FileBackend(FileBackendInterface[S3FileBackendConfiguration]):
             )
         provider_account_data = file_store.provider_account.data_model
         assert isinstance(provider_account_data, AWSProviderAccountData)
+        s3_endpoint_url = provider_account_data.configuration.s3_endpoint_url
+        self._is_hetzner = s3_endpoint_url is not None and urlsplit(
+            s3_endpoint_url
+        ).netloc.endswith(".your-objectstorage.com")
         self.client = self._make_client(provider_account_data)
 
     def _make_client(
@@ -164,6 +166,15 @@ class S3FileBackend(FileBackendInterface[S3FileBackendConfiguration]):
 
         This exists mainly so that it can be patched by tests.
         """
+        config: Config | None = None
+        # Hetzner object storage doesn't currently support data integrity
+        # protection for uploads, so tell boto3 not to require it.  See:
+        #   https://status.hetzner.com/incident/b6382a74-0fd9-4789-b997-65249187fbc7
+        #   https://github.com/boto/boto3/issues/4392
+        if self._is_hetzner and Version(version("boto3")) >= Version(
+            "1.36.0"
+        ):  # pragma: no cover
+            config = Config(request_checksum_calculation="when_required")
         return boto3.client(
             "s3",
             region_name=provider_account_data.configuration.region_name,
@@ -172,6 +183,7 @@ class S3FileBackend(FileBackendInterface[S3FileBackendConfiguration]):
             aws_secret_access_key=(
                 provider_account_data.credentials.secret_access_key
             ),
+            config=config,
         )
 
     def get_entry(self, fileobj: File) -> S3FileBackendEntry:

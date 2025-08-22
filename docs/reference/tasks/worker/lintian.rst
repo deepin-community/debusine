@@ -1,4 +1,4 @@
-.. _task-lintian:
+.. task:: Lintian
 
 Lintian task
 ------------
@@ -10,13 +10,13 @@ The ``task_data`` associated to this task can contain the following keys:
   too.
 
   * ``source_artifact`` (:ref:`lookup-single`, optional): the
-    ``debian:source-package`` or ``debian:upload`` artifact representing the
-    source package to be tested with lintian
+    :artifact:`debian:source-package` or :artifact:`debian:upload` artifact
+    representing the source package to be tested with lintian
   * ``binary_artifacts`` (:ref:`lookup-multiple`, optional): a list of
-    ``debian:binary-package``, ``debian:binary-packages``, or
-    ``debian:upload`` artifacts representing the binary packages to be
-    tested with lintian (they are expected to be part of the same source
-    package as the one identified with ``source_artifact``)
+    :artifact:`debian:binary-package`, :artifact:`debian:binary-packages`,
+    or :artifact:`debian:upload` artifacts representing the binary packages
+    to be tested with lintian (they are expected to be part of the same
+    source package as the one identified with ``source_artifact``)
 
 The task computes dynamic metadata as:
 
@@ -31,8 +31,9 @@ The task computes dynamic metadata as:
    be emitted when lintian has access to all of them at the same time.
 
 * ``environment`` (:ref:`lookup-single` with default category
-  ``debian:environments``, required): ``debian:system-tarball`` artifact
-  that will be used to run lintian. Must have ``lintian`` installed.
+  :collection:`debian:environments`, required):
+  :artifact:`debian:system-tarball` artifact that will be used to run
+  lintian. Must have ``lintian`` installed.
 
 * ``backend`` (optional): the virtualization backend to use, defaults to
   ``auto`` where the task is free to use the most suitable backend.
@@ -42,16 +43,16 @@ The task computes dynamic metadata as:
   of the generated artifacts
 
   * ``source_analysis`` (optional, defaults to True): indicates whether
-    we want to generate the ``debian:lintian`` artifact for the source
-    package
+    we want to generate the :artifact:`debian:lintian` artifact for the
+    source package
 
   * ``binary_all_analysis`` (optional, defaults to True): same as
-    ``source_analysis`` but for the ``debian:lintian`` artifact related
-    to ``Architecture: all`` packages
+    ``source_analysis`` but for the :artifact:`debian:lintian` artifact
+    related to ``Architecture: all`` packages
 
   * ``binary_any_analysis`` (optional, defaults to True): same as
-    ``source_analysis`` but for the ``debian:lintian`` artifact related
-    to ``Architecture: any`` packages
+    ``source_analysis`` but for the :artifact:`debian:lintian` artifact
+    related to ``Architecture: any`` packages
 
 * ``target_distribution`` (optional): the fully qualified name of the
   distribution that will provide the lintian software to analyze the
@@ -66,7 +67,7 @@ The task computes dynamic metadata as:
   hidden. Translates into the ``--suppress-tags`` or
   ``--suppress-tags-from file`` command line option.
 
-* ``fail_on_severity`` (optional, defaults to ``none``): if the analysis emits
+* ``fail_on_severity`` (optional, defaults to ``error``): if the analysis emits
   tags of that severity or higher, then the task will return a "failure"
   instead of a "success". Valid values are (in decreasing severity)
   "error", "warning", "info", "pedantic", "experimental", "overridden".
@@ -91,8 +92,7 @@ data that lintian can provide.
    For those reasons, we suggested to lintian's maintainers to entirely
    stop emitting those tags in https://bugs.debian.org/1053892
 
-Between 1 to 3 artifacts of category ``debian:lintian`` will be generated (one
+Between 1 to 3 :artifact:`debian:lintian` artifacts will be generated (one
 for each source/binary package artifact submitted) and they will have a
 "relates to" relationship with the corresponding artifact that has been
-analyzed. The ``debian:lintian`` artifacts are described
-:ref:`in the artifacts reference <artifact-lintian>`.
+analyzed.

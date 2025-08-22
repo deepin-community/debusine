@@ -10,22 +10,30 @@
 """utils module contain utilities used by different components of debusine."""
 
 import hashlib
+import os
 import re
 import shutil
+import tempfile
 from collections.abc import Callable, Generator, Mapping, Sequence
+from contextlib import contextmanager
 from enum import StrEnum
+from enum import property as enum_property
 from pathlib import Path
 from types import GenericAlias
 from typing import (
     Any,
+    BinaryIO,
     Generic,
+    IO,
     Literal,
     TYPE_CHECKING,
+    TextIO,
     TypeVar,
     TypedDict,
     Union,
     get_args,
     get_origin,
+    overload,
 )
 
 from requests.structures import CaseInsensitiveDict
@@ -33,6 +41,7 @@ from requests.structures import CaseInsensitiveDict
 from debian import deb822
 
 if TYPE_CHECKING:
+    from _typeshed import OpenBinaryModeWriting, OpenTextModeWriting
     from django.http.request import HttpHeaders
 
 CALCULATE_HASH_CHUNK_SIZE = 1 * 1024 * 1024
@@ -76,8 +85,10 @@ def _error_message_invalid_header(header_name: str, header_value: str) -> str:
     return f'Invalid {header_name} header: "{header_value}"'
 
 
+# TODO: RFC 7233 allows multiple byte-ranges separated by commas, but this
+# currently raises an error for those.
 def parse_range_header(
-    headers: Union[CaseInsensitiveDict[str], "HttpHeaders"],
+    headers: Union[CaseInsensitiveDict[str], "HttpHeaders"], file_size: int
 ) -> dict[str, int] | None:
     """Parse headers["Range"]. Return dictionary with information."""
     header_name = "Range"
@@ -86,8 +97,21 @@ def parse_range_header(
     if header_value is None:
         return None
 
-    if m := re.match("bytes=([0-9]+)-([0-9]+)", header_value):
-        return {"start": int(m.group(1)), "end": int(m.group(2))}
+    if m := re.match("^bytes=([0-9]*)-([0-9]*)$", header_value):
+        start, end = m.groups()
+        if start or end:
+            if not start:
+                # This is a suffix-byte-range-spec
+                # (https://www.rfc-editor.org/rfc/rfc7233#section-2.1), and
+                # requests the last ``end`` bytes of the representation (not
+                # from the start of the representation to the byte with
+                # offset ``end``, as one might expect).
+                start = file_size - int(end)
+                end = file_size - 1
+            elif not end:
+                # Request from ``start`` to the end of the file.
+                end = file_size - 1
+            return {"start": int(start), "end": int(end)}
 
     raise ValueError(_error_message_invalid_header(header_name, header_value))
 
@@ -278,14 +302,65 @@ def extract_generic_type_arguments(
 class DjangoChoicesEnum(StrEnum):
     """Enable a StrEnum to be used for a Django choices field."""
 
+    @enum_property
+    def label(self) -> str:
+        """Return this item's label."""
+        return self
+
     @classproperty
     def choices(cls) -> Generator[tuple[str, str]]:
         """Return a Django model compatible set of choices."""
         for item in cls:
-            yield (item, item)
+            # mypy can't quite follow the maze of enum properties here, but
+            # this works.
+            yield (item, item.label)  # type: ignore[attr-defined]
 
 
 class NotSupportedError(Exception):
     """The requested function is not supported."""
 
     pass
+
+
+@overload
+@contextmanager
+def atomic_writer(
+    path: str | os.PathLike[str],
+    mode: "OpenBinaryModeWriting" = "wb",
+    chmod: int = ...,
+) -> Generator[BinaryIO]: ...
+
+
+@overload
+@contextmanager
+def atomic_writer(
+    path: str | os.PathLike[str], mode: "OpenTextModeWriting", chmod: int = ...
+) -> Generator[TextIO]: ...
+
+
+@contextmanager
+def atomic_writer(
+    path: str | os.PathLike[str],
+    mode: Union["OpenTextModeWriting", "OpenBinaryModeWriting"] = "wb",
+    chmod: int = 0o600,
+) -> Generator[IO[Any]]:
+    """
+    Atomically write to a file.
+
+    The yielded file object is a temporary file in the same directory as the
+    target path.  On exit from the context manager, it is renamed into
+    place.
+    """
+    path = Path(path)
+    with tempfile.NamedTemporaryFile(
+        mode, dir=path.parent, prefix=path.name, suffix=".new", delete=False
+    ) as temp:
+        try:
+            yield temp
+            temp.flush()
+            os.fdatasync(temp)
+            os.fchmod(temp.fileno(), chmod)
+            os.replace(temp.name, path)
+        except Exception:
+            os.unlink(temp.name)
+            raise

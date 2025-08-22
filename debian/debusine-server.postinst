@@ -2,9 +2,26 @@
 
 set -e
 
+# shellcheck source=/dev/null
+. /usr/share/debconf/confmodule
+
 # shellcheck disable=SC2034
 case "$1" in
 	configure)
+	# Migrations have been squashed up to 0.11.0.
+	#
+	# In some ways it would make more sense for this check to be in the
+	# preinst, but that results in worse outcomes for administrators:
+	# the failing preinst causes the old postinst to be called with
+	# abort-upgrade, which tries to restart the server with its various
+	# python3-debusine* dependencies now likely to be at different
+	# versions.  Checking it here at least leaves the server running
+	# while the administrator cleans up.
+	if dpkg --compare-versions "$2" lt-nl 0.11.0~; then
+		echo "Cannot upgrade directly from versions before 0.11.0; upgrade to 0.11.* first" >&2
+		exit 1
+	fi
+
 	user="debusine-server"
 	group="$user"
 
@@ -33,8 +50,6 @@ case "$1" in
 		chown "$user:$group" "$secret_key_file"
 	fi
 
-	# shellcheck source=/dev/null
-	. /usr/share/debconf/confmodule
 	# shellcheck source=/dev/null
 	. /usr/share/dbconfig-common/dpkg/postinst.pgsql
 
@@ -74,6 +89,7 @@ case "$1" in
 
 	if [ "$RET" = "nginx" ] && [ -d /etc/nginx/sites-enabled ]; then
 		ln -s /usr/share/doc/debusine-server/examples/nginx-vhost.conf /etc/nginx/sites-enabled/debusine-server || true
+		ln -s /usr/share/doc/debusine-server/examples/nginx-vhost-deb.conf /etc/nginx/sites-enabled/debusine-server || true
 
 		db_input high debusine-server/nginx-choice || true
 

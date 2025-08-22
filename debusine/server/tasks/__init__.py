@@ -24,6 +24,7 @@ from debusine.server.tasks.copy_collection_items import CopyCollectionItems
 from debusine.server.tasks.create_experiment_workspace import (
     CreateExperimentWorkspace,
 )
+from debusine.server.tasks.generate_suite_indexes import GenerateSuiteIndexes
 from debusine.server.tasks.noop import ServerNoop
 from debusine.server.tasks.package_upload import PackageUpload
 from debusine.server.tasks.update_suite_lintian_collection import (
@@ -36,6 +37,7 @@ __all__ = [
     "CloudProvisioning",
     "CopyCollectionItems",
     "CreateExperimentWorkspace",
+    "GenerateSuiteIndexes",
     "PackageUpload",
     "ServerNoop",
     "ServerTaskPermissionDenied",

@@ -1,10 +1,5 @@
 debusine: built-using-field-on-arch-all-package
 
-# source-is-missing: when Debusine does not support anymore bullseye we can use
-# the packaged bootstrap (libjs-bootstrap5). For the time being we ignore this error
-# The first line of the bootstrap.bundle.min.js has the URL where to fetch the file
-debusine source: source-is-missing [debusine/web/static/web/vendor/bootstrap/js/bootstrap.bundle.min.js]
-
 # This normally shouldn't be needed when the package works with all
 # currently-supported Python versions, but pypy lags behind slightly and
 # causes problems without this.  See https://bugs.debian.org/1074254.  This

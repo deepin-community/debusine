@@ -19,20 +19,21 @@ from typing import Any, cast
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
-from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
+from django.contrib.messages import get_messages
 from django.http import HttpRequest
-from django.test import Client, RequestFactory, TestCase, override_settings
+from django.test import Client, RequestFactory, override_settings
 from django.urls import resolve, reverse
 from django.utils import timezone
 
 from debusine.db.models import Identity, User
+from debusine.db.playground import scenarios
 from debusine.server.signon import providers
 from debusine.server.signon.middleware import RequestSignonProtocol
 from debusine.server.signon.providers import BoundOIDCProvider
-from debusine.server.signon.signon import Signon
+from debusine.server.signon.signon import MapIdentityFailed, Signon
 from debusine.server.signon.tests.test_signon import MockSession
-from debusine.test.django import TestResponseType
+from debusine.test.django import TestCase, TestResponseType
 
 
 @override_settings(
@@ -48,6 +49,8 @@ from debusine.test.django import TestResponseType
 )
 class SalsaSignonViews(TestCase):
     """Test Signon views."""
+
+    scenario = scenarios.DefaultScopeUser()
 
     def _collect_urls(
         self, response: TestResponseType, match_re: str
@@ -128,15 +131,15 @@ class SalsaSignonViews(TestCase):
 
     def test_login_links_when_signed_in(self) -> None:
         """Active identities don't show a login link."""
-        user = get_user_model().objects.create_user("test")
-        identity = self._make_identity(user=user)
+        identity = self._make_identity(user=self.scenario.user)
 
         # Simulate a session with a logged in user
         url = reverse("logout")
         request = self._make_post_request(url)
         assert isinstance(request, RequestSignonProtocol)
         request.signon.activate_identity(identity)
-        self.assertEqual(request.user, user)
+        self.assertEqual(request.user, self.scenario.user)
+        self.scenario.set_current()
 
         view = resolve(url).func
         response = view(request)
@@ -150,15 +153,15 @@ class SalsaSignonViews(TestCase):
 
     def test_logout(self) -> None:
         """Logout also deactivates signon identities."""
-        user = get_user_model().objects.create_user("test")
-        identity = self._make_identity(user=user)
+        identity = self._make_identity(user=self.scenario.user)
 
         # Simulate a session with a logged in user
         url = reverse("logout")
         request = self._make_post_request(url)
         assert isinstance(request, RequestSignonProtocol)
         request.signon.activate_identity(identity)
-        self.assertEqual(request.user, user)
+        self.assertEqual(request.user, self.scenario.user)
+        self.scenario.set_current()
 
         view = resolve(url).func
         response = view(request)
@@ -244,11 +247,8 @@ class SalsaSignonViews(TestCase):
         """The OIDC callback logs in an existing bound identity."""
         self.assertEqual(Identity.objects.count(), 0)
 
-        user = get_user_model().objects.create_user(
-            "test", email="test@example.org"
-        )
         ident = self._make_identity(
-            user=user,
+            user=self.scenario.user,
             subject="123",
             last_used=timezone.now() - datetime.timedelta(days=1),
         )
@@ -281,25 +281,21 @@ class SalsaSignonViews(TestCase):
 
         # The user has been correctly authenticated
         self.assertTrue(response.wsgi_request.user.is_authenticated)
-        self.assertEqual(response.wsgi_request.user, user)
+        self.assertEqual(response.wsgi_request.user, self.scenario.user)
 
     def test_oidc_callback_login_twice(self) -> None:
-        """The OIDC callback logs in an existing bound identity."""
         self.assertEqual(Identity.objects.count(), 0)
 
-        user = get_user_model().objects.create_user(
-            "test", email="test@example.org"
-        )
         last_used = timezone.now() - datetime.timedelta(days=1)
         ident = self._make_identity(
-            user=user,
+            user=self.scenario.user,
             subject="123",
             last_used=last_used,
         )
 
         cb_url = reverse("signon:oidc_callback", kwargs={"name": ident.issuer})
 
-        self.client.force_login(user)
+        self.client.force_login(self.scenario.user)
 
         start_time = timezone.now()
         with self.setup_mock_auth(identity=ident, profile="profile_url"):
@@ -319,17 +315,55 @@ class SalsaSignonViews(TestCase):
         # Check that the Identity is attached to the session
         self.assertNotIn("signon_identity_salsa", self.client.session)
 
-        # The identity is activated
+        # The identity is not activated
         assert isinstance(response.wsgi_request, RequestSignonProtocol)
         self.assertEqual(response.wsgi_request.signon.identities, {})
+
+    def test_oidc_callback_login_user_inactive(self) -> None:
+        """Do not log in an inactive user."""
+        self.assertEqual(Identity.objects.count(), 0)
+
+        self.scenario.user.is_active = False
+        self.scenario.user.save()
+        last_used = timezone.now() - datetime.timedelta(days=1)
+        ident = self._make_identity(
+            user=self.scenario.user,
+            subject="123",
+            last_used=last_used,
+        )
+
+        cb_url = reverse("signon:oidc_callback", kwargs={"name": ident.issuer})
+
+        start_time = timezone.now()
+        with self.setup_mock_auth(identity=ident, profile="profile_url"):
+            response = self.client.get(cb_url)
+
+        self.assertEqual(response.status_code, 403)
+
+        # Check that no new Identity has been created
+        self.assertEqual(Identity.objects.count(), 1)
+
+        ident.refresh_from_db()
+        # last_used has been updated
+        self.assertGreaterEqual(ident.last_used, start_time)
+        # Claims in ident have been filled
+        self.assertEqual(ident.claims, {"profile": "profile_url", "sub": "123"})
+
+        # Check that the Identity is attached to the session
+        self.assertNotIn("signon_identity_salsa", self.client.session)
+
+        # The identity is not activated
+        assert isinstance(response.wsgi_request, RequestSignonProtocol)
+        self.assertEqual(response.wsgi_request.signon.identities, {})
+
+        # The user is still marked as inactive
+        self.scenario.user.refresh_from_db()
+        self.assertFalse(self.scenario.user.is_active)
 
     def test_oidc_callback_bind(self) -> None:
         """The OIDC callback performs bind if requested."""
         self.assertEqual(Identity.objects.count(), 0)
 
-        user = get_user_model().objects.create_user(
-            "test", email="test@example.org"
-        )
         ident = self._make_identity(
             subject="123",
             last_used=timezone.now() - datetime.timedelta(days=1),
@@ -337,7 +371,7 @@ class SalsaSignonViews(TestCase):
 
         cb_url = reverse("signon:oidc_callback", kwargs={"name": ident.issuer})
 
-        self.client.force_login(user)
+        self.client.force_login(self.scenario.user)
 
         start_time = timezone.now()
         with self.setup_mock_auth(
@@ -356,9 +390,9 @@ class SalsaSignonViews(TestCase):
         # Claims in ident have been filled
         self.assertEqual(ident.claims, {"profile": "profile_url", "sub": "123"})
         # Identity has been bound
-        self.assertEqual(ident.user, user)
+        self.assertEqual(ident.user, self.scenario.user)
         # User is still logged in
-        self.assertEqual(response.wsgi_request.user, user)
+        self.assertEqual(response.wsgi_request.user, self.scenario.user)
 
         # Check that the Identity is attached to the session
         assert isinstance(response.wsgi_request, RequestSignonProtocol)
@@ -378,13 +412,33 @@ class SalsaSignonViews(TestCase):
         self.assertEqual(Identity.objects.count(), 0)
         self.assertFalse(response.wsgi_request.user.is_authenticated)
 
+    def test_oidc_callback_map_identity_to_user_failed(self) -> None:
+        """Test user interaction when activating an identity fails."""
+        ident = self._make_identity(
+            subject="123",
+            last_used=timezone.now() - datetime.timedelta(days=1),
+        )
+        cb_url = reverse("signon:oidc_callback", kwargs={"name": ident.issuer})
+        client = Client()
+        with (
+            self.setup_mock_auth(identity=ident, profile="profile_url"),
+            mock.patch(
+                "debusine.server.signon.signon.Signon.identity_create_user",
+                side_effect=MapIdentityFailed("test message"),
+            ),
+        ):
+            response = client.get(cb_url)
+        self.assertRedirects(response, reverse("homepage:homepage"))
+        messages = [m.message for m in get_messages(response.wsgi_request)]
+        self.assertEqual(messages, ["Login failed: test message"])
+
+        ident.refresh_from_db()
+        self.assertIsNone(ident.user)
+
     def test_oidc_callback_redirect_url(self) -> None:
         """Test redirect after successful OIDC callback."""
-        user = get_user_model().objects.create_user(
-            "test", email="test@example.org"
-        )
         ident = self._make_identity(
-            user=user,
+            user=self.scenario.user,
             subject="123",
             last_used=timezone.now() - datetime.timedelta(days=1),
         )
@@ -422,10 +476,7 @@ class SalsaSignonViews(TestCase):
 
     def test_bindidentity(self) -> None:
         """Bind identity redirects correctly."""
-        user = get_user_model().objects.create_user(
-            "test", email="test@example.org"
-        )
-        self.client.force_login(user)
+        self.client.force_login(self.scenario.user)
         session = self.client.session
         response = self.client.get(
             reverse("signon:bind_identity", kwargs={"name": "salsa"})
@@ -450,10 +501,7 @@ class SalsaSignonViews(TestCase):
 
     def test_bindidentity_wrong_provider(self) -> None:
         """Bind identity fails for a nonexisting provider."""
-        user = get_user_model().objects.create_user(
-            "test", email="test@example.org"
-        )
-        self.client.force_login(user)
+        self.client.force_login(self.scenario.user)
         response = self.client.get(
             reverse("signon:bind_identity", kwargs={"name": "wrong"})
         )

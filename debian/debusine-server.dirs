@@ -1,2 +1,3 @@
 /var/cache/debusine/server
 /var/log/debusine/server
+/etc/debusine/server/templates

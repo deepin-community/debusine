@@ -1,4 +1,4 @@
-.. _collection-workflow-internal:
+.. collection:: debusine:workflow-internal
 
 Category ``debusine:workflow-internal``
 ---------------------------------------

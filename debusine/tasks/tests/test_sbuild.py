@@ -37,7 +37,11 @@ from debusine.client.debusine import Debusine
 from debusine.client.models import ArtifactResponse, RemoteArtifact
 from debusine.tasks import Sbuild, TaskConfigError
 from debusine.tasks.executors import ExecutorInterface
-from debusine.tasks.models import SbuildDynamicData, WorkerType
+from debusine.tasks.models import (
+    SbuildBuildComponent,
+    SbuildDynamicData,
+    WorkerType,
+)
 from debusine.tasks.server import ArtifactInfo
 from debusine.tasks.tests.helper_mixin import (
     ExternalTaskHelperMixin,
@@ -46,6 +50,7 @@ from debusine.tasks.tests.helper_mixin import (
 from debusine.test import TestCase
 from debusine.test.test_utils import (
     create_artifact_response,
+    create_remote_artifact,
     create_system_tarball_data,
 )
 
@@ -72,7 +77,9 @@ class SbuildTests(ExternalTaskHelperMixin[Sbuild], TestCase):
         If the worker is moved to a separate source package, this will
         need to be updated.
         """
+        super().setUp()
         self.configure_task(self.configuration("amd64", ["any"]))
+        self.addCleanup(self._cleanup_debug_log_files_directory)
 
     def configure_task(
         self,
@@ -98,10 +105,6 @@ class SbuildTests(ExternalTaskHelperMixin[Sbuild], TestCase):
         if self.task._debug_log_files_directory is not None:
             self.task._debug_log_files_directory.cleanup()
 
-    def tearDown(self) -> None:
-        """Cleanup at the end of a task."""
-        self._cleanup_debug_log_files_directory()
-
     def mock_cmdline(self, cmdline: list[str]) -> None:
         """Patch self.task to return cmdline."""
         patcher = mock.patch.object(self.task, "_cmdline")
@@ -122,7 +125,7 @@ class SbuildTests(ExternalTaskHelperMixin[Sbuild], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=sbuild",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -156,6 +159,18 @@ class SbuildTests(ExternalTaskHelperMixin[Sbuild], TestCase):
             ),
         )
 
+    def test_build_architecture(self) -> None:
+        cases: list[tuple[dict[str, Any], str]] = [
+            ({"host_architecture": "arm64"}, "arm64"),
+            ({"build_components": [SbuildBuildComponent.ALL]}, "all"),
+            ({"build_components": [SbuildBuildComponent.SOURCE]}, "source"),
+        ]
+
+        for override, expected in cases:
+            with self.subTest(override=override):
+                self.configure_task(override=override)
+                self.assertEqual(self.task._build_architecture, expected)
+
     def test_compute_dynamic_data_build_profiles_runtime_context(self) -> None:
         """
         Dynamic data includes build_profiles.
@@ -175,7 +190,7 @@ class SbuildTests(ExternalTaskHelperMixin[Sbuild], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=sbuild",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -207,7 +222,7 @@ class SbuildTests(ExternalTaskHelperMixin[Sbuild], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=sbuild",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -779,6 +794,45 @@ class SbuildTests(ExternalTaskHelperMixin[Sbuild], TestCase):
                     else:
                         self.assertNotIn(value[0], cmdline)
                         self.assertIn(value[1], cmdline)
+
+    def test_cmdline_default_build_dep_resolver(self) -> None:
+        """The default build_dep_resolver doesn't generate arguments."""
+        self.configure_task()
+        self.patch_executor(codename="jessie")
+        cmdline = self.task._cmdline()
+        for argument in cmdline:
+            self.assertFalse(argument.startswith("--build-dep-resolver="))
+
+    def test_cmdline_aspcud_build_dep_resolver(self) -> None:
+        """The aspcud build_dep_resolver generates arguments."""
+        self.configure_task(override={"build_dep_resolver": "aspcud"})
+        self.patch_executor(codename="jessie")
+        cmdline = self.task._cmdline()
+        self.assertIn("--build-dep-resolver=aspcud", cmdline)
+
+    def test_cmdline_null_aspcud_criteria(self) -> None:
+        """The default aspcud_criteria doesn't generate arguments."""
+        self.configure_task()
+        self.patch_executor(codename="jessie")
+        cmdline = self.task._cmdline()
+        for argument in cmdline:
+            self.assertFalse(argument.startswith("--aspcud-criteria="))
+
+    def test_cmdline_aspcud_criteria(self) -> None:
+        """Specifying aspcud_criteria generates arguments."""
+        self.configure_task(
+            override={
+                "aspcud_criteria": (
+                    "-count(changed,APT-Release:=/a=experimental/)"
+                ),
+            }
+        )
+        self.patch_executor(codename="jessie")
+        cmdline = self.task._cmdline()
+        self.assertIn(
+            "--aspcud-criteria=-count(changed,APT-Release:=/a=experimental/)",
+            cmdline,
+        )
 
     def test_cmdline_contains_extra_packages(self) -> None:
         """Ensure cmdline has the arguments --extra-package=."""
@@ -1357,6 +1411,7 @@ class SbuildTests(ExternalTaskHelperMixin[Sbuild], TestCase):
                         file=log_file,
                         source=dsc["Source"],
                         version=dsc["Version"],
+                        architecture=self.task._build_architecture,
                     ),
                     workspace=self.task.workspace_name,
                     work_request=None,
@@ -1402,6 +1457,7 @@ class SbuildTests(ExternalTaskHelperMixin[Sbuild], TestCase):
                         file=log_file,
                         source=dsc["Source"],
                         version=dsc["Version"],
+                        architecture=self.task._build_architecture,
                     ),
                     workspace=self.task.workspace_name,
                     work_request=self.task.work_request_id,
@@ -1443,6 +1499,7 @@ broken-packages: 4
                         file=log_file,
                         source=dsc["Source"],
                         version=dsc["Version"],
+                        architecture=self.task._build_architecture,
                         bd_uninstallable=DoseDistCheck.parse_obj(
                             {
                                 "output-version": "1.2",
@@ -1790,7 +1847,7 @@ broken-packages: 4
         file1.write_text("Hash will be unexpected")
 
         validation_failed_log_remote_id = 25
-        debusine_mock.upload_artifact.return_value = RemoteArtifact(
+        debusine_mock.upload_artifact.return_value = create_remote_artifact(
             id=validation_failed_log_remote_id, workspace="Test"
         )
 
@@ -1799,11 +1856,15 @@ broken-packages: 4
 
         source = dsc_data["Source"]
         version = dsc_data["Version"]
+        architecture = self.task._build_architecture
 
         calls = [
             call(
                 PackageBuildLog.create(
-                    file=build_file, source=source, version=version
+                    file=build_file,
+                    source=source,
+                    version=version,
+                    architecture=architecture,
                 ),
                 workspace=self.task.workspace_name,
                 work_request=None,
@@ -1909,7 +1970,7 @@ broken-packages: 4
         self.task._source_artifacts_ids = [source_artifact_id]
 
         upload_package_build_log_mocked = self.patch_upload_package_build_log()
-        upload_package_build_log_mocked.return_value = RemoteArtifact(
+        upload_package_build_log_mocked.return_value = create_remote_artifact(
             id=7, workspace="not-relevant"
         )
 
@@ -1948,6 +2009,7 @@ broken-packages: 4
             build_directory,
             dsc_data["Source"],
             dsc_data["Version"],
+            self.task._build_architecture,
             execution_success=False,
         )
 
@@ -2047,6 +2109,7 @@ broken-packages: 4
                     file=build_log_file,
                     source=dsc_data["Source"],
                     version=dsc_data["Version"],
+                    architecture=self.task._build_architecture,
                 ),
                 workspace=workspace_name,
                 work_request=self.task.work_request_id,
@@ -2110,10 +2173,10 @@ broken-packages: 4
         """  # noqa: D402
         workspace = "debian"
         artifacts = {
-            "build_log": RemoteArtifact(id=1, workspace=workspace),
-            "binary_upload": RemoteArtifact(id=2, workspace=workspace),
-            "binary_package": RemoteArtifact(id=3, workspace=workspace),
-            "signing_input": RemoteArtifact(id=4, workspace=workspace),
+            "build_log": create_remote_artifact(id=1, workspace=workspace),
+            "binary_upload": create_remote_artifact(id=2, workspace=workspace),
+            "binary_package": create_remote_artifact(id=3, workspace=workspace),
+            "signing_input": create_remote_artifact(id=4, workspace=workspace),
         }
         self.task._create_remote_binary_packages_relations(
             artifacts["build_log"],
@@ -2263,12 +2326,14 @@ broken-packages: 4
             sum(len(files) for files in expected_files) + len(expected_files),
         )
 
+        # coverage 7.6.0 complains that the zero-item case is uncovered,
+        # which is true, but this is a test helper method so we don't care.
         for call_args, files in zip(
             upload_artifact_mock.call_args_list,
             itertools.chain.from_iterable(
                 [[file] for file in files] + [files] for files in expected_files
             ),
-        ):
+        ):  # pragma: no cover
             expected_filenames = {file.name for file in files}
             self.assertEqual(call_args[0][0].files.keys(), expected_filenames)
 
@@ -2453,28 +2518,31 @@ broken-packages: 4
             ],
         )
 
-    def test_get_source_artifacts_ids(self) -> None:
-        """Test get_source_artifacts_ids."""
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.task.dynamic_data = None
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
         self.task.dynamic_data = SbuildDynamicData(
             input_source_artifact_id=1,
             environment_id=2,
             input_extra_binary_artifacts_ids=[],
         )
-        self.assertEqual(self.task.get_source_artifacts_ids(), [2, 1])
+        self.assertEqual(self.task.get_input_artifacts_ids(), [2, 1])
 
         self.task.dynamic_data = SbuildDynamicData(
             input_source_artifact_id=1,
             environment_id=None,
             input_extra_binary_artifacts_ids=[],
         )
-        self.assertEqual(self.task.get_source_artifacts_ids(), [1])
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1])
 
         self.task.dynamic_data = SbuildDynamicData(
             input_source_artifact_id=1,
             environment_id=2,
             input_extra_binary_artifacts_ids=[3, 4],
         )
-        self.assertEqual(self.task.get_source_artifacts_ids(), [2, 1, 3, 4])
+        self.assertEqual(self.task.get_input_artifacts_ids(), [2, 1, 3, 4])
 
     def test_label_subject_is_none(self) -> None:
         """Test get_label if dynamic_data.subject is None."""

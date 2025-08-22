@@ -7,12 +7,18 @@
 # modified, propagated, or distributed except according to the terms
 # contained in the LICENSE file.
 """Inheritable test scenarios."""
+
+import contextlib
 import textwrap
+from collections.abc import Generator
 from functools import cached_property
 from typing import TYPE_CHECKING
 
+from django.db.models import Model
+
 from debusine.artifacts.models import (
     ArtifactCategory,
+    BareDataCategory,
     CollectionCategory,
     DebianSourcePackage,
     DebianUpload,
@@ -34,7 +40,6 @@ from debusine.db.models import (
     Workspace,
 )
 from debusine.db.models.auth import Identity
-from debusine.server.collections.debian_suite import DebianSuiteManager
 from debusine.tasks import DebDiff
 from debusine.tasks.models import WorkerType
 
@@ -110,6 +115,14 @@ class DefaultScopeUser(Scenario):
         """Return the group of scope owners."""
         return self.playground.create_group_role(self.scope, Scope.Roles.OWNER)
 
+    @contextlib.contextmanager
+    def assign_role(
+        self, resource: Model, *roles: str
+    ) -> Generator[None, None, None]:
+        """Temporarily assign roles to the scenario user on the resource."""
+        with self.playground.assign_role(resource, self.user, *roles):
+            yield
+
 
 class DefaultScopeUserAPI(DefaultScopeUser):
     """DefaultScopeUser, plus a user token."""
@@ -167,6 +180,7 @@ class UIPlayground(DefaultContext):
     source_dpkg: Artifact
     source_udev: Artifact
     template_sbuild: WorkflowTemplate
+    template_noop: WorkflowTemplate
     worker_pool: WorkerPool
     worker_static: Worker
     worker_celery: Worker
@@ -245,10 +259,25 @@ class UIPlayground(DefaultContext):
                 "release_fields": {
                     "Suite": "stable",
                     "Codename": "bookworm",
-                    "Architectures": "all amd64 arm64 armel armhf i386"
-                    " mips64el mipsel ppc64el s390x",
-                    "Components": "main contrib non-free-firmware non-free",
                 },
+                "components": [
+                    "main",
+                    "contrib",
+                    "non-free-firmware",
+                    "non-free",
+                ],
+                "architectures": [
+                    "all",
+                    "amd64",
+                    "arm64",
+                    "armel",
+                    "armhf",
+                    "i386",
+                    "mips64el",
+                    "mipsel",
+                    "ppc64el",
+                    "s390x",
+                ],
             },
         )
 
@@ -265,7 +294,10 @@ class UIPlayground(DefaultContext):
             name="hello", version="1.0-1", create_files=True
         )
         self.source_dpkg = self.playground.create_source_artifact(
-            name="dpkg", version="1.21.22", create_files=True
+            name="dpkg",
+            binaries=["dpkg", "dpkg-doc"],
+            version="1.21.22",
+            create_files=True,
         )
         self.source_udev = self.playground.create_source_artifact(
             name="udev", version="252.26-1~deb12u2", create_files=True
@@ -282,6 +314,14 @@ class UIPlayground(DefaultContext):
         self.add_results_to_suite(wr)
         wr = self.playground.simulate_package_build(
             self.source_dpkg, architecture="armhf", worker=self.worker_static
+        )
+        self.add_results_to_suite(wr)
+        wr = self.playground.simulate_package_build(
+            self.source_dpkg,
+            binary_name="dpkg-doc",
+            architecture="all",
+            host_architecture="amd64",
+            worker=self.worker_static,
         )
         self.add_results_to_suite(wr)
 
@@ -406,6 +446,81 @@ class UIPlayground(DefaultContext):
             type=ArtifactRelation.Relations.RELATES_TO,
         )
 
+        # Create a variety of workflows
+
+        self.template_noop = playground.create_workflow_template(
+            name="Dummy",
+            task_name="noop",
+        )
+
+        # 3 completed workflow
+        for i in range(3):
+            w = self.playground.create_workflow(task_name=self.template_noop)
+            w.mark_running()
+            w.mark_completed(WorkRequest.Results.SUCCESS)
+
+        # 2 running workflows
+        for i in range(2):
+            w = self.playground.create_workflow(
+                task_name=self.template_noop,
+            )
+            w.mark_running()
+
+        # 1 needs input workflow
+        workflow_needs_input = self.playground.create_workflow(
+            task_name=self.template_noop,
+        )
+        workflow_needs_input.mark_running()
+        workflow_needs_input.workflow_runtime_status = (
+            WorkRequest.RuntimeStatuses.NEEDS_INPUT
+        )
+        workflow_needs_input.save()
+
+        # Create and populate the default task-configuration collection
+        try:
+            task_config_collection = self.workspace.collections.get(
+                name="default", category=CollectionCategory.TASK_CONFIGURATION
+            )
+        except Collection.DoesNotExist:
+            task_config_collection = self.playground.create_collection(
+                "default",
+                CollectionCategory.TASK_CONFIGURATION,
+                workspace=self.workspace,
+            )
+        task_config_collection.manager.add_bare_data(
+            BareDataCategory.TASK_CONFIGURATION,
+            user=self.user,
+            data={
+                "template": "reduce-parallelism",
+                "override_values": {"build_options": "parallel=2"},
+                "comment": "reduce parallelism to avoid crashing workers",
+            },
+        )
+        task_config_collection.manager.add_bare_data(
+            BareDataCategory.TASK_CONFIGURATION,
+            user=self.user,
+            data={
+                "task_type": "Worker",
+                "task_name": "sbuild",
+                "subject": "openjdk-17",
+                "use_templates": ["reduce-parallelism"],
+                "comment": "reduce parallelism for openjdk-17",
+            },
+        )
+        task_config_collection.manager.add_bare_data(
+            BareDataCategory.TASK_CONFIGURATION,
+            user=self.user,
+            data={
+                "task_type": "Workflow",
+                "task_name": "debian_pipeline",
+                "subject": "u-boot",
+                "default_values": {
+                    "architectures_allowlist": ["arm64", "armhf"],
+                },
+                "comment": "only build on ARM by default",
+            },
+        )
+
     def add_results_to_suite(
         self,
         work_request: WorkRequest,
@@ -421,24 +536,28 @@ class UIPlayground(DefaultContext):
             pk=work_request.task_data["input"]["source_artifact"]
         )
 
-        suite_manager = DebianSuiteManager(suite)
-
-        if not CollectionItem.active_objects.filter(
-            parent_collection=suite, artifact=source
-        ).exists():
-            suite_manager.add_source_package(
-                source, user=self.user, component="main", section="devel"
+        if (
+            not CollectionItem.objects.active()
+            .filter(parent_collection=suite, artifact=source)
+            .exists()
+        ):
+            suite.manager.add_artifact(
+                source,
+                user=self.user,
+                variables={"component": "main", "section": "devel"},
             )
         for binary in Artifact.objects.filter(
             created_by_work_request=work_request,
             category=ArtifactCategory.BINARY_PACKAGE,
         ):
-            suite_manager.add_binary_package(
+            suite.manager.add_artifact(
                 binary,
                 user=self.user,
-                component="main",
-                section="devel",
-                priority="optional",
+                variables={
+                    "component": "main",
+                    "section": "devel",
+                    "priority": "optional",
+                },
             )
 
     def simulate_sbuild_workflow(

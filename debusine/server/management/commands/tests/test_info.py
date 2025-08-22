@@ -25,6 +25,7 @@ class InfoTests(TestCase):
     def test_info_defaults(self) -> None:
         """Info output with no overrides."""
         fqdn = settings.DEBUSINE_FQDN
+        deb_fqdn = settings.DEBUSINE_DEBIAN_ARCHIVE_FQDN
 
         with (
             mock.patch(
@@ -50,8 +51,8 @@ class InfoTests(TestCase):
         # The test runner adds 'testserver' therefore editing the setting from
         # its autodetected value
         self.assertIn(
-            f" * ALLOWED_HOSTS = [{fqdn!r}, 'localhost', '127.0.0.1', "
-            "'testserver']",
+            f" * ALLOWED_HOSTS = [{fqdn!r}, {deb_fqdn!r}, 'localhost', "
+            f"'127.0.0.1', 'testserver']",
             stdout,
         )
         self.assertIn(

@@ -6,17 +6,12 @@ Files: *
 Copyright: 2019-2025 Debusine developers
 License: GPL-3.0+
 
-Files: bin/debefivm-create
-       bin/mini-ukify
-Copyright: 2023-2024 Helmut Grohne <helmut@subdivi.de>
-License: Expat
-
 Files: debian/*
 Copyright: 2022 Raphaël Hertzog <raphael@freexian.com>
 License: GPL-3.0+
 
-Files: debusine/web/static/web/vendor/bootstrap/*
-Copyright: 2011-2023 The Bootstrap Authors (https://github.com/twbs/bootstrap/graphs/contributors)
+Files: debusine/web/static/web/vendor/bootstrap-icons/*
+Copyright: 2019-2023 The Bootstrap Authors (https://github.com/twbs/icons/graphs/contributors)
 License: Expat
 
 Files: debusine/web/static/web/css/debusine-code-highlight.css

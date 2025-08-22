@@ -38,20 +38,24 @@ except ImportError:
 import requests
 import responses
 
-from debusine.artifacts import WorkRequestDebugLogs
+from debusine.artifacts import LocalArtifact, Upload, WorkRequestDebugLogs
 from debusine.artifacts.models import (
     ArtifactCategory,
     CollectionCategory,
+    DebianUpload,
+    DebusineTaskConfiguration,
     EmptyArtifactData,
+    TaskTypes,
 )
 from debusine.assets import AssetCategory, KeyPurpose, SigningKeyData
-from debusine.client.debusine import Debusine
+from debusine.client.debusine import Debusine, serialize_local_artifact
 from debusine.client.models import (
     ArtifactResponse,
     AssetPermissionCheckResponse,
     AssetResponse,
     AssetsResponse,
     CreateWorkflowRequest,
+    FileRequest,
     FileResponse,
     FilesResponseType,
     LookupChildType,
@@ -62,12 +66,20 @@ from debusine.client.models import (
     RelationResponse,
     RelationType,
     RelationsResponse,
-    RemoteArtifact,
     StrMaxLength255,
+    TaskConfigurationCollection,
+    TaskConfigurationCollectionUpdateResults,
     WorkRequestExternalDebsignRequest,
     WorkRequestRequest,
     WorkflowTemplateRequest,
+    WorkspaceInheritanceChain,
+    WorkspaceInheritanceChainElement,
     model_to_json_serializable_dict,
+)
+from debusine.client.task_configuration import (
+    InvalidRepository,
+    ItemInFile,
+    LocalTaskConfigurationRepository,
 )
 from debusine.client.tests import server
 from debusine.client.tests.server import DebusineAioHTTPTestCase
@@ -76,9 +88,187 @@ from debusine.test import TestCase
 from debusine.test.test_utils import (
     create_artifact_response,
     create_listing_response,
+    create_remote_artifact,
     create_work_request_response,
     create_workflow_template_response,
 )
+
+
+class SerializeLocalArtifactTests(TestCase):
+    """Tests for ``serialize_local_artifact``."""
+
+    def setUp(self) -> None:
+        """Set up test."""  # noqa: D202
+        super().setUp()
+
+        # Register a custom artifact category, taking care that it doesn't
+        # pollute other tests.
+        class TestArtifact(LocalArtifact[EmptyArtifactData]):
+            """Custom artifact for testing."""
+
+            _category = ArtifactCategory.TEST
+
+        def unregister_test_artifact() -> None:
+            del LocalArtifact._local_artifacts_category_to_class[
+                ArtifactCategory.TEST
+            ]
+
+        self.addCleanup(unregister_test_artifact)
+
+        self.category = TestArtifact._category
+        self.data = EmptyArtifactData()
+
+        self.local_artifact = TestArtifact(
+            category=self.category, data=self.data
+        )
+
+    def test_structure(self) -> None:
+        """``serialize_local_artifact`` returns the expected dictionary."""
+        workspace = "workspace"
+        self.assertEqual(
+            serialize_local_artifact(self.local_artifact, workspace=workspace),
+            {
+                "category": self.category,
+                "data": self.data,
+                "expire_at": None,
+                "files": {},
+                "workspace": workspace,
+                "work_request": None,
+            },
+        )
+
+    def test_guesses_content_type(self) -> None:
+        """``serialize_local_artifact`` can guess Content-Type."""
+        expected_files: list[tuple[Path, str]] = []
+        for suffix, content_type in (
+            (".buildinfo", "text/plain; charset=utf-8"),
+            (".dsc", "text/plain; charset=utf-8"),
+            (".changes", "text/plain; charset=utf-8"),
+            (".md", "text/markdown; charset=utf-8"),
+        ):
+            file = self.create_temporary_file(suffix=suffix)
+            self.local_artifact.add_local_file(file)
+            expected_files.append((file, content_type))
+        for contents, content_type in (
+            (b"text\n", "text/plain; charset=us-ascii"),
+            (
+                Path(__file__).read_bytes(),
+                "text/x-script.python; charset=utf-8",
+            ),
+            (b"\0\1\2\3\4\5\6\7", "application/octet-stream; charset=binary"),
+        ):
+            file = self.create_temporary_file(contents=contents)
+            self.local_artifact.add_local_file(file)
+            expected_files.append((file, content_type))
+
+        serialized = serialize_local_artifact(
+            self.local_artifact, workspace=None
+        )
+
+        self.assertEqual(
+            serialized["files"],
+            {
+                file.name: FileRequest.create_from(
+                    file, content_type=content_type
+                )
+                for file, content_type in expected_files
+            },
+        )
+
+    def test_set_content_type(self) -> None:
+        """``serialize_local_artifact`` accepts an explicit Content-Type."""
+        file = self.create_temporary_file()
+        self.local_artifact.add_local_file(file, content_type="text/x-foo")
+
+        serialized = serialize_local_artifact(
+            self.local_artifact, workspace=None
+        )
+
+        self.assertEqual(
+            serialized["files"],
+            {
+                file.name: FileRequest.create_from(
+                    file, content_type="text/x-foo"
+                )
+            },
+        )
+
+    def test_no_workspace(self) -> None:
+        """``serialize_local_artifact`` returns dictionary without workspace."""
+        self.assertNotIn(
+            "workspace",
+            serialize_local_artifact(self.local_artifact, workspace=None),
+        )
+
+    def test_validate_model_on_serialization(self) -> None:
+        """``serialize_local_artifact`` raises ValueError: invalid artifact."""
+        file = self.create_temporary_file(suffix=".changes")
+        artifact = Upload(
+            files={file.name: file},
+            category=Upload._category,
+            data=DebianUpload(
+                type="dpkg",
+                changes_fields={
+                    "Architecture": "amd64",
+                    "Files": [
+                        {"name": "hello_1.0_amd64.deb"},
+                    ],
+                },
+            ),
+        )
+
+        # Remove the only file. The "artifact" object will not validate
+        artifact.files.popitem()
+
+        with self.assertRaisesRegex(ValueError, "^Model validation failed:"):
+            serialize_local_artifact(artifact, workspace="System")
+
+    def test_with_work_request(self) -> None:
+        """``serialize_local_artifact`` includes ``work_request``."""
+        workspace = "workspace"
+        work_request = 5
+
+        serialized = serialize_local_artifact(
+            self.local_artifact, workspace=workspace, work_request=work_request
+        )
+
+        self.assertEqual(serialized["work_request"], work_request)
+
+    def test_remote_files(self) -> None:
+        """``serialize_local_artifact`` handles remote files."""
+        changes_file = self.create_temporary_file(suffix=".changes")
+        tar_file = self.create_temporary_file(suffix=".tar.xz")
+        self.local_artifact.add_local_file(changes_file)
+        self.local_artifact.add_remote_file(
+            tar_file.name, FileRequest.create_from(tar_file)
+        )
+
+        serialized = serialize_local_artifact(
+            self.local_artifact, workspace=None
+        )
+
+        self.assertEqual(
+            serialized["files"],
+            {
+                file.name: FileRequest.create_from(
+                    file, content_type=content_type
+                )
+                for file, content_type in (
+                    (changes_file, "text/plain; charset=utf-8"),
+                    (tar_file, None),
+                )
+            },
+        )
+
+    def test_with_expire_at(self) -> None:
+        """``serialize_local_artifact`` includes ``expire_at``."""
+        expire_at = datetime.datetime.now() + datetime.timedelta(days=1)
+
+        serialized = serialize_local_artifact(
+            self.local_artifact, workspace="workspace", expire_at=expire_at
+        )
+
+        self.assertEqual(serialized["expire_at"], expire_at.isoformat())
 
 
 class DebusineTests(TestCase):
@@ -86,6 +276,7 @@ class DebusineTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize tests."""
+        super().setUp()
         self.api_url = "https://debusine.debian.org/api"
 
         self.token = "token"
@@ -164,12 +355,30 @@ class DebusineTests(TestCase):
 
         responses.add(
             responses.POST,
-            f"{self.debusine.api_url}/work-request/{work_request_id}" "/retry/",
+            f"{self.debusine.api_url}/work-request/{work_request_id}/retry/",
             json=model_to_json_serializable_dict(work_request_response),
         )
 
         self.assertEqual(
             self.debusine.work_request_retry(work_request_id),
+            work_request_response,
+        )
+        self.assert_token_key_included_in_all_requests("token")
+
+    @responses.activate
+    def test_work_request_abort(self) -> None:
+        """Debusine.work_request_abort triggers an abort."""
+        work_request_id = 10
+        work_request_response = create_work_request_response(id=work_request_id)
+
+        responses.add(
+            responses.POST,
+            f"{self.debusine.api_url}/work-request/{work_request_id}/abort/",
+            json=model_to_json_serializable_dict(work_request_response),
+        )
+
+        self.assertEqual(
+            self.debusine.work_request_abort(work_request_id),
             work_request_response,
         )
         self.assert_token_key_included_in_all_requests("token")
@@ -494,7 +703,7 @@ class DebusineTests(TestCase):
         workspace = "test"
         download_artifact_tar_gz_url = "https://example.com/path/"
         category = "Testing"
-        created_at = datetime.datetime.utcnow()
+        created_at = datetime.datetime.now(datetime.UTC)
         data: dict[str, Any] = {}
 
         get_artifact_response = create_artifact_response(
@@ -541,7 +750,7 @@ class DebusineTests(TestCase):
             id=2,
             workspace=workspace,
             category="Testing",
-            created_at=datetime.datetime.utcnow(),
+            created_at=datetime.datetime.now(datetime.UTC),
             data={},
             files_to_upload=list(files.keys()),
         )
@@ -573,7 +782,8 @@ class DebusineTests(TestCase):
         assert responses.calls[0].request.body is not None
         self.assertEqual(
             json.loads(responses.calls[0].request.body),
-            artifact_to_post.serialize_for_create_artifact(
+            serialize_local_artifact(
+                artifact_to_post,
                 workspace=workspace,
                 work_request=work_request,
                 expire_at=expire_at,
@@ -671,6 +881,7 @@ class DebusineTests(TestCase):
             "POST",
             f"{self.debusine.api_url}/artifact/",
             create_artifact_response(
+                base_url="https://debusine.debian.org/",
                 id=remote_id,
                 workspace=workspace,
                 files_to_upload=[filename],
@@ -688,7 +899,11 @@ class DebusineTests(TestCase):
         )
         self.assertEqual(
             remote_artifact,
-            RemoteArtifact(id=remote_id, workspace=workspace),
+            create_remote_artifact(
+                base_url="https://debusine.debian.org/",
+                id=remote_id,
+                workspace=workspace,
+            ),
         )
 
         self.assertEqual(len(responses.calls), 2)
@@ -1399,6 +1614,175 @@ class DebusineTests(TestCase):
         self.assertEqual(r.content, body)
         self.assertEqual(r.request.headers["Token"], self.debusine.token)
 
+    @responses.activate
+    def test_fetch_task_configuration_collection_empty(self) -> None:
+        """Querying /task-configuration/ returns an empty collection."""
+        responses.add(
+            responses.GET,
+            f"{self.debusine.api_url}/task-configuration/System/default/",
+            json={
+                "collection": {"id": 1, "name": "default", "data": {}},
+                "items": [],
+            },
+        )
+        repository = self.debusine.fetch_task_configuration_collection(
+            workspace="System", name="default"
+        )
+        self.assertEqual(repository.entries, {})
+
+    @responses.activate
+    def test_fetch_task_configuration_collection(self) -> None:
+        config = DebusineTaskConfiguration(
+            task_type=TaskTypes.WORKER, task_name="noop", comment="noop"
+        )
+        template = DebusineTaskConfiguration(
+            template="template", comment="template"
+        )
+        responses.add(
+            responses.GET,
+            f"{self.debusine.api_url}/task-configuration/System/default/",
+            json={
+                "collection": {"id": 1, "name": "default", "data": {}},
+                "items": [config.dict(), template.dict()],
+            },
+        )
+        repository = self.debusine.fetch_task_configuration_collection(
+            workspace="System", name="default"
+        )
+        self.assertCountEqual(repository.entries.values(), [config, template])
+
+    @responses.activate
+    def test_push_task_configuration_collection_without_manifest(self) -> None:
+        repo = LocalTaskConfigurationRepository(
+            self.create_temporary_directory()
+        )
+        with self.assertRaisesRegex(
+            InvalidRepository, "repository has no manifest"
+        ):
+            self.debusine.push_task_configuration_collection(
+                repo=repo, dry_run=False
+            )
+
+    @responses.activate
+    def test_push_task_configuration_collection_empty(self) -> None:
+        result = TaskConfigurationCollectionUpdateResults(
+            added=1, removed=2, updated=3, unchanged=5
+        )
+        responses.add(
+            responses.POST,
+            f"{self.debusine.api_url}/task-configuration/System/default/",
+            json=result.dict(),
+        )
+        repo = LocalTaskConfigurationRepository(
+            self.create_temporary_directory()
+        )
+        repo.manifest = repo.Manifest(
+            workspace="System",
+            collection=TaskConfigurationCollection(
+                id=1, name="default", data={}
+            ),
+        )
+        result = self.debusine.push_task_configuration_collection(
+            repo=repo, dry_run=False
+        )
+        self.assertIsInstance(result, TaskConfigurationCollectionUpdateResults)
+        self.assertEqual(result.added, 1)
+        self.assertEqual(result.removed, 2)
+        self.assertEqual(result.updated, 3)
+
+    @responses.activate
+    def test_push_task_configuration_collection(self) -> None:
+        config = DebusineTaskConfiguration(
+            task_type=TaskTypes.WORKER, task_name="noop", comment="noop"
+        )
+        template = DebusineTaskConfiguration(
+            template="template", comment="template"
+        )
+        result = TaskConfigurationCollectionUpdateResults(
+            added=2, removed=3, updated=4, unchanged=5
+        )
+        responses.add(
+            responses.POST,
+            f"{self.debusine.api_url}/task-configuration/System/default/",
+            json=result.dict(),
+        )
+        repo = LocalTaskConfigurationRepository(
+            self.create_temporary_directory()
+        )
+        repo.manifest = repo.Manifest(
+            workspace="System",
+            collection=TaskConfigurationCollection(
+                id=1, name="default", data={}
+            ),
+        )
+        repo.track(ItemInFile(config, Path("config.yaml")))
+        repo.track(ItemInFile(template, Path("template.yaml")))
+        result = self.debusine.push_task_configuration_collection(
+            repo=repo, dry_run=False
+        )
+        self.assertIsInstance(result, TaskConfigurationCollectionUpdateResults)
+        self.assertEqual(result.added, 2)
+        self.assertEqual(result.removed, 3)
+        self.assertEqual(result.updated, 4)
+
+    @responses.activate
+    def test_push_task_configuration_dry_run(self) -> None:
+        url = f"{self.debusine.api_url}/task-configuration/System/default/"
+        result = TaskConfigurationCollectionUpdateResults(
+            added=2, removed=3, updated=4, unchanged=5
+        )
+        responses.add(responses.POST, url, json=result.dict())
+        repo = LocalTaskConfigurationRepository(
+            self.create_temporary_directory()
+        )
+        repo.manifest = repo.Manifest(
+            workspace="System",
+            collection=TaskConfigurationCollection(
+                id=1, name="default", data={}
+            ),
+        )
+
+        self.debusine.push_task_configuration_collection(
+            repo=repo, dry_run=False
+        )
+        self.debusine.push_task_configuration_collection(
+            repo=repo, dry_run=True
+        )
+
+        responses.assert_call_count(url, 2)
+        assert responses.calls[0].request.body is not None
+        self.assertFalse(json.loads(responses.calls[0].request.body)["dry_run"])
+        assert responses.calls[1].request.body is not None
+        self.assertTrue(json.loads(responses.calls[1].request.body)["dry_run"])
+
+    @responses.activate
+    def test_get_workspace_inheritance(self) -> None:
+        url = f"{self.debusine.api_url}/workspace/System/inheritance/"
+        chain = [
+            WorkspaceInheritanceChainElement(
+                id=3, scope="scope1", workspace="workspace1"
+            ),
+            WorkspaceInheritanceChainElement(
+                id=4, scope="scope2", workspace="workspace2"
+            ),
+        ]
+        result = WorkspaceInheritanceChain(chain=chain)
+        responses.add(responses.GET, url, json=result.dict())
+        res = self.debusine.get_workspace_inheritance("System")
+        self.assertEqual(res.chain, chain)
+        responses.assert_call_count(url, 1)
+
+    @responses.activate
+    def test_set_workspace_inheritance(self) -> None:
+        url = f"{self.debusine.api_url}/workspace/System/inheritance/"
+        result = WorkspaceInheritanceChain(chain=[])
+        responses.add(responses.POST, url, json=result.dict())
+        res = self.debusine.set_workspace_inheritance(
+            "System", chain=WorkspaceInheritanceChain(chain=[])
+        )
+        self.assertEqual(res.chain, [])
+        responses.assert_call_count(url, 1)
+
 
 class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
     """
@@ -1506,7 +1890,7 @@ class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
         await self.debusine._wait_and_execute(
             url=url,
             last_completed_at=None,
-            command=modified_command,
+            command=[modified_command],
             working_directory=working_directory(command),
         )
 
@@ -1520,7 +1904,7 @@ class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
             )
 
             cmd = [
-                str(modified_command),
+                modified_command,
                 str(server.DebusineAioHTTPTestCase.WORK_REQUEST_ID + number),
                 str(server.DebusineAioHTTPTestCase.WORK_REQUEST_RESULT),
             ]
@@ -1550,7 +1934,7 @@ class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
         await self.debusine._wait_and_execute(
             url=url,
             last_completed_at=last_completed_at,
-            command=str(command),
+            command=[command],
             working_directory=Path.cwd(),
         )
 
@@ -1606,7 +1990,7 @@ class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
         with self.assertRaises(StopAsyncIteration):
             await self.debusine._wait_and_execute(
                 url=self.on_complete_url(),
-                command="/bin/echo",
+                command=["/bin/echo"],
                 working_directory=Path.cwd(),
                 last_completed_at=None,
             )
@@ -1621,7 +2005,7 @@ class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
         with self.assertRaises(FileNotFoundError):
             await self.debusine._wait_and_execute(
                 url=self.on_complete_url(),
-                command="file-does-not-exist",
+                command=["file-does-not-exist"],
                 working_directory=Path.cwd(),
                 last_completed_at=None,
             )
@@ -1659,7 +2043,7 @@ class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
 
     def test_on_work_request_completed(self) -> None:
         """on_work_request_completed call _wait_and_executed. No workspaces."""
-        command = "this-is-the-command"
+        command = ["this-is-the-command"]
 
         wait_and_executed_mocked = self.patch_wait_and_execute()
 
@@ -1682,7 +2066,7 @@ class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
     def test_on_work_request_completed_with_workspaces(self) -> None:
         """on_work_request_completed call _wait_and_execute with workspaces."""
         workspace = "lts"
-        command = "this-is-the-command"
+        command = ["this-is-the-command"]
 
         wait_and_executed_mocked = self.patch_wait_and_execute()
 
@@ -1708,8 +2092,8 @@ class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
 
         The file in last_completed_at existed and its contents is read.
         """
-        command = "this-is-the-command"
-        last_completed_at = datetime.datetime.utcnow().isoformat()
+        command = ["this-is-the-command"]
+        last_completed_at = datetime.datetime.now(datetime.UTC).isoformat()
 
         last_completed_at_file = self.create_temporary_file(
             contents=json.dumps(
@@ -1747,7 +2131,7 @@ class DebusineAsyncTests(server.DebusineAioHTTPTestCase, TestCase):
         last_completed_at_file = self.create_temporary_file()
         last_completed_at_file.unlink()
 
-        command = "this-is-the-command"
+        command = ["this-is-the-command"]
 
         wait_and_executed_mocked = self.patch_wait_and_execute()
 

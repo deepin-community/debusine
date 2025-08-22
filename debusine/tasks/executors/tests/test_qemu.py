@@ -30,6 +30,7 @@ class QemuExecutorTests(ExternalTaskHelperMixin[Noop], TestCase):
 
     def setUp(self) -> None:
         """Mock the Debusine API for tests."""
+        super().setUp()
         self.debusine_api = MagicMock(spec=Debusine)
         self.image_artifact = self.mock_image_download(
             self.debusine_api, system_image=True

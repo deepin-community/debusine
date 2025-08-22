@@ -11,7 +11,15 @@
 
 from collections.abc import Callable
 from copy import copy
-from typing import Any, Never, NoReturn, TYPE_CHECKING, TypeAlias
+from typing import (
+    Any,
+    NamedTuple,
+    Never,
+    NoReturn,
+    TYPE_CHECKING,
+    TypeAlias,
+    TypeVar,
+)
 
 from django.conf import settings
 from django.db.models import QuerySet
@@ -25,10 +33,14 @@ except ImportError:
 from rest_framework import serializers
 from rest_framework.exceptions import ErrorDetail, ValidationError
 
-from debusine.artifacts.models import ArtifactCategory
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    DebusineTaskConfiguration,
+)
 from debusine.assets import AssetCategory, asset_data_model
 from debusine.client.models import (
     LookupChildType,
+    WorkspaceInheritanceChainElement,
     model_to_json_serializable_dict,
 )
 from debusine.db.context import context
@@ -56,6 +68,7 @@ from debusine.tasks.models import EventReactions, OutputData, WorkerType
 if TYPE_CHECKING:
     SerializerMixinBase: TypeAlias = serializers.Serializer[Any]
     SlugRelatedFieldBase = serializers.SlugRelatedField
+    FieldBase = serializers.Field
 else:
     SerializerMixinBase = object
 
@@ -65,6 +78,15 @@ else:
             return serializers.SlugRelatedField
 
     SlugRelatedFieldBase = _SlugRelatedFieldBase
+
+    # Field doesn't support generic types at run-time yet.
+    class _FieldBase:
+        def __class_getitem__(*args):
+            return serializers.Field
+
+    FieldBase = _FieldBase
+
+PydanticModel = TypeVar("PydanticModel", bound=pydantic.BaseModel)
 
 
 class DebusineSerializerMixin(SerializerMixinBase):
@@ -121,7 +143,9 @@ class WorkRequestSerializer(
 
     validation_error_title = "Cannot deserialize work request"
 
+    url = serializers.URLField(source="get_absolute_url", read_only=True)
     artifacts = serializers.SerializerMethodField("artifacts_for_work_request")
+    scope = serializers.CharField(source="workspace.scope.name", read_only=True)
     workspace = WorkspaceInCurrentScopeField(slug_field="name")
     workflow_data = serializers.JSONField(
         source="workflow_data_json", required=False
@@ -180,9 +204,11 @@ class WorkRequestSerializer(
         model = WorkRequest
         fields = [
             'id',
+            'url',
             'task_name',
             'created_at',
             'created_by',
+            'aborted_by',
             'started_at',
             'completed_at',
             'duration',
@@ -197,6 +223,7 @@ class WorkRequestSerializer(
             'status',
             'result',
             'artifacts',
+            'scope',
             'workspace',
         ]
 
@@ -249,7 +276,7 @@ class WorkRequestUnblockSerializer(
 
     notes = serializers.CharField(max_length=65536, required=False)
     action = serializers.ChoiceField(
-        choices=WorkRequestManualUnblockAction, required=False
+        choices=list(WorkRequestManualUnblockAction), required=False
     )
 
     def validate(self, data: Any) -> Any:
@@ -329,7 +356,7 @@ class WorkerRegisterSerializer(serializers.Serializer[Never]):
     token = serializers.CharField(max_length=64)
     fqdn = serializers.CharField(max_length=400)
     worker_type = serializers.ChoiceField(
-        choices=WorkerType, default=WorkerType.EXTERNAL
+        choices=list(WorkerType), default=WorkerType.EXTERNAL
     )
 
 
@@ -365,7 +392,7 @@ class OnWorkRequestCompleted(serializers.Serializer[Never]):
     text = serializers.CharField()
     work_request_id = serializers.IntegerField()
     completed_at = serializers.DateTimeField()
-    result = serializers.ChoiceField(choices=WorkRequest.Results)
+    result = serializers.ChoiceField(choices=list(WorkRequest.Results))
 
 
 class FileSerializer(serializers.Serializer[File]):
@@ -376,6 +403,7 @@ class FileSerializer(serializers.Serializer[File]):
         child=serializers.CharField(max_length=255)
     )
     type = serializers.ChoiceField(choices=("file",))
+    content_type = serializers.CharField(allow_null=True, required=False)
 
 
 class FileSerializerResponse(FileSerializer):
@@ -405,8 +433,11 @@ class ArtifactSerializer(
 class ArtifactSerializerResponse(serializers.ModelSerializer[Artifact]):
     """Serializer for returning the information of an Artifact."""
 
-    # Artifact's workspace
-    workspace = serializers.SerializerMethodField("_workspace_name")
+    url = serializers.URLField(source="get_absolute_url", read_only=True)
+
+    # Artifact's scope and workspace
+    scope = serializers.CharField(source="workspace.scope.name", read_only=True)
+    workspace = serializers.CharField(source="workspace.name", read_only=True)
 
     # Files with their hash and size
     files = serializers.SerializerMethodField("_files")
@@ -425,6 +456,8 @@ class ArtifactSerializerResponse(serializers.ModelSerializer[Artifact]):
         model = Artifact
         fields = [
             "id",
+            "url",
+            "scope",
             "workspace",
             "category",
             "data",
@@ -435,25 +468,13 @@ class ArtifactSerializerResponse(serializers.ModelSerializer[Artifact]):
             "files",
         ]
 
-    def _workspace_name(self, artifact: Artifact) -> str:
-        """
-        Return the workspace name.
-
-        By default the ModelSerializer return workspace id..
-        """
-        return artifact.workspace.name
-
     def _files_to_upload(self, artifact: Artifact) -> list[str]:
         """Return file paths from artifact that have not been uploaded yet."""
-        files_to_upload = []
-
-        for file_in_artifact in artifact.fileinartifact_set.all().order_by(
-            "path"
-        ):
-            if artifact.workspace.file_needs_upload(file_in_artifact.file):
-                files_to_upload.append(file_in_artifact.path)
-
-        return files_to_upload
+        return list(
+            artifact.fileinartifact_set.filter(complete=False)
+            .order_by("path")
+            .values_list("path", flat=True)
+        )
 
     def _files(self, artifact: Artifact) -> dict[str, dict[str, Any]]:
         """
@@ -474,6 +495,7 @@ class ArtifactSerializerResponse(serializers.ModelSerializer[Artifact]):
                     file.current_hash_algorithm: file.hash_digest.hex()
                 },
                 "url": self._base_download_url + file_in_artifact.path,
+                "content_type": file_in_artifact.content_type,
             }
             file_serialized = FileSerializerResponse(data=data)
             file_serialized.is_valid(raise_exception=True)
@@ -533,6 +555,7 @@ class AssetSerializer(DebusineSerializerMixin, serializers.Serializer[Asset]):
     id = serializers.IntegerField(required=False, read_only=True)
     created_at = serializers.DateTimeField(read_only=True)
     category = serializers.CharField(max_length=255)
+    scope = serializers.CharField(source="workspace.scope.name", read_only=True)
     workspace = WorkspaceInCurrentScopeField(slug_field="name")
     # Deliberately incompatible with Serializer.data.
     data = serializers.DictField()  # type: ignore[assignment]
@@ -603,7 +626,7 @@ class LookupExpectTypeChoiceField(serializers.ChoiceField):
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the field."""
-        super().__init__(choices=LookupChildType)
+        super().__init__(choices=list(LookupChildType))
 
     def to_internal_value(self, data: Any) -> str:
         """Accept values of `CollectionItemTypes` for compatibility."""
@@ -647,7 +670,7 @@ class LookupResponseSerializer(serializers.Serializer[LookupResult]):
 
     media_type = "application/json"
 
-    result_type = serializers.ChoiceField(choices=CollectionItem.Types)
+    result_type = serializers.ChoiceField(choices=list(CollectionItem.Types))
     collection_item: "serializers.PrimaryKeyRelatedField[CollectionItem]" = (
         serializers.PrimaryKeyRelatedField(read_only=True, allow_null=True)
     )
@@ -668,13 +691,17 @@ class WorkflowTemplateSerializer(
 
     media_type = "application/json"
 
+    url = serializers.URLField(source="get_absolute_url", read_only=True)
+    scope = serializers.CharField(source="workspace.scope.name", read_only=True)
     workspace = WorkspaceInCurrentScopeField(slug_field="name")
 
     class Meta:
         model = WorkflowTemplate
         fields = [
             "id",
+            "url",
             "name",
+            "scope",
             "workspace",
             "task_name",
             "task_data",
@@ -715,3 +742,157 @@ class CreateWorkflowRequestSerializer(
             "workspace",
             "task_data",
         ]
+
+
+class PydanticSerializer(serializers.BaseSerializer[PydanticModel]):
+    """Serialize pydantic models."""
+
+    pydantic_model: type[PydanticModel]
+
+    def to_representation(self, instance: PydanticModel) -> dict[str, Any]:
+        """Delegate representation to pydantic."""
+        return instance.dict()
+
+    def to_internal_value(self, data: Any) -> PydanticModel:
+        """Delegate validation to pydantic."""
+        return self.pydantic_model(**data)
+
+
+class DebusineTaskConfigurationSerializer(
+    DebusineSerializerMixin, PydanticSerializer[DebusineTaskConfiguration]
+):
+    """Serialize a DebusineTaskConfiguration item."""
+
+    pydantic_model = DebusineTaskConfiguration
+
+
+class TaskConfigurationCollectionSerializer(
+    DebusineSerializerMixin, serializers.ModelSerializer[Collection]
+):
+    """Serializer for a TaskConfiguration collection."""
+
+    validation_error_title = "Cannot deserialize task configuration collection"
+    media_type = "application/json"
+
+    id = serializers.IntegerField()
+
+    class Meta:
+        model = Collection
+        fields = ["id", "name", "data"]
+
+
+class TaskConfigurationCollectionContents(NamedTuple):
+    """Bundle together a TaskConfiguration collection and its items."""
+
+    collection: Collection
+    items: list[DebusineTaskConfiguration]
+
+
+class TaskConfigurationCollectionContentsSerializer(
+    DebusineSerializerMixin, serializers.Serializer[Never]
+):
+    """Serializer for the contents of a TaskConfiguration collection."""
+
+    validation_error_title = "Cannot deserialize task configuration collection"
+    media_type = "application/json"
+
+    collection = TaskConfigurationCollectionSerializer()
+    items = DebusineTaskConfigurationSerializer(many=True)
+
+
+class TaskConfigurationCollectionUpdateResultsSerializer(
+    DebusineSerializerMixin, serializers.Serializer[Never]
+):
+    """Serializer for the result information of a task configuration update."""
+
+    validation_error_title = (
+        "Cannot deserialize task configuration collection update results"
+    )
+
+    added = serializers.IntegerField()
+    updated = serializers.IntegerField()
+    removed = serializers.IntegerField()
+    unchanged = serializers.IntegerField()
+
+
+class WorkspaceChainItemField(
+    FieldBase[Workspace, dict[str, Any], dict[str, Any], Workspace]
+):
+    """Serializers for a Workspace in a workspace chain."""
+
+    def to_representation(self, value: Workspace) -> dict[str, Any]:
+        """Trivially serialize workspaces with IDs."""
+        res = WorkspaceInheritanceChainElement(
+            id=value.id,
+            scope=value.scope.name,
+            workspace=value.name,
+        )
+        return model_to_json_serializable_dict(res)
+
+    def _workspace_from_id(
+        self, el: WorkspaceInheritanceChainElement
+    ) -> Workspace:
+        assert el.id is not None
+
+        workspace_qs = Workspace.objects.can_display(
+            context.require_user()
+        ).select_related("scope")
+        try:
+            workspace = workspace_qs.get(pk=el.id)
+        except Workspace.DoesNotExist:
+            raise ValidationError(f"Workspace with id {el.id} does not exist")
+        if el.workspace is not None and workspace.name != el.workspace:
+            raise ValidationError(
+                f"Workspace with id {el.id} is not named {el.workspace!r}"
+            )
+        if el.scope is not None and workspace.scope.name != el.scope:
+            raise ValidationError(
+                f"Workspace with id {el.id} is not in scope {el.scope!r}"
+            )
+        return workspace
+
+    def _workspace_from_scope_workspace(
+        self, el: WorkspaceInheritanceChainElement
+    ) -> Workspace:
+        assert el.workspace is not None
+
+        workspace_qs = Workspace.objects.can_display(
+            context.require_user()
+        ).select_related("scope")
+
+        if el.scope is None:
+            el.scope = context.require_scope().name
+
+        try:
+            return workspace_qs.get(scope__name=el.scope, name=el.workspace)
+        except Workspace.DoesNotExist:
+            raise ValidationError(
+                f"Workspace {el.workspace!r}"
+                f" does not exist in scope {el.scope!r}"
+            )
+
+    def to_internal_value(self, data: Any) -> Workspace:
+        """Parse a workspace from IDs or ``scope/name`` strings."""
+        if not isinstance(data, dict):
+            raise ValidationError("Workspace indicator should be a dict")
+
+        try:
+            parsed = WorkspaceInheritanceChainElement(**data)
+        except ValueError as e:
+            raise ValidationError(str(e))
+
+        if parsed.id is not None:
+            return self._workspace_from_id(parsed)
+        else:
+            return self._workspace_from_scope_workspace(parsed)
+
+
+class WorkspaceChainSerializer(serializers.Serializer[Never]):
+    """Serializer for a workspace chain."""
+
+    chain = serializers.ListField(
+        # Set an arbitrary high value to prevent a misguided API call impact
+        # server performance
+        child=WorkspaceChainItemField(),
+        max_length=100,
+    )

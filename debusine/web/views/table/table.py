@@ -147,6 +147,7 @@ class Table(Generic[M]):
         *,
         prefix: str = "",
         default_order: str | None = None,
+        preview: bool = False,
     ) -> None:
         """
         Build the table definition.
@@ -160,6 +161,9 @@ class Table(Generic[M]):
                                Prefix with '-' to make it descending. Use
                                ``colname.sortname`` to specify the sort option
                                by name.
+        :param preview: if True, activate preview mode: filtering and ordering
+                        are disabled, only the first page is shown, and the
+                        page navigation is replaced by a small summary
         """
         #: Current request
         self.request = request
@@ -175,6 +179,16 @@ class Table(Generic[M]):
 
         #: Query string argument prefix
         self.prefix = f"{prefix}-" if prefix else ""
+
+        #: ID for the table in the DOM
+        #: It also serves as a base for DOM IDs for all table elements
+        self.dom_id = f"table-{self.prefix}"
+
+        #: URL with the full table if we are a preview
+        # TODO: allow to subclass Table to specify a custom widget for the
+        # footer in preview mode. Example use case: link to the view with the
+        # full table
+        self.is_preview = preview
 
         # Override definition default with user-provided column name
         if default_order is not None:
@@ -213,6 +227,16 @@ class Table(Generic[M]):
         for filter_ in self.filter_definitions.values():
             self.add_filter(filter_)
 
+        if not self.is_preview:
+            self.init_filters()
+
+    def init_filters(self) -> None:
+        """
+        Let subclasses initialize table filters.
+
+        This is not called if the table is in preview mode.
+        """
+
     def add_column(self, name: str, column: Column) -> None:
         """Add a column to the table."""
         bc = self.columns.add(name, column)
@@ -227,6 +251,8 @@ class Table(Generic[M]):
 
     def add_filter(self, filter_: Filter) -> None:
         """Add a filter to the table."""
+        if self.is_preview:
+            return
         self.filters.add(filter_)
 
     def _post_init(self) -> None:

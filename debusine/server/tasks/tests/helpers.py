@@ -14,15 +14,15 @@ from typing import TypeVar
 from debusine.server.tasks.base import BaseServerTask
 from debusine.server.tasks.wait import BaseWaitTask
 from debusine.tasks.models import BaseDynamicTaskData, BaseTaskData
-from debusine.tasks.tests.helper_mixin import TestBaseTask
+from debusine.tasks.tests.helper_mixin import SampleBaseTask
 
 TD = TypeVar("TD", bound=BaseTaskData)
 DTD = TypeVar("DTD", bound=BaseDynamicTaskData)
 
 
-class TestBaseServerTask(TestBaseTask[TD, DTD], BaseServerTask[TD, DTD]):
+class SampleBaseServerTask(SampleBaseTask[TD, DTD], BaseServerTask[TD, DTD]):
     """Common test implementation of BaseServerTask methods."""
 
 
-class TestBaseWaitTask(TestBaseTask[TD, DTD], BaseWaitTask[TD, DTD]):
+class SampleBaseWaitTask(SampleBaseTask[TD, DTD], BaseWaitTask[TD, DTD]):
     """Common test implementation of BaseWaitTask methods."""

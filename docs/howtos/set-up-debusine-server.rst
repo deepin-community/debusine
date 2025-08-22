@@ -99,16 +99,14 @@ Debusine specific commands are under the ``[server]`` section::
     delete_expired
     delete_notification_channel
     delete_tokens
-    edit_worker_metadata
     list_notification_channels
     list_tokens
     list_users
     list_work_requests
-    list_workers
     manage_notification_channel
     manage_user
-    manage_worker
     vacuum_storage
+    worker
 
 You can see the command specific help using ``--help``, for example:
 

@@ -11,7 +11,7 @@
 
 from django.urls import URLPattern, URLResolver, include, path
 
-import debusine.web.views.workspace as views
+import debusine.web.views.workspaces as views
 
 app_name = "workspaces"
 
@@ -57,6 +57,11 @@ workspace_urlpatterns: list[URLPattern | URLResolver] = [
     path(
         "work-request/",
         include("debusine.web.urls.work_requests", namespace="work-requests"),
+    ),
+    path(
+        "task-configuration-inspector/",
+        views.TaskConfigInspectorView.as_view(),
+        name="task_configuration_inspector",
     ),
 ]
 

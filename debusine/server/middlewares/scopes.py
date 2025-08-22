@@ -64,7 +64,10 @@ class ScopeMiddleware:
             scope_name = settings.DEBUSINE_DEFAULT_SCOPE
 
         context.set_scope(self.get_scope(scope_name))
-        setattr(request, "urlconf", get_scope_urlconf(scope_name))
+        # VirtualHostMiddleware may have set this already; if so, leave it
+        # alone, as the urlconfs it sets don't need to be per-scope.
+        if getattr(request, "urlconf", None) is None:
+            setattr(request, "urlconf", get_scope_urlconf(scope_name))
 
         return self.get_response(request)
 
@@ -142,6 +145,9 @@ class AuthorizationMiddleware:
                     return django.http.HttpResponseForbidden(
                         "a token cannot be both a user and a worker token"
                     )
+                # Leave the user unset when using a worker token.
+                # TODO: see #523
+                return self.get_response(request)
             elif user := token.user:
                 # If it's a user token, we may set it in context
                 if request.user.is_authenticated:
@@ -149,6 +155,10 @@ class AuthorizationMiddleware:
                         "cannot use both Django and user token authentication"
                     )
 
+                if not user.is_active:
+                    return django.http.HttpResponseForbidden(
+                        "user token has an inactive user"
+                    )
                 # We set the user in context but NOT in request.user: that is
                 # the job for rest_framework. Setting it in request.user here
                 # will trigger rest_framework's CSRF protection. See #586 for

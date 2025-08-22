@@ -29,7 +29,7 @@ from debusine.artifacts.models import ArtifactCategory
 from debusine.assets.models import SigningKeyData
 from debusine.client.models import FileResponse
 from utils.client import Client
-from utils.common import Configuration, launch_tests
+from utils.common import Configuration
 from utils.integration_test_helpers_mixin import IntegrationTestHelpersMixin
 from utils.server import DebusineServer
 
@@ -46,6 +46,7 @@ class IntegrationSigningTests(IntegrationTestHelpersMixin, TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         # If debusine-server or nginx was launched just before this test,
         # then debusine-server might not be available yet.  Wait for
         # debusine-server to be reachable if it's not ready.
@@ -365,7 +366,3 @@ class IntegrationSigningTests(IntegrationTestHelpersMixin, TestCase):
         self.assert_successful_assembly(
             assemble_signed_source_task_id, signed_package_name
         )
-
-
-if __name__ == "__main__":
-    launch_tests("Signing task integration tests for debusine")

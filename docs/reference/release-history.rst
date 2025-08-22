@@ -6,6 +6,441 @@ Release history
 
 .. towncrier release notes start
 
+.. _release-0.12.1:
+
+0.12.1 (2025-08-21)
+-------------------
+
+Server
+~~~~~~
+
+Bug Fixes
+^^^^^^^^^
+
+- Don't allow multiple instances of the same root workflow's orchestrator to
+  run concurrently for different sub-workflows. (:issue:`1000`)
+- Ignore SSO identities without an attached user in open-metrics endpoint,
+  fixing a 500. (:issue:`1022`)
+
+
+Web UI
+~~~~~~
+
+Features
+^^^^^^^^
+
+- :workflow:`debian_pipeline` workflow: display input artifacts (source
+  package) and display source package in title. (:issue:`1005`)
+
+
+Bug Fixes
+^^^^^^^^^
+
+- Display dynamic task data in the "Internals" tab of work requests if
+  available. (:issue:`1013`)
+
+
+Client
+~~~~~~
+
+Features
+^^^^^^^^
+
+- Add ``debusine workspace-inheritance`` to configure a workspace's
+  inheritance. (:issue:`978`)
+- Add shell completion via ``argcomplete``. (:issue:`1020`)
+
+
+Bug Fixes
+^^^^^^^^^
+
+- Return more user-friendly errors if an incorrect file is specified to
+  ``debusine provide-signature --local-file``. (:issue:`986`)
+
+
+Workflows
+~~~~~~~~~
+
+Features
+^^^^^^^^
+
+- Add :workflow:`blhc` workflow and use it from :workflow:`debian_pipeline` and
+  :workflow:`qa` workflows. (:issue:`802`)
+
+
+Tasks
+~~~~~
+
+Bug Fixes
+^^^^^^^^^
+
+- ``task_configuration`` in task data is now inherited from the parent
+  workflow. (:issue:`1012`)
+- Default task_configuration to ``default@debusine:task-configuration``.
+  (:issue:`1012`)
+
+
+Worker
+~~~~~~
+
+Bug Fixes
+^^^^^^^^^
+
+- Go back to exiting the worker if it fails to send a task result to the
+  server, so that systemd can restart it and allow it to reconnect.
+  (:issue:`937`)
+
+
+General
+~~~~~~~
+
+Bug Fixes
+^^^^^^^^^
+
+- Weaken tests for invalid HTML, since lxml (via libxml2) no longer provides as
+  much HTML error checking. (:issue:`953`)
+
+
+.. _release-0.12.0:
+
+0.12.0 (2025-08-15)
+-------------------
+
+Server
+~~~~~~
+
+Incompatible Changes
+^^^^^^^^^^^^^^^^^^^^
+
+- Remove ``debusine-admin create_workspace``, ``delete_workspace``,
+  ``list_workspaces``, and ``manage_workspace`` commands, deprecated in favor
+  of ``debusine-admin workspace <subcommand>`` in 0.8.0.
+
+  Remove ``debusine-admin create_file_store``, deprecated in favor of
+  ``debusine-admin file_store create`` in 0.9.0. (:issue:`886`)
+- Moved OIDC validation to code. ``Provider.restrict`` is still supported, but
+  deprecated: use ``settings.SIGNON_CLASS`` instead, see the ``DebusineSignon``
+  class.
+
+  The ``add_to_group`` option of ``Provider`` now requires a dict mapping
+  GitLab
+  groups to Debusine groups, instead of a string, and a string value is
+  ignored.
+
+  Site-specific code is provided to replicate existing setups for
+  ``debusine.debian.net`` and ``debusine.freexian.com``, and can be removed
+  once
+  both sites are migrated to using dict values for ``add_to_group``.
+  (:issue:`898`)
+- Refactor server/signon to remove compatibility code.
+
+  This drops the previous ``debusine.DebusineSignon`` class for
+  ``SIGNON_CLASS``
+  in favour of ``sites.DebianSignon``, only needed for ``debusine.debian.net``.
+
+  The default ``signon.Signon`` class is now sufficient for basic deployments,
+  including ``debusine.freexian.com``.
+
+  ``restrict`` has been un-deprecated and is now honored, so that deployments
+  like ``debusine.freexian.com`` can restrict logins to given GitLab groups
+  without a ``SIGNON_CLASS``.
+
+  No migration strategy is provided: this requires a flag day for
+  ``debusine.debian.net`` and ``debusine.freexian.com``, as they used the
+  ``DebusineSignon`` class. There should be no breaking changes for other
+  deployments introduced with this change. (:issue:`898`)
+- Changed the location for local templates in the packaged defaults.
+
+  Additional local templates were loaded from
+  ``/var/lib/debusine/server/templates``. This is now changed to
+  ``/etc/debusine/server/templates``, which is the correct place for local
+  customizations. (:issue:`947`)
+- Squashed database migrations from before 0.11.0.  People with older Debusine
+  server installations must upgrade to 0.11.* before upgrading to this version.
+  (:issue:`975`)
+- Rename ``debusine-admin manage_worker`` command to ``debusine-admin worker``.
+  The ``--worker-type`` option, if given, must now come after the subcommand
+  name (``enable`` or ``disable``).  The old name is still present, but is
+  deprecated.
+
+  Rename ``debusine-admin edit_worker_metadata`` command to ``debusine-admin
+  worker edit_metadata``.  The old name is still present, but is deprecated.
+
+  Rename ``debusine-admin list_workers`` command to ``debusine-admin worker
+  list``.  The old name is still present, but is deprecated.
+
+
+Features
+^^^^^^^^
+
+- Store content-type of files as sent by the client. (:issue:`324`)
+- Implement :collection:`debian:archive` collection. (:issue:`329`)
+- Add an API endpoint to abort a work request or a workflow. (:issue:`384`)
+- Add :artifact:`debian:repository-index` artifacts, and allow adding them to
+  :collection:`debian:suite` collections.
+
+  Add a :task:`GenerateSuiteIndexes` task to generate ``Packages``,
+  ``Sources``, and ``Release`` files for a suite. (:issue:`755`)
+- Add ``url`` and ``scope`` fields to responses from several API views.
+  (:issue:`766`)
+- Add ``/api/1.0/open-metrics/`` that provides instance usage statistics.
+  (:issue:`888`)
+- Allow ``Provider.options['add_to_group']`` to match ``nm.debian.org`` user
+  statuses when using an ``nm:`` prefix. (:issue:`898`)
+- Add ``on_assignment`` :ref:`event <workflow-event-reactions>`.
+
+  Add :ref:`action-skip-if-lookup-result-changed` action, and a new "skipped"
+  work request result. (:issue:`907`)
+- Ensure that only one workflow callback can run at once for a given workflow.
+  (:issue:`908`)
+- :task:`APTMirror`: Mirror repository indexes as well as packages.
+  (:issue:`945`)
+- Add ``debusine-admin worker create`` to create a worker with an activation
+  token, as an alternative to letting it register itself and then enabling the
+  token separately.
+- Extend ``binary`` and ``binary-version`` lookups on
+  :collection:`debian:archive` and :collection:`debian:suite` collections to
+  include ``Architecture: all`` packages for concrete architecture names.
+- Improve reconstruction of lookups by preserving the original spelling of the
+  parent collection.
+
+
+Bug Fixes
+^^^^^^^^^
+
+- ``debusine-admin delete_expired``: Optimize calculation of which artifacts
+  must be kept. (:issue:`473`)
+- Record errors from assigning work requests to workers in
+  ``WorkRequest.output_data``. (:issue:`589`)
+- Optimize ``Workspace.get_collection``, used by most lookups. (:issue:`786`)
+- Fix crashes in ``debusine-admin delete_expired`` and ``debusine-admin
+  vacuum_storage`` when trying to clean up expired or old incomplete artifacts
+  respectively.
+
+  Make ``debusine-admin delete_expired`` delete files from stores that aren't
+  present in any artifact, even if the artifacts they used to be in weren't
+  deleted in this ``delete_expired`` run. (:issue:`891`)
+- Fix a race when telling the client which of a new artifact's files it needs
+  to upload; previously this sometimes resulted in incomplete artifacts when
+  two artifacts with overlapping files were created at nearly the same time.
+
+  Forbid creating relations with incomplete artifacts. (:issue:`930`)
+- Fix crash in ``debusine-admin delete_expired`` when trying to clean up
+  expired workspaces. (:issue:`936`)
+- When creating worker, server, or sub-workflow work requests in workflows,
+  make them inherit the effective priority of their parent as their base
+  priority. (:issue:`973`)
+- Work around S3 incompatibility between Hetzner and boto3 >= 1.36.0.
+
+
+Web UI
+~~~~~~
+
+Features
+^^^^^^^^
+
+- Display files based on the content-type sent by the client, restricted to a
+  set of safe content-types. (:issue:`324`)
+- Add web UI to abort a work request or a workflow. (:issue:`384`)
+- Add a separate virtual host with archive access views. (:issue:`757`)
+- Make it easier for local admins to customize the homepage and footer.
+  (:issue:`850`)
+- Allow Debian Maintainers to log in via Salsa OIDC authentication.
+  (:issue:`898`)
+- Add view to test and debug how task configuration is applied. (:issue:`989`)
+- Add links to workflow documentation from the web UI.
+
+
+Bug Fixes
+^^^^^^^^^
+
+- Exclude Celery worker from list of workers. (:issue:`559`)
+- Add ``--server FQDN/SCOPE`` option to suggested ``debusine
+  provide-signature`` command (requires the client to be at least version
+  0.11.3). (:issue:`749`)
+- Make "workspace not found" errors slightly more generic, since they can also
+  cover authorization failures. (:issue:`778`)
+- Optimize detail view for large workflows. (:issue:`786`)
+- Return 404 when trying to view a nonexistent workflow template, rather than
+  logging a noisy traceback. (:issue:`875`)
+- Fix display of collection retention periods. (:issue:`890`)
+- Support byte-range requests that specify only one of the first and last byte
+  positions in the range. (:issue:`956`)
+
+
+Client
+~~~~~~
+
+Incompatible Changes
+^^^^^^^^^^^^^^^^^^^^
+
+- Print web URLs to objects where possible.  This requires a server with at
+  least commit `30dd738393e46f2f2bc0d09aacdfd53297dbba95
+  <https://salsa.debian.org/freexian-team/debusine/-/commit/30dd738393e46f2f2bc0d09aacdfd53297dbba95>`__.
+  (:issue:`766`)
+
+
+Features
+^^^^^^^^
+
+- Guess content-type of files when uploading them to the server. (:issue:`324`)
+- Add ``debusine abort-work-request`` command. (:issue:`384`)
+- Allow selecting a server using ``--server FQDN/SCOPE``, as an alternative to
+  needing to know the ``[server:...]`` section name in the configuration file.
+  (:issue:`749`)
+- Added ``debusine task-config-pull`` and ``task-config-push``, to manage
+  :collection:`debusine:task-configuration` collections. (:issue:`789`)
+- A local copy of the ``.changes`` file can be passed to ``provide-signature``
+  for signing and uploading. (:issue:`816`)
+- Accept extra command-line arguments to ``debusine
+  on-work-request-completed``. (:issue:`966`)
+
+
+Workflows
+~~~~~~~~~
+
+Incompatible Changes
+^^^^^^^^^^^^^^^^^^^^
+
+- :workflow:`lintian`, :workflow:`qa`, :workflow:`debian_pipeline`: Change
+  default value of ``fail_on_severity``/``lintian_fail_on_severity`` to
+  ``error``. (:issue:`804`)
+- Rename the ``suite_collection`` key of the
+  :workflow:`reverse_dependencies_autopkgtest` workflow and the
+  ``reverse_dependencies_autopkgtest_suite`` key of the :workflow:`qa` and
+  :workflow:`debian_pipeline` workflows to ``qa_suite``.
+
+  :workflow:`piuparts`: Add ``source_artifact`` as a required task data key.
+  (:issue:`907`)
+
+
+Features
+^^^^^^^^
+
+- Add :workflow:`debdiff` workflow and integrate it into
+  :workflow:`debian_pipeline`. (:issue:`607`)
+- Add :workflow:`update_suites` workflow. (:issue:`755`)
+- In the :workflow:`sbuild` workflow, configure the same ASPCUD criteria as
+  Debian's buildd would use, when targeting ``experimental``. (:issue:`829`)
+- :workflow:`update_environments`: Accept ``null`` as an element in a
+  ``targets.variants`` list; this may be useful to indicate that an environment
+  may be used as a generic environment for any task while also being the most
+  suitable environment for particular variants. (:issue:`899`)
+- :workflow:`reverse_dependencies_autopkgtest`: Document support for passing
+  :artifact:`debian:binary-package` artifacts in ``binary_artifacts`` and
+  ``context_artifacts``.
+
+  :workflow:`qa`: Document support for passing
+  :artifact:`debian:binary-package` artifacts in ``binary_artifacts``.
+  (:issue:`906`)
+- :workflow:`autopkgtest`, :workflow:`lintian`, :workflow:`piuparts`,
+  :workflow:`qa`, :workflow:`reverse_dependencies_autopkgtest`: Support
+  updating a :collection:`debian:qa-results` collection with reference QA
+  results. (:issue:`907`)
+- :workflow:`autopkgtest`: Implement ``enable_regression_tracking`` parameter
+  to perform regression analysis against reference results. (:issue:`908`)
+- Add split source/binary upload signing, where the developer signs the source
+  package and Debusine signs the binaries. (:issue:`944`)
+
+
+Bug Fixes
+^^^^^^^^^
+
+- Make the :workflow:`package_upload` workflow idempotent. (:issue:`800`)
+- :workflow:`lintian`: Constrain child work requests to run on an architecture
+  matching the binaries. (:issue:`866`)
+- :workflow:`lintian`: Only produce source and binary-all analysis artifacts
+  once.
+
+  :workflow:`lintian`: If ``binary_artifacts`` is empty, create a single work
+  request to run ``lintian`` on the source package. (:issue:`908`)
+- :workflow:`package_upload`: Avoid confusion between the output of different
+  :task:`MergeUploads` tasks. (:issue:`914`)
+- :workflow:`reverse_dependencies_autopkgtest`: Give child workflows a
+  hardcoded priority of -5 relative to their parent workflow, for now.
+  (:issue:`973`)
+- :workflow:`package_upload`: Constrain :task:`MakeSourcePackageUpload` to run
+  on a particular architecture. (:issue:`990`)
+
+
+Tasks
+~~~~~
+
+Incompatible Changes
+^^^^^^^^^^^^^^^^^^^^
+
+- :task:`Lintian`: Change default value of ``fail_on_severity`` to ``error``.
+  (:issue:`804`)
+- If tasks are given an ``environment`` without a ``variant`` filter,
+  automatically try ``variant={task_name}`` followed by ``variant=``.  This may
+  require changes to your ``update_environments`` workflows to ensure that a
+  generic environment with no variant is always available. (:issue:`899`)
+
+
+Features
+^^^^^^^^
+
+- Display input artifacts for tasks :task:`AssembleSignedSource`,
+  :task:`Autopkgtest`, :task:`Blhc`, :task:`CopyCollectionItems`,
+  :task:`ExtractForSigning`, :task:`Lintian`, :task:`MakeSourcePackageUpload`,
+  :task:`MergeUploads`, Noop, :task:`PackageUpload`, :task:`Piuparts`,
+  :task:`SystemBootstrap`, and :task:`SystemImageBuild`. (:issue:`549`)
+- :task:`Sbuild`: Add ``build_dep_resolver`` and ``aspcud_criteria`` options.
+  (:issue:`829`)
+- Require a compatible piuparts version to be available in the environment for
+  the :task:`Piuparts` task, when running in a container. (:issue:`867`)
+- :task:`Autopkgtest`: Document support for passing
+  :artifact:`debian:binary-package` artifacts in ``input.binary_artifacts`` and
+  ``input.context_artifacts``.
+
+  :task:`Piuparts`: Support passing :artifact:`debian:binary-package` artifacts
+  in ``input.binary_artifacts``. (:issue:`906`)
+- :task:`Lintian`: Add ``architecture`` field to :artifact:`debian:lintian`
+  artifact. (:issue:`908`)
+- :task:`DebDiff`: Speed up this task significantly by avoiding installing most
+  of the ``Recommends`` of the ``devscripts`` package.
+
+
+Bug Fixes
+^^^^^^^^^
+
+- Fix DNS resolution during ``customization_script`` execution in
+  :task:`SimpleSystemImageBuild` image builds. (:issue:`664`)
+- :task:`Piuparts`: Process base tarball in Python rather than using
+  ``mmtarfilter``, which wasn't available until Debian 10 (buster).
+  (:issue:`867`)
+- Ensure that a ``/var/lib/dpkg/available`` file exists when running the
+  :task:`Piuparts` task. (:issue:`874`)
+- :task:`Lintian`: Fix incorrect parsing of tag explanations for Debian
+  bullseye. (:issue:`921`)
+- :task:`MergeUploads`: Fix ineffective overlapping-files check when multiple
+  input uploads share the same ``.changes`` file name. (:issue:`954`)
+- Fix an ``AssertionError`` in the :task:`Piuparts` task, when using
+  :artifact:`debian:binary-packages` as input.
+- Install ``passwd`` if we need ``useradd`` to create a non-root user inside
+  task executors.
+
+
+Signing
+~~~~~~~
+
+Features
+^^^^^^^^
+
+- Add :task:`SignRepositoryIndex` task. (:issue:`756`)
+
+
+General
+~~~~~~~
+
+Features
+^^^^^^^^
+
+- Add ``components`` attribute to :artifact:`debian:system-tarball` and
+  :artifact:`debian:system-image` artifacts. (:issue:`829`)
+- Run test suite under ``pytest``.
+
+
 .. _release-0.11.3:
 
 0.11.3 (2025-07-08)
@@ -18,8 +453,7 @@ Features
 ^^^^^^^^
 
 - A local copy of the ``.changes`` file can be passed to ``provide-signature``
-  for signing and uploading. (`#816
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/816>`__)
+  for signing and uploading. (:issue:`816`)
 
 
 .. _release-0.11.2:
@@ -35,7 +469,7 @@ Features
 
 - Allow selecting a server using ``--server FQDN/SCOPE``, as an alternative to
   needing to know the ``[server:...]`` section name in the configuration file.
-  (`#749 <https://salsa.debian.org/freexian-team/debusine/-/issues/749>`__)
+  (:issue:`749`)
 
 
 .. _release-0.11.1:
@@ -49,11 +483,9 @@ Server
 Bug Fixes
 ^^^^^^^^^
 
-- Set ``Vary: Cookie, Token`` on all HTTP responses. (`#761
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/761>`__)
+- Set ``Vary: Cookie, Token`` on all HTTP responses. (:issue:`761`)
 - Return multiple lookup results in a predictable order, to make it easier for
-  workflows to be idempotent. (`#796
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/796>`__)
+  workflows to be idempotent. (:issue:`796`)
 - Fix regression in ``update_workflows`` Celery task.
 
 
@@ -63,10 +495,8 @@ Web UI
 Features
 ^^^^^^^^
 
-- Add a :ref:`debdiff <artifact-debdiff>` artifact view. (`#714
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/714>`__)
-- Added list and detail views for WorkerPool. (`#733
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/733>`__)
+- Add a :artifact:`debdiff <debian:debdiff>` artifact view. (:issue:`714`)
+- Added list and detail views for WorkerPool. (:issue:`733`)
 - Add number of files in the "Files" tab of the artifact view.
 - Redesigned table sorting and header rendering.
 
@@ -74,23 +504,19 @@ Features
 Bug Fixes
 ^^^^^^^^^
 
-- Redesigned table filtering. (`#475
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/475>`__)
+- Redesigned table filtering. (:issue:`475`)
 - Search collection page: fix "str failed to render" error in table headers.
-  (`#799 <https://salsa.debian.org/freexian-team/debusine/-/issues/799>`__)
-- :ref:`Autopkgtest <task-autopkgtest>`: Render extra repositories as deb822
-  sources. (`#828
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/828>`__)
-- Change the default tab in the artifact view to "Files". (`#848
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/848>`__)
-- :ref:`Autopkgtest <task-autopkgtest>`: Fix the "Distribution" field.
+  (:issue:`799`)
+- :task:`Autopkgtest`: Render extra repositories as deb822 sources.
+  (:issue:`828`)
+- Change the default tab in the artifact view to "Files". (:issue:`848`)
+- :task:`Autopkgtest`: Fix the "Distribution" field.
 
 
 Miscellaneous
 ^^^^^^^^^^^^^
 
-- `#420 <https://salsa.debian.org/freexian-team/debusine/-/issues/420>`__,
-  `#814 <https://salsa.debian.org/freexian-team/debusine/-/issues/814>`__
+- :issue:`420`, :issue:`814`
 
 
 Client
@@ -99,17 +525,16 @@ Client
 Features
 ^^^^^^^^
 
-- ``debusine setup``: Manage the default server setting. (`#780
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/780>`__)
+- ``debusine setup``: Manage the default server setting. (:issue:`780`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- Wrap Debusine errors so that they're shown cleanly by ``dput-ng``. (`#827
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/827>`__)
-- Improve logging while uploading individual files to artifacts. (`#839
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/839>`__)
+- Wrap Debusine errors so that they're shown cleanly by ``dput-ng``.
+  (:issue:`827`)
+- Improve logging while uploading individual files to artifacts.
+  (:issue:`839`)
 - Fix handling of responses without ``Content-Type``.
 
 
@@ -119,34 +544,29 @@ Workflows
 Features
 ^^^^^^^^
 
-- Allow overriding the ``environment`` in the :ref:`piuparts workflow
-  <workflow-piuparts>`.
-  Allow overriding the ``piuparts_environment`` in the :ref:`qa <workflow-qa>`
-  and :ref:`debian-pipeline <workflow-debian-pipeline>` workflows. (`#638
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/638>`__)
+- Allow overriding the ``environment`` in the :workflow:`piuparts` workflow.
+  Allow overriding the ``piuparts_environment`` in the :workflow:`qa` and
+  :workflow:`debian_pipeline` workflows. (:issue:`638`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- In :ref:`autopkgtest <workflow-autopkgtest>`, :ref:`piuparts
-  <workflow-piuparts>` and :ref:`sbuild <workflow-sbuild>` workflows, extend
-  children's ``extra_repositories`` with overlay repositories (e.g.
-  ``experimental``) if ``codename`` is a known overlay. (`#780
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/780>`__)
-- :ref:`make_signed_source <workflow-make-signed-source>`: Disambiguate
-  handling of multiple signing templates for a single architecture.
+- In the :workflow:`autopkgtest`, :workflow:`piuparts` and
+  :workflow:`sbuild` workflows, extend children's ``extra_repositories``
+  with overlay repositories (e.g. ``experimental``) if ``codename`` is a
+  known overlay. (:issue:`780`)
+- :workflow:`make_signed_source`: Disambiguate handling of multiple signing
+  templates for a single architecture.
 
-  :ref:`make_signed_source <workflow-make-signed-source>`: Provide
-  :ref:`debian:upload <artifact-upload>` artifacts as ``signed-source-*``
-  outputs, not :ref:`debian:source-package <artifact-source-package>`.
+  :workflow:`make_signed_source`: Provide :artifact:`debian:upload`
+  artifacts as ``signed-source-*`` outputs, not
+  :artifact:`debian:source-package`.
 
-  :ref:`debian_pipeline <workflow-debian-pipeline>`: Upload signed source
-  packages and their binaries if necessary. (`#796
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/796>`__)
-- :ref:`sbuild <workflow-sbuild>`: Improve workflow orchestration error when
-  no environments were found.  (`#830
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/830>`__)
+  :workflow:`debian_pipeline`: Upload signed source packages and their
+  binaries if necessary. (:issue:`796`)
+- :workflow:`sbuild`: Improve workflow orchestration error when no
+  environments were found.  (:issue:`830`)
 
 
 Tasks
@@ -155,19 +575,15 @@ Tasks
 Bug Fixes
 ^^^^^^^^^
 
-- :ref:`lintian <task-lintian>`: Use ``lintian --print-version`` to extract
-  the version. (`#609
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/609>`__)
-- Fix a variety of bugs in :ref:`task-simplesystemimagebuild` image builds,
-  that broke use with the ``incus-vm`` and ``qemu`` executors.
+- :task:`Lintian`: Use ``lintian --print-version`` to extract the version.
+  (:issue:`609`)
+- Fix a variety of bugs in :task:`SimpleSystemImageBuild` image builds, that
+  broke use with the ``incus-vm`` and ``qemu`` executors.
   Only require the ``python3-minimal`` package to be installed for the ``qemu``
-  executor. (`#664
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/664>`__)
-- :ref:`DebDiff <task-debdiff>`: Install ``diffstat`` package, to make the
-  ``--diffstat`` flag work. (`#748
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/748>`__)
-- :ref:`DebDiff <task-debdiff>`: Create ``relates-to`` relations to binary
-  artifacts.
+  executor. (:issue:`664`)
+- :task:`DebDiff`: Install ``diffstat`` package, to make the ``--diffstat``
+  flag work. (:issue:`748`)
+- :task:`DebDiff`: Create ``relates-to`` relations to binary artifacts.
 
 
 Worker
@@ -177,8 +593,7 @@ Bug Fixes
 ^^^^^^^^^
 
 - Incus LXC instances now wait for ``systemd-networkd`` to declare the network
-  online, before running autopkgtests. (`#812
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/812>`__)
+  online, before running autopkgtests. (:issue:`812`)
 
 
 General
@@ -187,10 +602,8 @@ General
 Documentation
 ^^^^^^^^^^^^^
 
-- Add new project management practices page. (`#784
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/784>`__)
-- Update playground setup advice. (`#797
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/797>`__)
+- Add new project management practices page. (:issue:`784`)
+- Update playground setup advice. (:issue:`797`)
 - Update the introduction with more recent content.
 
 
@@ -206,32 +619,27 @@ Features
 ^^^^^^^^
 
 - Delete artifacts that were created more than a day ago and are still
-  incomplete. (`#667
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/667>`__)
+  incomplete. (:issue:`667`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- Don't create a workflow if its input validation fails. (`#432
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/432>`__)
+- Don't create a workflow if its input validation fails. (:issue:`432`)
 - Only retry work requests up to three times in a row due to worker failures.
-  (`#477 <https://salsa.debian.org/freexian-team/debusine/-/issues/477>`__)
+  (:issue:`477`)
 - Rename ``debusine-server-artifacts-cleanup.{service,timer}`` to
   ``debusine-server-delete-expired.{service,timer}``, to better reflect the
-  function of those units. (`#636
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/636>`__)
-- :ref:`APTMirror <task-apt-mirror>`: Ensure that only one mirroring task for a
-  given collection runs at once. (`#694
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/694>`__)
+  function of those units. (:issue:`636`)
+- :task:`APTMirror`: Ensure that only one mirroring task for a given
+  collection runs at once. (:issue:`694`)
 - Don't set the Celery worker's concurrency to 1 in the database when starting
-  the scheduler or provisioner service. (`#751
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/751>`__)
-- Record errors from server tasks in ``WorkRequest.output_data``. (`#785
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/785>`__)
+  the scheduler or provisioner service. (:issue:`751`)
+- Record errors from server tasks in ``WorkRequest.output_data``.
+  (:issue:`785`)
 - Optimize computing the runtime status of large workflows.
-  Batch expensive workflow updates and defer them to a Celery task. (`#786
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/786>`__)
+  Batch expensive workflow updates and defer them to a Celery task.
+  (:issue:`786`)
 
 
 Documentation
@@ -252,36 +660,31 @@ Incompatible Changes
   becomes ``…/<artifact_id>/raw/<path>``.
 
 ``<scope>/<workspace>/artifact/<artifact_id>/file/<file_in_artifact_id>/<path>``
-  becomes ``…/<artifact_id>/file/<path>``. (`#621
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/621>`__)
+  becomes ``…/<artifact_id>/file/<path>``. (:issue:`621`)
 
 
 Features
 ^^^^^^^^
 
 - Better usability for the token generation UI: copy token to clipboard, show a
-  config snippet with the token. (`#421
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/421>`__)
+  config snippet with the token. (:issue:`421`)
 - Downloading an artifact without the archive= query parameter autodetects the
   file type.
 
   This means that a download will by default produce a tarball only if the
   artifact contains more than one file. One can explicitly add
-  ``?archive=tar.gz`` to force always returning a tarball. (`#621
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/621>`__)
-- Add view raw and download buttons to all file display widgets. (`#621
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/621>`__)
+  ``?archive=tar.gz`` to force always returning a tarball. (:issue:`621`)
+- Add view raw and download buttons to all file display widgets.
+  (:issue:`621`)
 - Add an indication to ``/-/status/workers/`` showing each worker's pool.
   Exclude inactive pool workers from ``/-/status/workers/``.
-  Add worker details page. (`#733
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/733>`__)
+  Add worker details page. (:issue:`733`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- Work requests now show validation/configuration errors. (`#651
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/651>`__)
+- Work requests now show validation/configuration errors. (:issue:`651`)
 
 
 Client
@@ -306,8 +709,8 @@ Features
 Bug Fixes
 ^^^^^^^^^
 
-- Fix file uploads if ``api-url`` is configured with a trailing slash. (`#793
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/793>`__)
+- Fix file uploads if ``api-url`` is configured with a trailing slash.
+  (:issue:`793`)
 
 
 Workflows
@@ -316,25 +719,20 @@ Workflows
 Features
 ^^^^^^^^
 
-- Restrict starting workflows to workspace contributors. (`#625
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/625>`__)
+- Restrict starting workflows to workspace contributors. (:issue:`625`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- Record errors from ``Workflow.ensure_dynamic_data``. (`#589
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/589>`__)
+- Record errors from ``Workflow.ensure_dynamic_data``. (:issue:`589`)
 - Record orchestrator errors in ``WorkRequest.output_data``.
-  :ref:`reverse_dependencies_autopkgtest
-  <workflow-reverse-dependencies-autopkgtest>`: Validate ``suite_collection``
-  parameter. (`#651
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/651>`__)
+  :workflow:`reverse_dependencies_autopkgtest`: Validate
+  ``suite_collection`` parameter. (:issue:`651`)
 - Use ``|`` instead of ``/`` as a collection item prefix separator in
   workflows, since ``/`` is used to separate lookup string segments.
-  :ref:`reverse_dependencies_autopkgtest
-  <workflow-reverse-dependencies-autopkgtest>`: Fix orchestration failure for
-  source package versions containing a colon.
+  :workflow:`reverse_dependencies_autopkgtest`: Fix orchestration failure
+  for source package versions containing a colon.
 
 
 Tasks
@@ -343,18 +741,16 @@ Tasks
 Features
 ^^^^^^^^
 
-- :ref:`MergeUploads <task-merge-uploads>`: Reimplement ``mergechanges`` in
-  Python, for efficiency and to avoid problems with buggy versions of ``mawk``
-  in some old Debian releases. (`#512
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/512>`__)
+- :task:`MergeUploads`: Reimplement ``mergechanges`` in Python, for
+  efficiency and to avoid problems with buggy versions of ``mawk`` in some
+  old Debian releases. (:issue:`512`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- :ref:`ExtractForSigning <task-extract-for-signing>`: Tolerate overlap between
-  template and binary artifacts. (`#763
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/763>`__)
+- :task:`ExtractForSigning`: Tolerate overlap between template and binary
+  artifacts. (:issue:`763`)
 
 
 Signing
@@ -363,8 +759,7 @@ Signing
 Documentation
 ^^^^^^^^^^^^^
 
-- Document how to find generated signing keys. (`#771
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/771>`__)
+- Document how to find generated signing keys. (:issue:`771`)
 
 
 General
@@ -373,14 +768,13 @@ General
 Documentation
 ^^^^^^^^^^^^^
 
-- Rework :ref:`tutorial-getting-started` to create a workflow. (`#764
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/764>`__)
+- Rework :ref:`tutorial-getting-started` to create a workflow. (:issue:`764`)
 
 
 Miscellaneous
 ^^^^^^^^^^^^^
 
-- `#743 <https://salsa.debian.org/freexian-team/debusine/-/issues/743>`__
+- :issue:`743`
 
 
 .. _release-0.10.0:
@@ -394,8 +788,8 @@ Server
 Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
-- :ref:`CreateExperimentWorkspace <task-create-experiment-workspace>`: Redefine
-  ``expiration_delay`` as a number of days rather than a duration.
+- :task:`CreateExperimentWorkspace`: Redefine ``expiration_delay`` as a
+  number of days rather than a duration.
 - Use Debusine permissions for managing workflow templates.  If you previously
   granted yourself the ``add_workflowtemplate`` permission, see the
   :ref:`updated tutorial <tutorial-getting-started>` for how to grant yourself
@@ -406,25 +800,22 @@ Features
 ^^^^^^^^
 
 - Store worker pool statistics on task completion and worker shutdown.
-  Implement provisioning of pool workers. (`#721
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/721>`__)
+  Implement provisioning of pool workers. (:issue:`721`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- Retry any running work requests when terminating pool workers. (`#731
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/731>`__)
+- Retry any running work requests when terminating pool workers.
+  (:issue:`731`)
 - Limit status views of running external tasks (``/api/1.0/service-status/``
-  and ``/-/status/queue/``) to worker tasks. (`#750
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/750>`__)
+  and ``/-/status/queue/``) to worker tasks. (:issue:`750`)
 
 
 Documentation
 ^^^^^^^^^^^^^
 
-- Document cloud worker pools and storage. (`#735
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/735>`__)
+- Document cloud worker pools and storage. (:issue:`735`)
 
 
 Web UI
@@ -433,8 +824,7 @@ Web UI
 Features
 ^^^^^^^^
 
-- Add an audit log for group-related changes. (`#734
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/734>`__)
+- Add an audit log for group-related changes. (:issue:`734`)
 
 
 Bug Fixes
@@ -449,17 +839,16 @@ Client
 Features
 ^^^^^^^^
 
-- Add ``debusine setup`` for editing server configuration interactively. (`#711
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/711>`__)
-- Add ``dput-ng`` integration. (`#713
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/713>`__)
+- Add ``debusine setup`` for editing server configuration interactively.
+  (:issue:`711`)
+- Add ``dput-ng`` integration. (:issue:`713`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
 - ``debusine provide-signature``: Always pass ``--re-sign`` to ``debsign``.
-  (`#713 <https://salsa.debian.org/freexian-team/debusine/-/issues/713>`__)
+  (:issue:`713`)
 
 
 Workflows
@@ -468,30 +857,27 @@ Workflows
 Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
-- :ref:`create_experiment_workspace <workflow-create-experiment-workspace>`:
-  Redefine ``expiration_delay`` as a number of days rather than a duration.
+- :workflow:`create_experiment_workspace`: Redefine ``expiration_delay`` as
+  a number of days rather than a duration.
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- :ref:`make_signed_source <workflow-make-signed-source>`: Pass unsigned binary
-  artifacts to :ref:`sbuild <workflow-sbuild>` sub-workflow via
-  ``input.extra_binary_artifacts``. (`#727
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/727>`__)
-- :ref:`autopkgtest <workflow-autopkgtest>`, :ref:`lintian <workflow-lintian>`:
-  Handle :ref:`debian:upload <artifact-upload>` source artifacts without
-  original upstream source. (`#744
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/744>`__)
+- :workflow:`make_signed_source`: Pass unsigned binary artifacts to
+  :workflow:`sbuild` sub-workflow via ``input.extra_binary_artifacts``.
+  (:issue:`727`)
+- :workflow:`autopkgtest`, :workflow:`lintian`: Handle
+  :artifact:`debian:upload` source artifacts without original upstream
+  source. (:issue:`744`)
 
 
 Documentation
 ^^^^^^^^^^^^^
 
-- :ref:`make_signed_source <workflow-make-signed-source>`: No longer document
-  :ref:`debian:binary-packages <artifact-binary-packages>` artifacts as being
-  accepted in ``binary_artifacts``; they never worked. (`#747
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/747>`__)
+- :workflow:`make_signed_source`: No longer document
+  :artifact:`debian:binary-packages` artifacts as being accepted in
+  ``binary_artifacts``; they never worked. (:issue:`747`)
 
 
 Tasks
@@ -500,21 +886,17 @@ Tasks
 Features
 ^^^^^^^^
 
-- :ref:`Sbuild <task-sbuild>`: Accept ``debian:upload`` artifacts in
-  ``input.extra_binary_artifacts``. (`#727
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/727>`__)
+- :task:`Sbuild`: Accept :artifact:`debian:upload` artifacts in
+  ``input.extra_binary_artifacts``. (:issue:`727`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- :ref:`ExtractForSigning <task-extract-for-signing>`: If given
-  :ref:`debian:upload <artifact-upload>` artifacts in ``binary_artifacts``,
-  follow ``extends`` relationships to find the underlying
-  :ref:`debian:binary-package <artifact-binary-package>` artifacts. (`#747
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/747>`__)
-- Handle errors while fetching task input more gracefully. (`#763
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/763>`__)
+- :task:`ExtractForSigning`: If given :artifact:`debian:upload` artifacts in
+  ``binary_artifacts``, follow ``extends`` relationships to find the
+  underlying :artifact:`debian:binary-package` artifacts. (:issue:`747`)
+- Handle errors while fetching task input more gracefully. (:issue:`763`)
 
 
 .. _release-0.9.1:
@@ -528,50 +910,40 @@ Server
 Features
 ^^^^^^^^
 
-- Automatically add task runs to the appropriate :ref:`debusine:task-history
-  collection <collection-task-history>`. (`#510
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/510>`__)
+- Automatically add task runs to the appropriate
+  :collection:`debusine:task-history` collection. (:issue:`510`)
 - Support Hetzner Object Storage.
-  Support worker pools on Hetzner Cloud. (`#543
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/543>`__)
+  Support worker pools on Hetzner Cloud. (:issue:`543`)
 - Accept scope prefixes in ``debusine-admin create_collection --workspace`` and
-  ``debusine-admin create_work_request --workspace``. (`#608
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/608>`__)
+  ``debusine-admin create_work_request --workspace``. (:issue:`608`)
 - Implement ``populate`` and ``drain`` storage policies in ``debusine-admin
   vacuum_storage``.
   Implement store-level ``soft_max_size`` and ``max_size`` limits in
-  ``debusine-admin vacuum_storage``. (`#684
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/684>`__)
-- :ref:`debusine:cloud-provider-account asset <asset-cloud-provider-account>`:
-  Add optional ``configuration.s3_endpoint_url`` for the ``aws`` provider type.
-  (`#685 <https://salsa.debian.org/freexian-team/debusine/-/issues/685>`__)
-- Add roles to group memberships. (`#697
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/697>`__)
+  ``debusine-admin vacuum_storage``. (:issue:`684`)
+- :asset:`debusine:cloud-provider-account` asset: Add optional
+  ``configuration.s3_endpoint_url`` for the ``aws`` provider type.
+  (:issue:`685`)
+- Add roles to group memberships. (:issue:`697`)
 - Add ``debusine-admin worker_pool`` command.
   Add internal per-provider API for launching and terminating dynamic workers.
-  (`#720 <https://salsa.debian.org/freexian-team/debusine/-/issues/720>`__)
-- Support worker pools on AWS EC2. (`#722
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/722>`__)
+  (:issue:`720`)
+- Support worker pools on AWS EC2. (:issue:`722`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
 - Add a ``DEBUSINE_DEFAULT_WORKSPACE`` Django setting, for use if the default
-  workspace has been renamed to something other than "System". (`#571
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/571>`__)
+  workspace has been renamed to something other than "System". (:issue:`571`)
 - Only upload to write-only stores when applying the ``populate`` storage
-  policy in ``debusine-admin vacuum_storage``, not elsewhere. (`#684
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/684>`__)
+  policy in ``debusine-admin vacuum_storage``, not elsewhere. (:issue:`684`)
 
 
 Documentation
 ^^^^^^^^^^^^^
 
-- Document file stores. (`#541
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/541>`__)
-- Document :ref:`task-create-experiment-workspace`. (`#542
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/542>`__)
+- Document file stores. (:issue:`541`)
+- Document :task:`CreateExperimentWorkspace` task. (:issue:`542`)
 
 
 Web UI
@@ -581,16 +953,14 @@ Features
 ^^^^^^^^
 
 - Add web UI for group management: list groups, add/remove users, change user
-  roles. (`#542
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/542>`__)
+  roles. (:issue:`542`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
 - Do not show "Plumbing" in the navigation bar if the view is not
-  workspace-aware. (`#675
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/675>`__)
+  workspace-aware. (:issue:`675`)
 
 
 Workflows
@@ -599,19 +969,15 @@ Workflows
 Features
 ^^^^^^^^
 
-- :ref:`package_publish <workflow-package-publish>`: Copy :ref:`task-history
-  <collection-task-history>` items from the same workflow. (`#510
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/510>`__)
+- :workflow:`package_publish`: Copy :collection:`debusine:task-history`
+  items from the same workflow. (:issue:`510`)
 
 
 Documentation
 ^^^^^^^^^^^^^
 
-- Document :ref:`create_experiment_workspace
-  <workflow-create-experiment-workspace>`. (`#542
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/542>`__)
-- Document how to implement a new workflow. (`#693
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/693>`__)
+- Document :workflow:`create_experiment_workspace`. (:issue:`542`)
+- Document how to implement a new workflow. (:issue:`693`)
 
 
 Tasks
@@ -620,10 +986,8 @@ Tasks
 Features
 ^^^^^^^^
 
-- :ref:`MmDebstrap <task-mmdebstrap>`, :ref:`SimpleSystemImageBuild
-  <task-simplesystemimagebuild>`: Support reading keyrings from
-  ``/usr/local/share/keyrings/``. (`#739
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/739>`__)
+- :task:`MmDebstrap`, :task:`SimpleSystemImageBuild`: Support reading
+  keyrings from ``/usr/local/share/keyrings/``. (:issue:`739`)
 
 
 Worker
@@ -634,8 +998,7 @@ Features
 
 - Add worker activation tokens, which can be used to auto-enable pool workers
   when they start without needing to expose worker tokens in ``cloud-init``
-  user-data. (`#732
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/732>`__)
+  user-data. (:issue:`732`)
 
 
 General
@@ -644,7 +1007,7 @@ General
 Miscellaneous
 ^^^^^^^^^^^^^
 
-- `#729 <https://salsa.debian.org/freexian-team/debusine/-/issues/729>`__
+- :issue:`729`
 
 
 .. _release-0.9.0:
@@ -663,30 +1026,27 @@ Incompatible Changes
   ``debusine-admin workspace define`` and ``debusine-admin workspace list`` (as
   well as the deprecated ``debusine-admin create_workspace``, ``debusine-admin
   manage_workspace``, and ``debusine-admin list_workspaces`` commands) no
-  longer handle file stores. (`#682
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/682>`__)
+  longer handle file stores. (:issue:`682`)
 - Rename ``debusine-admin create_file_store`` command to ``debusine-admin
   file_store create``.  (The old name is still present, but is deprecated.)
-  (`#683 <https://salsa.debian.org/freexian-team/debusine/-/issues/683>`__)
+  (:issue:`683`)
 - Rename ``debusine-admin monthly_cleanup`` to ``debusine-admin
   vacuum_storage``, and run it daily.  Rename the associated ``systemd`` units
-  similarly. (`#684
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/684>`__)
+  similarly. (:issue:`684`)
 
 
 Features
 ^^^^^^^^
 
-- Implement :ref:`task configuration mechanism <task-configuration>`. (`#508
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/508>`__)
-- Implement :ref:`debusine:task-history collection <collection-task-history>`.
-  (`#510 <https://salsa.debian.org/freexian-team/debusine/-/issues/510>`__)
+- Implement :ref:`task configuration mechanism <task-configuration>`.
+  (:issue:`508`)
+- Implement :collection:`debusine:task-history` collection. (:issue:`510`)
 - Add API: ``1.0/asset/`` to create and list :ref:`assets`.
   Add API:
   ``1.0/asset/<str:asset_category>/<str:asset_slug>/<str:permission_name>`` to
   check permissions on :ref:`assets`.
   Add ``debusine-admin asset`` management command to manage asset permissions.
-  (`#576 <https://salsa.debian.org/freexian-team/debusine/-/issues/576>`__)
+  (:issue:`576`)
 - Add ``debusine-admin scope add_file_store``, ``debusine-admin scope
   edit_file_store``, and ``debusine-admin scope remove_file_store`` commands.
   Add an ``instance_wide`` field to file stores, defaulting to True, which can
@@ -695,25 +1055,18 @@ Features
   be used by a single scope.
   Add ``soft_max_size`` and ``max_size`` fields to file stores, which can be
   configured using the ``--soft-max-size`` and ``--max-size`` options to
-  ``debusine-admin file_store create``. (`#682
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/682>`__)
+  ``debusine-admin file_store create``. (:issue:`682`)
 - Add ``debusine-admin scope show`` command.
   Add ``debusine-admin file_store delete`` command.
-  Make ``debusine-admin file_store create`` idempotent. (`#683
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/683>`__)
+  Make ``debusine-admin file_store create`` idempotent. (:issue:`683`)
 - Generalize sweeps by ``debusine-admin vacuum_storage`` over files in local
-  storage to be able to handle other backends. (`#684
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/684>`__)
+  storage to be able to handle other backends. (:issue:`684`)
 - Add ``debusine-admin asset create`` command.
-  Add an S3 file backend.
+  Add an :file-backend:`S3` file backend.
   Add ``--provider-account`` option to ``debusine-admin file_store create``, to
-  allow linking file stores to cloud provider accounts. (`#685
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/685>`__)
-- Add :ref:`debusine:cloud-provider-account assets
-  <asset-cloud-provider-account>`. (`#696
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/696>`__)
-- Implement ephemeral groups. (`#697
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/697>`__)
+  allow linking file stores to cloud provider accounts. (:issue:`685`)
+- Add :asset:`debusine:cloud-provider-account` asset. (:issue:`696`)
+- Implement ephemeral groups. (:issue:`697`)
 - Add a plugin for the Munin monitoring server.
   If run on the server, it should be able to automatically configure itself.
   It provides three graphs.
@@ -727,8 +1080,7 @@ Bug Fixes
 - Deal with expired work requests without an internal collection that are
   referenced by build logs.
   Fix deleting expired work requests with child work requests referenced by
-  build logs. (`#635
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/635>`__)
+  build logs. (:issue:`635`)
 - Explicitly depend on ``libjs-select2.js`` in the ``debusine-server`` package.
 - Set current context when running server tasks.
 
@@ -736,22 +1088,17 @@ Bug Fixes
 Documentation
 ^^^^^^^^^^^^^
 
-- Add blueprint for dynamic cloud compute scaling. (`#538
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/538>`__)
-- Add blueprint for dynamic cloud storage scaling. (`#539
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/539>`__)
-- Split artifacts documentation by category. (`#541
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/541>`__)
+- Add blueprint for dynamic cloud compute scaling. (:issue:`538`)
+- Add blueprint for dynamic cloud storage scaling. (:issue:`539`)
+- Split artifacts documentation by category. (:issue:`541`)
 - Add blueprint for cloning workspaces for experiments.
-  Add blueprint for granting ``ADMIN`` roles on groups to users. (`#542
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/542>`__)
+  Add blueprint for granting ``ADMIN`` roles on groups to users. (:issue:`542`)
 
 
 Miscellaneous
 ^^^^^^^^^^^^^
 
-- `#666 <https://salsa.debian.org/freexian-team/debusine/-/issues/666>`__,
-  `#704 <https://salsa.debian.org/freexian-team/debusine/-/issues/704>`__
+- :issue:`666`, :issue:`704`
 
 
 Web UI
@@ -761,11 +1108,9 @@ Features
 ^^^^^^^^
 
 - Workspaces can now be set to expire. Owners can configure this and other
-  attributes in the web UI. (`#698
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/698>`__)
+  attributes in the web UI. (:issue:`698`)
 - Display configured task data (see :ref:`task-configuration`) in views that
-  display work requests. (`#707
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/707>`__)
+  display work requests. (:issue:`707`)
 - ``/{scope}/{workspace}/workflow/``: Add ``label`` tag to "With failed work
   requests", to allow enabling/disabling the checkbox by clicking on the text.
 
@@ -773,14 +1118,10 @@ Features
 Bug Fixes
 ^^^^^^^^^
 
-- Fix collection item detail URLs to allow slashes in names. (`#676
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/676>`__)
-- Handle empty Lintian artifacts. (`#677
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/677>`__)
-- Filter workflow template detail view to the current workspace. (`#680
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/680>`__)
-- Preserve redirect URL on login. (`#717
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/717>`__)
+- Fix collection item detail URLs to allow slashes in names. (:issue:`676`)
+- Handle empty Lintian artifacts. (:issue:`677`)
+- Filter workflow template detail view to the current workspace. (:issue:`680`)
+- Preserve redirect URL on login. (:issue:`717`)
 - Fix title of homepage and scope pages.
 
 
@@ -794,7 +1135,7 @@ Features
   :ref:`assets`.
   Add ``create-asset`` and ``list-assets`` commands to create and list assets.
   Add ``asset_permission_check`` method to check permissions on :ref:`assets`.
-  (`#576 <https://salsa.debian.org/freexian-team/debusine/-/issues/576>`__)
+  (:issue:`576`)
 
 
 Workflows
@@ -803,41 +1144,34 @@ Workflows
 Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
-- :ref:`debian_pipeline <workflow-debian-pipeline>`, :ref:`make_signed_source
-  <workflow-make-signed-source>`, :ref:`package_upload
-  <workflow-package-upload>`: Signing keys are now specified by fingerprint,
+- :workflow:`debian_pipeline`, :workflow:`make_signed_source`,
+  :workflow:`package_upload`: Signing keys are now specified by fingerprint,
   rather than a lookup for an asset.
-  Remove the ``debian:suite-signing-keys`` collection. (`#576
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/576>`__)
+  Remove the ``debian:suite-signing-keys`` collection. (:issue:`576`)
 
 
 Features
 ^^^^^^^^
 
-- Add ``subject`` to dynamic data for all workflows. (`#679
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/679>`__)
-- Add workflow to create an experiment workspace. (`#699
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/699>`__)
+- Add ``subject`` to dynamic data for all workflows. (:issue:`679`)
+- Add workflow to create an experiment workspace. (:issue:`699`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- :ref:`make_signed_source <workflow-make-signed-source>`: Fix passing of
-  ``debusine:signing-input`` artifacts between workflow steps. (`#689
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/689>`__)
+- :workflow:`make_signed_source`: Fix passing of
+  :artifact:`debusine:signing-input` artifacts between workflow steps.
+  (:issue:`689`)
 - Fix handling of dependencies between workflows.  In most cases workflows
-  themselves shouldn't have dependencies, but the :ref:`sbuild
-  <workflow-sbuild>` sub-workflow created by :ref:`make_signed_source
-  <workflow-make-signed-source>` is an exception. (`#690
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/690>`__)
-- :ref:`make_signed_source <workflow-make-signed-source>`: Pass all outputs
-  from the :ref:`task-sign` through to the :ref:`task-assemble-signed-source`,
-  not just one of them. (`#692
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/692>`__)
-- :ref:`make_signed_source <workflow-make-signed-source>`: Fix orchestration of
-  :ref:`sbuild <workflow-sbuild>` sub-workflow. (`#695
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/695>`__)
+  themselves shouldn't have dependencies, but the :workflow:`sbuild`
+  sub-workflow created by :workflow:`make_signed_source` is an exception.
+  (:issue:`690`)
+- :workflow:`make_signed_source`: Pass all outputs from the :task:`Sign`
+  task through to the :task:`AssembleSignedSource` task, not just one of
+  them. (:issue:`692`)
+- :workflow:`make_signed_source`: Fix orchestration of :workflow:`sbuild`
+  sub-workflow. (:issue:`695`)
 
 
 Tasks
@@ -846,24 +1180,22 @@ Tasks
 Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
-- :ref:`Sbuild <task-sbuild>`: Remove ``schroot`` support. (`#660
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/660>`__)
+- :task:`Sbuild`: Remove ``schroot`` support. (:issue:`660`)
 
 
 Features
 ^^^^^^^^
 
 - Add ``subject``, ``configuration_context``, and ``runtime_context`` to
-  dynamic data for all worker tasks. (`#679
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/679>`__)
+  dynamic data for all worker tasks. (:issue:`679`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
 - Fix accidental leakage of keyring and customization script names between
-  :ref:`task-mmdebstrap` instances on the same worker, leading to task failure.
-  (`#686 <https://salsa.debian.org/freexian-team/debusine/-/issues/686>`__)
+  :task:`MmDebstrap` task instances on the same worker, leading to task
+  failure. (:issue:`686`)
 
 
 Worker
@@ -872,8 +1204,7 @@ Worker
 Features
 ^^^^^^^^
 
-- Record runtime statistics for tasks. (`#510
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/510>`__)
+- Record runtime statistics for tasks. (:issue:`510`)
 - Log task stages to a work request debug log as well.
 
 
@@ -889,13 +1220,12 @@ Signing
 Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
-- :ref:`task-generate-key`: The result is now a ``debusine:signing-key``
+- :task:`GenerateKey`: The result is now a :asset:`debusine:signing-key`
   :ref:`asset <assets>` rather than an :ref:`artifact <artifact-reference>`.
-  :ref:`task-debsign`, :ref:`task-sign`: The ``key`` parameter is now the key's
+  :task:`Debsign`, :task:`Sign`: The ``key`` parameter is now the key's
   fingerprint, rather than an asset lookup.
-  :ref:`task-sign`, :ref:`task-debsign`: The ``signer`` role is required on
-  signing key assets, by the work request creator. (`#576
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/576>`__)
+  :task:`Sign`, :task:`Debsign`: The ``signer`` role is required on signing
+  key assets, by the work request creator. (:issue:`576`)
 
 
 Features
@@ -903,8 +1233,7 @@ Features
 
 - Allow recording username and resource data in the signing service audit log.
   Record the username and resource description in the audit log, in the
-  :ref:`task-sign` and :ref:`task-debsign`. (`#576
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/576>`__)
+  :task:`Sign` and :task:`Debsign` tasks. (:issue:`576`)
 
 
 General
@@ -914,7 +1243,7 @@ Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
 - Add a new primitive, :ref:`assets`, to represent objects that need
-  permissions, like :ref:`asset-signing-key`.
+  permissions, like :asset:`debusine:signing-key`.
   Existing work requests and workflows are migrated to refer to signing keys by
   fingerprint.
   Existing ``debusine:signing-key`` artifacts are migrated to assets.
@@ -922,8 +1251,7 @@ Incompatible Changes
   artifacts with category ``debusine:signing-key``, and remove them after
   confirming that they have been migrated to assets. This will require removing
   any related artifact relations first. Audit query: ``SELECT * FROM
-  db_artifact WHERE category='debusine:signing-key';`` (`#576
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/576>`__)
+  db_artifact WHERE category='debusine:signing-key';`` (:issue:`576`)
 
 
 .. _release-0.8.1:
@@ -940,29 +1268,25 @@ Features
 - New view with list of workflows (``/<scope>/<workspace>/workflow/``). List
   workflow templates with stats in the workspace view
   (``/<scope></workspace>/``), new view with specific template information
-  (``/<scope>/<workspace>/workflow-template/<workflow-template>/``). (`#400
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/400>`__)
+  (``/<scope>/<workspace>/workflow-template/<workflow-template>/``).
+  (:issue:`400`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- Use an in-memory channel layer for tests, rather than Redis. (`#617
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/617>`__)
+- Use an in-memory channel layer for tests, rather than Redis. (:issue:`617`)
 - Fix cleanup of expired work requests referenced by internal collections.
-  (`#644 <https://salsa.debian.org/freexian-team/debusine/-/issues/644>`__)
+  (:issue:`644`)
 - Retry any work requests that a worker is currently running when it asks for a
-  new work request. (`#667
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/667>`__)
-- Fix tests with python-debian >= 0.1.50. (`#672
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/672>`__)
+  new work request. (:issue:`667`)
+- Fix tests with python-debian >= 0.1.50. (:issue:`672`)
 
 
 Documentation
 ^^^^^^^^^^^^^
 
-- Split collections documentation by category. (`#541
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/541>`__)
+- Split collections documentation by category. (:issue:`541`)
 
 
 Web UI
@@ -972,19 +1296,16 @@ Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
 - Reorganize ``/-/user/`` URLs to contain the user name, and move the logout
-  view to ``/-/logout/``. (`#649
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/649>`__)
+  view to ``/-/logout/``. (:issue:`649`)
 - Remove ``/view/`` from workspace view path (``/<scope>/<workspace>/view/``).
 
 
 Features
 ^^^^^^^^
 
-- Add workflows split-button pulldown to base template. (`#620
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/620>`__)
+- Add workflows split-button pulldown to base template. (:issue:`620`)
 - For workflows that need input, link to the first work request that needs
-  input. (`#674
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/674>`__)
+  input. (:issue:`674`)
 - Add a user detail view.
 - Extend workspace detail view to show figures about workflows.
 - Use `select2 <https://select2.org/>`__ for the multiple choice fields on the
@@ -995,16 +1316,13 @@ Bug Fixes
 ^^^^^^^^^
 
 - Hide collections with the category ``workflow-internal`` from the navbar
-  collections dropdown. (`#639
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/639>`__)
+  collections dropdown. (:issue:`639`)
 - Return 404 when trying to view incomplete files, rather than logging a noisy
   traceback.
   Don't link to incomplete files, and mark them as "(incomplete)".
   Mark artifacts as incomplete in artifact lists if any of their files are
-  incomplete. (`#667
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/667>`__)
-- Fix ordering of workers list by "Last seen". (`#669
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/669>`__)
+  incomplete. (:issue:`667`)
+- Fix ordering of workers list by "Last seen". (:issue:`669`)
 
 
 Workflows
@@ -1013,25 +1331,20 @@ Workflows
 Features
 ^^^^^^^^
 
-- :ref:`debian_pipeline <workflow-debian-pipeline>`, :ref:`qa <workflow-qa>`,
-  :ref:`reverse_dependencies_autopkgtest
-  <workflow-reverse-dependencies-autopkgtest>`, :ref:`sbuild
-  <workflow-sbuild>`: Support ``debian:upload`` artifacts as input. (`#590
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/590>`__)
-- :ref:`autopkgtest <workflow-autopkgtest>`, :ref:`piuparts
-  <workflow-piuparts>`, :ref:`reverse_dependencies_autopkgtest
-  <workflow-reverse-dependencies-autopkgtest>`, :ref:`qa <workflow-qa>`,
-  :ref:`debian_pipeline <workflow-debian-pipeline>`: Add support for
-  ``extra_repositories``. (`#622
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/622>`__)
+- :workflow:`debian_pipeline`, :workflow:`qa`,
+  :workflow:`reverse_dependencies_autopkgtest`, :workflow:`sbuild`: Support
+  :artifact:`debian:upload` artifacts as input. (:issue:`590`)
+- :workflow:`autopkgtest`, :workflow:`piuparts`,
+  :workflow:`reverse_dependencies_autopkgtest`, :workflow:`qa`,
+  :workflow:`debian_pipeline`: Add support for ``extra_repositories``.
+  (:issue:`622`)
 
 
 Bug Fixes
 ^^^^^^^^^
 
 - Fix looking up the architecture from a lookup that returns an artifact from a
-  collection. (`#661
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/661>`__)
+  collection. (:issue:`661`)
 
 
 Tasks
@@ -1040,30 +1353,25 @@ Tasks
 Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
-- :ref:`Autopkgtest <task-autopkgtest>`: Replace the ``extra_apt_sources``
-  property with ``extra_repositories``, following the same syntax as
-  :ref:`Sbuild <task-sbuild>`. (`#622
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/622>`__)
+- :task:`Autopkgtest`: Replace the ``extra_apt_sources`` property with
+  ``extra_repositories``, following the same syntax as :task:`Sbuild`.
+  (:issue:`622`)
 
 
 Features
 ^^^^^^^^
 
-- Gather runtime statistics from executors. (`#510
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/510>`__)
-- :ref:`Piuparts <task-piuparts>`: Add support for ``extra_repositories``.
-  (`#622 <https://salsa.debian.org/freexian-team/debusine/-/issues/622>`__)
-- :ref:`SimpleSystemImageBuild <task-simplesystemimagebuild>`: Switch from
-  debos to debefivm-create for VM image creation. This also drops support for
-  the Debian Jessie release.
+- Gather runtime statistics from executors. (:issue:`510`)
+- :task:`Piuparts`: Add support for ``extra_repositories``. (:issue:`622`)
+- :task:`SimpleSystemImageBuild`: Switch from debos to debefivm-create for
+  VM image creation. This also drops support for the Debian Jessie release.
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- :ref:`Piuparts <task-piuparts>`: Compress processed base tarball for pre-1.3
-  compatibility. (`#638
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/638>`__)
+- :task:`Piuparts`: Compress processed base tarball for pre-1.3
+  compatibility. (:issue:`638`)
 
 
 General
@@ -1072,8 +1380,7 @@ General
 Miscellaneous
 ^^^^^^^^^^^^^
 
-- `#648 <https://salsa.debian.org/freexian-team/debusine/-/issues/648>`__,
-  `#670 <https://salsa.debian.org/freexian-team/debusine/-/issues/670>`__
+- :issue:`648`, :issue:`670`
 
 
 .. _release-0.8.0:
@@ -1087,20 +1394,17 @@ Server
 Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
-- Refactor tabular output to also allow machine-readable YAML. (`#247
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/247>`__)
+- Refactor tabular output to also allow machine-readable YAML. (:issue:`247`)
 - Add permission checks to all API views that accept user authentication.
-  (`#568 <https://salsa.debian.org/freexian-team/debusine/-/issues/568>`__)
-- Enforce permissions when creating artifacts. (`#614
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/614>`__)
+  (:issue:`568`)
+- Enforce permissions when creating artifacts. (:issue:`614`)
 - Deprecate ``debusine-admin create_workspace``, ``delete_workspace``,
   ``list_workspace`` and ``manage_workspace`` in favor of
   ``debusine-admin workspace <subcommand>``.
   ``debusine-admin workspace create`` creates workspaces with a default
   30-days expiration delay (instead of no expiration by default for
   ``create_workspace``), and requires an existing owner group to be
-  specified. (`#640
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/640>`__)
+  specified. (:issue:`640`)
 - Enforce permissions when retrying work requests.
 
 
@@ -1108,53 +1412,45 @@ Features
 ^^^^^^^^
 
 - ``debusine-admin create_workspace``: Assign an owners group, controlled by
-  the ``--with-owners-group`` option. (`#527
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/527>`__)
-- Add infrastructure to help enforcing permissions in views. (`#598
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/598>`__)
+  the ``--with-owners-group`` option. (:issue:`527`)
+- Add infrastructure to help enforcing permissions in views. (:issue:`598`)
 - Record information about any originating workflow template in work requests,
   and add a cached human-readable summary of their most important parameters.
-  (`#618 <https://salsa.debian.org/freexian-team/debusine/-/issues/618>`__)
+  (:issue:`618`)
 - Implement ``debusine-admin group list`` and ``debusine-admin group members``.
-  (`#623 <https://salsa.debian.org/freexian-team/debusine/-/issues/623>`__)
+  (:issue:`623`)
 - Add a contributor role for workspaces; contributors can display the workspace
-  and create artifacts in it. (`#625
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/625>`__)
+  and create artifacts in it. (:issue:`625`)
 - Introduce new ``debusine-admin workspace`` subcommand, regrouping and
   expanding the existing ``*_workspace``. See :ref:`debusine-admin
-  workspace <debusine-admin-cli-workspace>`. (`#640
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/640>`__)
+  workspace <debusine-admin-cli-workspace>`. (:issue:`640`)
 - Allow bare artifact IDs in workflow input.
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- Validate new scope, user, collection, and notification channel names. (`#551
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/551>`__)
-- Allow creating workflows using scoped workspace names. (`#570
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/570>`__)
+- Validate new scope, user, collection, and notification channel names.
+  (:issue:`551`)
+- Allow creating workflows using scoped workspace names. (:issue:`570`)
 - Report workflow validation errors directly to the client on creation, rather
-  than leaving unvalidated workflows lying around in error states. (`#633
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/633>`__)
-- Set up permissions context when running server tasks. (`#642
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/642>`__)
-- Port to Django 5.1. (`#646
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/646>`__)
+  than leaving unvalidated workflows lying around in error states.
+  (:issue:`633`)
+- Set up permissions context when running server tasks. (:issue:`642`)
+- Port to Django 5.1. (:issue:`646`)
 - Check work request status when running Celery tasks, to guard against
   mistakes elsewhere.
 - Enable Django's ``ATOMIC_REQUESTS`` setting, avoiding a class of mistakes
   where views forget to wrap their changes in a transaction.
 - Implement ``add_to_group`` option in signon providers.
-- Link externally-signed artifacts to the :ref:`ExternalDebsign
-  <task-external-debsign>` work request.
+- Link externally-signed artifacts to the :task:`ExternalDebsign` work
+  request.
 
 
 Miscellaneous
 ^^^^^^^^^^^^^
 
-- `#626 <https://salsa.debian.org/freexian-team/debusine/-/issues/626>`__,
-  `#643 <https://salsa.debian.org/freexian-team/debusine/-/issues/643>`__
+- :issue:`626`, :issue:`643`
 
 
 Web UI
@@ -1164,38 +1460,28 @@ Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
 - Drop workspaces from homepage; they are now visible on scope pages instead.
-  (`#554 <https://salsa.debian.org/freexian-team/debusine/-/issues/554>`__)
-- Move ``/api-auth/`` views to ``/api/auth/``. (`#581
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/581>`__)
+  (:issue:`554`)
+- Move ``/api-auth/`` views to ``/api/auth/``. (:issue:`581`)
 - Move ``admin``, ``task-status``, ``user``, and ``workers`` views to unscoped
-  URLs. (`#582
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/582>`__)
-- Move account-related views to unscoped URLs. (`#583
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/583>`__)
-- Move work request URLs under workspaces. (`#584
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/584>`__)
-- Move artifact URLs under workspaces. (`#585
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/585>`__)
+  URLs. (:issue:`582`)
+- Move account-related views to unscoped URLs. (:issue:`583`)
+- Move work request URLs under workspaces. (:issue:`584`)
+- Move artifact URLs under workspaces. (:issue:`585`)
 
 
 Features
 ^^^^^^^^
 
-- Set the current workspace in views that use it. (`#395
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/395>`__)
+- Set the current workspace in views that use it. (:issue:`395`)
 - Move "Workers" and "Task status" from the navigation bar to the footer.
   Add a per-scope landing page.
   Add a "Collections" menu in workspaces.
-  Add view to list and filter workflows. (`#557
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/557>`__)
-- Show current and other workspaces in base template. (`#624
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/624>`__)
-- Merge workspace list into scope detail view. (`#629
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/629>`__)
+  Add view to list and filter workflows. (:issue:`557`)
+- Show current and other workspaces in base template. (:issue:`624`)
+- Merge workspace list into scope detail view. (:issue:`629`)
 - Show the current scope as the "brand", with an optional label and icon.
-  (`#630 <https://salsa.debian.org/freexian-team/debusine/-/issues/630>`__)
-- Display git-based version information in footer. (`#631
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/631>`__)
+  (:issue:`630`)
+- Display git-based version information in footer. (:issue:`631`)
 - Show results in workflow views.
 - Show workflow details open by default.
 
@@ -1203,11 +1489,10 @@ Features
 Bug Fixes
 ^^^^^^^^^
 
-- Silence unnecessary logging when viewing invalid work requests. (`#588
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/588>`__)
-- Log out via ``POST`` rather than ``GET``. (`#646
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/646>`__)
-- :ref:`task-external-debsign`: Fix "Waiting for signature" card.
+- Silence unnecessary logging when viewing invalid work requests.
+  (:issue:`588`)
+- Log out via ``POST`` rather than ``GET``. (:issue:`646`)
+- :task:`ExternalDebsign`: Fix "Waiting for signature" card.
 - Consider task type when selecting work request view plugins.
 - Fix "Last Seen" and "Status" for Celery workers.
 - List workflow templates in workspace detail view.
@@ -1217,14 +1502,13 @@ Documentation
 ^^^^^^^^^^^^^
 
 - Document scope as required in client configuration, and simplify example if
-  there is only one. (`#613
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/613>`__)
+  there is only one. (:issue:`613`)
 
 
 Miscellaneous
 ^^^^^^^^^^^^^
 
-- `#645 <https://salsa.debian.org/freexian-team/debusine/-/issues/645>`__
+- :issue:`645`
 
 
 Client
@@ -1233,8 +1517,7 @@ Client
 Documentation
 ^^^^^^^^^^^^^
 
-- Add documentation for the client configuration file. (`#613
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/613>`__)
+- Add documentation for the client configuration file. (:issue:`613`)
 
 
 Workflows
@@ -1243,30 +1526,23 @@ Workflows
 Features
 ^^^^^^^^
 
-- Add :ref:`package_publish <workflow-package-publish>` workflow. (`#396
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/396>`__)
-- Add :ref:`reverse_dependencies_autopkgtest
-  <workflow-reverse-dependencies-autopkgtest>` workflow. (`#397
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/397>`__)
-- :ref:`autopkgtest <workflow-autopkgtest>`, :ref:`sbuild <workflow-sbuild>`:
-  Implement ``arch_all_host_architecture``. (`#574
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/574>`__)
-- :ref:`sbuild <workflow-sbuild>`: Implement ``extra_repositories``. (`#622
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/622>`__)
-- :ref:`package_upload <workflow-package-upload>`: Support uploading to delayed
-  queues.
+- Add :workflow:`package_publish` workflow. (:issue:`396`)
+- Add :workflow:`reverse_dependencies_autopkgtest` workflow. (:issue:`397`)
+- :workflow:`autopkgtest`, :workflow:`sbuild`: Implement
+  ``arch_all_host_architecture``. (:issue:`574`)
+- :workflow:`sbuild`: Implement ``extra_repositories``. (:issue:`622`)
+- :workflow:`package_upload`: Support uploading to delayed queues.
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- :ref:`debian_pipeline <workflow-debian-pipeline>`: Handle some ``build-*``
-  promises being missing.
-- :ref:`make_signed_source <workflow-make-signed-source>`, :ref:`package_upload
-  <workflow-package-upload>`: Fix invalid creation of some child work requests.
-  Add validation to catch such problems in future.
-- :ref:`package_upload <workflow-package-upload>`: Set correct task type for
-  ``ExternalDebsign``.
+- :workflow:`debian_pipeline`: Handle some ``build-*`` promises being
+  missing.
+- :workflow:`make_signed_source`, :workflow:`package_upload`: Fix invalid
+  creation of some child work requests. Add validation to catch such
+  problems in future.
+- :workflow:`package_upload`: Set correct task type for ``ExternalDebsign``.
 - Fix work request statuses in several workflows.
 - Mark empty workflows as completed.
 
@@ -1283,31 +1559,26 @@ Tasks
 Incompatible Changes
 ^^^^^^^^^^^^^^^^^^^^
 
-- :ref:`Sbuild <task-sbuild>`: Stop running ``lintian``; it's now
-  straightforward to run both ``sbuild`` and ``lintian`` in sequence using the
-  :ref:`debian_pipeline workflow <workflow-debian-pipeline>`. (`#260
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/260>`__)
+- :task:`Sbuild`: Stop running ``lintian``; it's now straightforward to run
+  both ``sbuild`` and ``lintian`` in sequence using the
+  :workflow:`debian_pipeline` workflow. (:issue:`260`)
 
 
 Features
 ^^^^^^^^
 
-- :ref:`Sbuild <task-sbuild>`: Implement ``extra_repositories``. (`#622
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/622>`__)
-- :ref:`Lintian <task-lintian>`, :ref:`Piuparts <task-piuparts>`: Capture
-  ``apt-get`` output.
+- :task:`Sbuild`: Implement ``extra_repositories``. (:issue:`622`)
+- :task:`Lintian`, :task:`Piuparts`: Capture ``apt-get`` output.
 
 
 Bug Fixes
 ^^^^^^^^^
 
-- :ref:`Sbuild <task-sbuild>`: Don't count it as a success if the host
-  architecture is not supported by the source package. (`#592
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/592>`__)
-- :ref:`Sbuild <task-sbuild>`: Drop the redundant ``--no-clean`` argument.
-  (`#603 <https://salsa.debian.org/freexian-team/debusine/-/issues/603>`__)
-- :ref:`Piuparts <task-piuparts>`: Handle ``piuparts`` being in either
-  ``/usr/sbin`` or ``/usr/bin``.
+- :task:`Sbuild`: Don't count it as a success if the host architecture is
+  not supported by the source package. (:issue:`592`)
+- :task:`Sbuild`: Drop the redundant ``--no-clean`` argument. (:issue:`603`)
+- :task:`Piuparts`: Handle ``piuparts`` being in either ``/usr/sbin`` or
+  ``/usr/bin``.
 - Wait for Incus instances to boot systemd.
 
 
@@ -1320,7 +1591,7 @@ Documentation
 Miscellaneous
 ^^^^^^^^^^^^^
 
-- `#652 <https://salsa.debian.org/freexian-team/debusine/-/issues/652>`__
+- :issue:`652`
 
 
 Signing
@@ -1329,8 +1600,7 @@ Signing
 Documentation
 ^^^^^^^^^^^^^
 
-- Add blueprint for restricting use of signing keys. (`#576
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/576>`__)
+- Add blueprint for restricting use of signing keys. (:issue:`576`)
 
 
 General
@@ -1345,8 +1615,7 @@ Features
 Bug Fixes
 ^^^^^^^^^
 
-- Ensure consistent ``LANG`` settings in systemd services. (`#494
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/494>`__)
+- Ensure consistent ``LANG`` settings in systemd services. (:issue:`494`)
 - Reset failed ``*-migrate`` services in integration tests.
 
 
@@ -1383,7 +1652,7 @@ Server
 * Implement an admin role for scopes.
 * Validate group names.
 * Add ``debusine-admin group`` management command.
-* Add :ref:`make_signed_source workflow <workflow-make-signed-source>`.
+* Add :workflow:`make_signed_source` workflow.
 * Add API for monitoring worker status.
 * Add roles for workspaces.
 * Handle scopes in workspace management commands.
@@ -1396,18 +1665,17 @@ Server
 * Improve command-line handling of constraint violations.
 * Add :ref:`singleton collections <collection-singleton>`.
 * Add permission for creating workspaces.
-* Add :ref:`lintian workflow <workflow-lintian>`.
+* Add :workflow:`lintian` workflow.
 * Fix ``debusine-admin create_workspace --default-expiration-delay``
   command-line parsing.
 * Support lookups that match items of multiple types.
-* Add :ref:`piuparts workflow <workflow-piuparts>`.
-* Add :ref:`qa workflow <workflow-qa>`.
-* Implement ``signing_template_names`` in :ref:`sbuild workflow
-  <workflow-sbuild>`.
-* Add ``same_work_request`` lookup filter to :ref:`debian:package-build-logs
-  collection <collection-package-build-logs>`.
-* Add :ref:`debian_pipeline workflow <workflow-debian-pipeline>`.
-* Add :ref:`task-copy-collection-items`.
+* Add :workflow:`piuparts` workflow.
+* Add :workflow:`qa` workflow.
+* Implement ``signing_template_names`` in :workflow:`sbuild` workflow.
+* Add ``same_work_request`` lookup filter to
+  :collection:`debian:package-build-logs` collection.
+* Add :workflow:`debian_pipeline` workflow.
+* Add :task:`CopyCollectionItems` task.
 
 Web UI
 ~~~~~~
@@ -1426,29 +1694,29 @@ Client
 Worker
 ~~~~~~
 
-* :ref:`SystemBootstrap task <system-bootstrap-task>`:
+* :task:`SystemBootstrap`:
 
   * Allow keyring URLs starting with ``file:///usr/share/keyrings/``.
   * Write non-ASCII-armored keyrings to ``.gpg`` rather than ``.asc``.
 
-* :ref:`task-sbuild`:
+* :task:`Sbuild`:
 
   * Relax ``binnmu_maintainer`` validation in dynamic data to avoid failures
     if ``DEBUSINE_FQDN`` is under a non-email-suitable domain.
   * Drop unnecessary ``sbuild:host_architecture`` from dynamic metadata.
 
-* Add :ref:`task-debdiff`.
+* Add :task:`DebDiff` task.
 
 Signing
 ~~~~~~~
 
-* :ref:`task-sign`:
+* :task:`Sign`:
 
   * Fail if signing failed.
   * Use detached signatures when signing UEFI files.
   * Take multiple unsigned artifacts and sign them all with the same key.
 
-* Register :ref:`task-debsign`, which previously existed but was unusable.
+* Register :task:`Debsign` task, which previously existed but was unusable.
 
 Documentation
 ~~~~~~~~~~~~~
@@ -1490,34 +1758,33 @@ Server
 
 * Tighten up handling of creating artifacts with files that already exist.
 * Add ``Wait`` task type.
-* Add :ref:`task-delay`.
-* Add :ref:`task-external-debsign` and a corresponding API view to allow a
+* Add :task:`Delay` task.
+* Add :task:`ExternalDebsign` task and a corresponding API view to allow a
   client to provide a signature to it.
 * Add a system for coordinating multiple sub-workflows within a higher-level
   workflow.
 * Introduce :ref:`scopes <explanation-scopes>`.
 * Introduce a basic application context.
 * Run workflow orchestrators via Celery.
-* Add :ref:`autopkgtest workflow <workflow-autopkgtest>`.
+* Add :workflow:`autopkgtest` workflow.
 * Add ``debusine-admin scope`` command.
 * Add :ref:`action-retry-with-delays` action for use in ``on_failure`` event
   reactions.
-* :ref:`sbuild workflow <workflow-sbuild>`:
+* :workflow:`sbuild` workflow:
 
   * Support build profiles.
   * Add ``retry_delays``, which can be used for simplistic retries of
     dependency-wait failures.
 
 * Let ``nginx`` gzip-compress text responses.
-* Add :ref:`task-package-upload`.
-* Add :ref:`package_upload workflow <workflow-package-upload>`.
+* Add :task:`PackageUpload` task.
+* Add :workflow:`package_upload` workflow.
 
 Web UI
 ~~~~~~
 
-* Improve label for :ref:`debian:binary-package artifacts
-  <artifact-binary-package>`.
-* Show "Waiting for signature" card on blocked :ref:`task-external-debsign`
+* Improve label for :artifact:`debian:binary-package` artifacts.
+* Show "Waiting for signature" card on blocked :task:`ExternalDebsign`
   requests.
 * Show forward and reverse-extends artifact relations.
 
@@ -1533,20 +1800,20 @@ Client
 Worker
 ~~~~~~
 
-* Add :ref:`task-make-source-package-upload`.
-* Add :ref:`task-merge-uploads`.
-* :ref:`task-sbuild`:
+* Add :task:`MakeSourcePackageUpload` task.
+* Add :task:`MergeUploads` task.
+* :task:`Sbuild`:
 
   * Support ``build_profiles``.
   * Don't permit architecture-independent binary-only NMUs.
-  * Fix ``architecture`` field of created :ref:`debian:binary-packages
-    artifacts <artifact-binary-packages>`.
+  * Fix ``architecture`` field of created :artifact:`debian:binary-packages`
+    artifacts.
   * Export ``DEB_BUILD_OPTIONS`` for ``nocheck`` and ``nodoc`` profiles.
   * Set a default maintainer for binary-only NMUs.
 
-* Apply some environment constraints to the :ref:`task-piuparts`'s
+* Apply some environment constraints to the :task:`Piuparts` task's
   ``base_tgz`` lookup.
-* Register :ref:`task-extract-for-signing`, which previously existed but was
+* Register :task:`ExtractForSigning` task, which previously existed but was
   unusable.
 * Fix ``unshare`` executor compatibility with Debian environments from
   before the start of the ``/usr`` merge.
@@ -1557,7 +1824,7 @@ Worker
 Signing
 ~~~~~~~
 
-* Add :ref:`task-debsign`.
+* Add :task:`Debsign` task.
 
 Documentation
 ~~~~~~~~~~~~~
@@ -1600,10 +1867,9 @@ Server
 * Mark retried work requests as blocked if necessary.
 * Add an API endpoint to review manual unblocks.
 * Unassign pending or running work requests when disabling a worker.
-* Fix ineffective ``debian:environments`` uniqueness constraint.
-* Adjust the :ref:`sbuild workflow <workflow-sbuild>` to allow storing build
-  logs in a new :ref:`debian:package-build-logs collection
-  <collection-package-build-logs>`.
+* Fix ineffective :collection:`debian:environments` uniqueness constraint.
+* Adjust the :workflow:`sbuild` workflow to allow storing build logs in a
+  new :collection:`debian:package-build-logs` collection.
 * Default to a five-second timeout when sending email, to avoid hangs if the
   local mail transport agent is broken.
 * Don't buffer output to log files.
@@ -1641,12 +1907,11 @@ Worker
 ~~~~~~
 
 * Make ``arch-test`` a dependency rather than an optional feature.
-* Add :ref:`task-extract-for-signing`.
-* Add :ref:`task-assemble-signed-source`.
-* :ref:`task-sbuild`:
+* Add :task:`ExtractForSigning` task.
+* Add :task:`AssembleSignedSource` task.
+* :task:`Sbuild`:
 
-  * Create a :ref:`debusine-signing-input artifact
-    <artifact-signing-input>`.
+  * Create a :artifact:`debusine:signing-input` artifact.
   * Ignore ``dose-debcheck`` decoding errors.
   * Support building binary-only NMUs.
   * Skip ``dose-debcheck`` extraction on success.
@@ -1850,11 +2115,11 @@ Server
 ~~~~~~
 
 * Add infrastructure for collections.
-* Implement ``debian:environments`` collection.
-* Implement ``debian:suite-lintian`` collection.
+* Implement :collection:`debian:environments` collection.
+* Implement :collection:`debian:suite-lintian` collection.
 * Add ``debusine-admin create_collection`` command.
 * Store tokens only in a hashed form.
-* Implement ``debian:suite`` collection.
+* Implement :collection:`debian:suite` collection.
 * Move the scheduler to a dedicated Celery worker.
 * Generalize work request notifications into event reactions.
 * Implement basic building blocks of workflows.
@@ -1870,8 +2135,9 @@ Server
 * Implement collection item lookup syntax and semantics.
 * Implement ``aptmirror`` server task.
 * Implement ``updatesuitelintiancollection`` task to update a
-  ``debian:suite-lintian`` collection from ``debian:suite``.
-* Implement ``debusine:workflow-internal`` collection.
+  :collection:`debian:suite-lintian` collection from
+  :collection:`debian:suite`.
+* Implement :collection:`debusine:workflow-internal` collection.
 * Add ``debusine-admin create_work_request`` command.
 * Implement ``sbuild`` and ``update_environments`` workflows.
 * Add a ``_system`` user for use by scripts.
@@ -1959,7 +2225,7 @@ Documentation
 Quality
 ~~~~~~~
 
-* Validate the summary in ``debian:lintian`` artifacts.
+* Validate the summary in :artifact:`debian:lintian` artifacts.
 * Drop compatibility with Debian bullseye; Debusine now requires Python >=
   3.11.
 * Enforce pydantic models for ``WorkRequest.workflow_data`` and
@@ -2044,7 +2310,8 @@ Server
 * Add ``debusine-admin info`` command to help with setting up deployments.
 * Add daily artifact cleanup timer.
 * Use pydantic models for artifact data.
-* Add remote, read-only file storage backend for external Debian archives.
+* Add remote, read-only file storage backend for :file-backend:`external
+  Debian archives <ExternalDebianSuite>`.
 
 Web UI
 ~~~~~~
@@ -2112,7 +2379,7 @@ Documentation
 ~~~~~~~~~~~~~
 
 * Drop the "slug" field and the "repository" type.
-* Document ``debian:package-build-log`` artifact in ontology.
+* Document :artifact:`debian:package-build-log` artifact in ontology.
 * Document using ``local.py`` to change settings.
 * Create an overview document with an elevator-pitch-style introduction.
 * Add initial design for ``autopkgtest`` and ``lintian`` tasks.

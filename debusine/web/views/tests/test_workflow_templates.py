@@ -64,6 +64,12 @@ class WorkflowTemplateDetailViewTests(ViewTestMixin, TestCase):
             f"(type {self.template.task_name}, "
             f"priority {self.template.priority})",
         )
+        self.assertEqual(div.div.a, self.template.task_name)
+        self.assertEqual(
+            div.div.a.attrib["href"],
+            f"https://freexian-team.pages.debian.net/debusine/"
+            f"reference/workflows/specs/{self.template.task_name}.html",
+        )
 
     def test_namespaced_by_workspace(self) -> None:
         # Create another workflow template with the same name, in a
@@ -77,3 +83,15 @@ class WorkflowTemplateDetailViewTests(ViewTestMixin, TestCase):
         response = self.client.get(self.template.get_absolute_url())
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_does_not_exist(self) -> None:
+        """A nonexistent workflow template returns 404."""
+        response = self.client.get(
+            f"/{self.scenario.workspace}/workflow-template/nonexistent/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            response.context["exception"],
+            "No WorkflowTemplate matches the given query.",
+        )

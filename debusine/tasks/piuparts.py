@@ -16,18 +16,25 @@ https://freexian-team.pages.debian.net/debusine/reference/tasks.html#piuparts-ta
 
 import gzip
 import os
+import re
 import shlex
 import shutil
 import tarfile
+from collections.abc import Collection
 from io import BytesIO
 from pathlib import Path
+from subprocess import CalledProcessError
 from typing import Any
 
+from debian.deb822 import Packages
+from debian.debian_support import Version
+
 import debusine.utils
-from debusine.artifacts import BinaryPackages
 from debusine.artifacts.models import (
     ArtifactCategory,
     CollectionCategory,
+    DebianBinaryPackage,
+    DebianBinaryPackages,
     DebianSystemTarball,
     DebianUpload,
     get_source_package_name,
@@ -36,9 +43,10 @@ from debusine.tasks import (
     BaseTaskWithExecutor,
     ExtraRepositoryMixin,
     RunCommandTask,
+    TaskConfigError,
 )
 from debusine.tasks.executors import ExecutorImageCategory
-from debusine.tasks.models import PiupartsData, PiupartsDynamicData
+from debusine.tasks.models import BackendType, PiupartsData, PiupartsDynamicData
 from debusine.tasks.server import TaskDatabaseInterface
 
 
@@ -88,6 +96,7 @@ class Piuparts(
             default_category=CollectionCategory.ENVIRONMENTS,
             image_category=ExecutorImageCategory.TARBALL,
             set_backend=False,
+            try_variant=False,
         )
 
         self.ensure_artifact_categories(
@@ -98,17 +107,19 @@ class Piuparts(
         assert isinstance(base_tgz.data, DebianSystemTarball)
 
         package_names = []
-        for binary_artifact in input_binary_artifacts:
+        for i, binary_artifact in enumerate(input_binary_artifacts):
             self.ensure_artifact_categories(
-                configuration_key="input.binary_artifact",
+                configuration_key=f"input.binary_artifacts[{i}]",
                 category=binary_artifact.category,
                 expected=(
+                    ArtifactCategory.BINARY_PACKAGE,
                     ArtifactCategory.BINARY_PACKAGES,
                     ArtifactCategory.UPLOAD,
                 ),
             )
             assert isinstance(
-                binary_artifact.data, (BinaryPackages, DebianUpload)
+                binary_artifact.data,
+                (DebianBinaryPackage, DebianBinaryPackages, DebianUpload),
             )
             package_names.append(get_source_package_name(binary_artifact.data))
 
@@ -127,6 +138,16 @@ class Piuparts(
             runtime_context=runtime_context,
             configuration_context=configuration_context,
         )
+
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        if not self.dynamic_data:
+            return []
+        return [
+            self.dynamic_data.environment_id,
+            self.dynamic_data.base_tgz_id,
+            *self.dynamic_data.input_binary_artifacts_ids,
+        ]
 
     def fetch_input(self, destination: Path) -> bool:
         """Populate work directory with user-specified binary artifact(s)."""
@@ -182,9 +203,10 @@ class Piuparts(
             check=True,
         )
 
-        # mmdebstrap to use mmtarfilter
+        self._check_piuparts_version()
+
         self.run_executor_command(
-            ["apt-get", "--yes", "install", "piuparts", "mmdebstrap"],
+            ["apt-get", "--yes", "install", "piuparts"],
             log_filename="install.log",
             run_as_root=True,
             check=True,
@@ -196,6 +218,50 @@ class Piuparts(
         self._prepare_scripts(self._scripts_dir)
 
         return True
+
+    def _check_piuparts_version(self) -> None:
+        """Check that the environment contains a supported piuparts version."""
+        # We are root, older piuparts will work
+        if self.backend in (BackendType.INCUS_VM, BackendType.QEMU):
+            return
+
+        # We are inside a container, and can't create device nodes (#638)
+        min_version = Version("1.5")
+
+        cmd = ["apt-cache", "show", "piuparts"]
+        assert self.executor_instance
+        try:
+            p = self.executor_instance.run(
+                cmd,
+                check=True,
+                run_as_root=True,
+                text=True,
+            )
+        except CalledProcessError as e:
+            with self.open_debug_log_file("install.log", mode="a") as log:
+                log.write(
+                    f"Failed to determine available piuparts version.\n"
+                    f"command: {shlex.join(cmd)}\n"
+                    f"exitcode: {e.returncode}\n"
+                    f"stdout: {e.stdout}\n"
+                    f"stderr: {e.stderr}\n"
+                )
+                raise
+        # `apt-cache show piuparts` will only produce a small number of
+        # paragraphs, so we don't need the fast parser.  With the default
+        # behaviour (`use_apt_pkg=True`), we got a "Parsing of Deb822 data
+        # with python3-apt's apt_pkg was requested but this cannot be done
+        # on non-file input" warning.
+        for package in Packages.iter_paragraphs(p.stdout, use_apt_pkg=False):
+            if package.source_version < min_version:
+                raise TaskConfigError(
+                    f"The environment contains a version of piuparts "
+                    f"({package.source_version}) that is too old. "
+                    f"Container-based backends require piuparts >= "
+                    f"{min_version}. We recommend a >= trixie environment "
+                    f"with an older base_tgz."
+                )
+            break
 
     def _prepare_base_tgz(self, download_directory: Path) -> None:
         """
@@ -215,73 +281,133 @@ class Piuparts(
         self._base_tar_data = DebianSystemTarball.parse_obj(
             base_tgz_response.data
         )
-
-        self._base_tar = base_tar_dir / base_tgz_response.data["filename"]
-        assert self._base_tar  # For mypy, otherwise fails below with:
-        #     error: Item "None" of "Path | None" has no \
-        #     attribute "stem" [union-attr]
+        self._base_tar = base_tar_dir / self._base_tar_data.filename
 
         # Is the base_tgz set up for systemd-resolved?
         resolvconf_symlink = False
+        # Does /var/lib/dpkg/available exist?
+        dpkg_available = False
         with tarfile.open(self._base_tar) as tar:
-            for name in (
-                "etc/resolv.conf",
-                "/etc/resolv.conf",
-                "./etc/resolv.conf",
-            ):
-                try:
-                    if tar.getmember(name).issym():  # pragma: no cover
-                        resolvconf_symlink = True
-                        break
-                except KeyError:
-                    continue
+            first_member = tar.getmembers()[0]
+            # How are the members prefixed? Typically ./
+            m = re.search(r"^(?:\.?/)?", first_member.name)
+            assert m  # This regex would match an empty string
+            prefix = m.group(0)
 
-        if not base_tgz_response.data["with_dev"] and not resolvconf_symlink:
+            try:
+                if tar.getmember(
+                    f"{prefix}etc/resolv.conf"
+                ).issym():  # pragma: no cover
+                    resolvconf_symlink = True
+            except KeyError:
+                pass
+
+            try:
+                if tar.getmember(
+                    f"{prefix}var/lib/dpkg/available"
+                ):  # pragma: no cover
+                    dpkg_available = True
+            except KeyError:
+                pass
+
+        if (
+            not base_tgz_response.data["with_dev"]
+            and not resolvconf_symlink
+            and dpkg_available
+        ):
             # No processing needs to be done, the image can stay as
             # .tar.xz (or the format retrieved)
             return
 
-        # /dev/* and/or /etc/resolv.conf will be removed from the image.
-        # Will create a .tar.gz file, and point self._base_tar to the new file.
+        # The tar will be fixed up and self._base_tar pointed at the new file
 
-        processed_tar_name = self._base_tar.stem.rsplit(".", 1)[0] + ".tar"
-        processed_tar = self._base_tar.with_name(processed_tar_name)
-
-        cmd = ["mmtarfilter"]
+        filter_dirs: list[Path] = []
+        filter_files: list[Path] = []
+        create_empty_files: list[Path] = []
         if base_tgz_response.data["with_dev"]:
-            cmd.append("--path-exclude=/dev/*")
+            filter_dirs.append(Path("/dev"))
         if resolvconf_symlink:
-            cmd.append("--path-exclude=/etc/resolv.conf")
+            # Replace a broken symlink with an empty file
+            filter_files.append(Path("/etc/resolv.conf"))
+            create_empty_files.append(Path("/etc/resolv.conf"))
+        if not dpkg_available:
+            create_empty_files.append(Path("/var/lib/dpkg/available"))
 
-        with (
-            self._base_tar.open("rb") as input_image,
-            processed_tar.open("wb") as output_image,
-        ):
-            self.executor_instance.run(
-                cmd, stdin=input_image, stdout=output_image
-            )
-
-        if resolvconf_symlink:
-            with tarfile.open(processed_tar, "a") as tar:
-                tarinfo = tarfile.TarInfo(name="./etc/resolv.conf")
-                tarinfo.mode = 0o644
-                tarinfo.size = 0
-                tar.addfile(tarinfo, BytesIO(b""))
-
-        # Compress the processed tarball for compatibility with piuparts < 1.3
-        processed_tar_gz = processed_tar.with_suffix(".tar.gz")
-        with (
-            open(processed_tar, "rb") as uncompressed,
-            gzip.open(processed_tar_gz, "wb") as compressed,
-        ):
-            shutil.copyfileobj(uncompressed, compressed)
-
-        # Delete unused images
-        self._base_tar.unlink()
-        processed_tar.unlink()
+        processed_tar_gz = self._filter_tar(
+            self._base_tar,
+            filter_dirs=filter_dirs,
+            filter_files=filter_files,
+            create_empty_files=create_empty_files,
+        )
 
         # Use the processed image
         self._base_tar = processed_tar_gz
+
+    def _filter_tar(
+        self,
+        input_: Path,
+        filter_dirs: Collection[Path] = (),
+        filter_files: Collection[Path] = (),
+        create_empty_files: Collection[Path] = (),
+    ) -> Path:
+        """Process a tarball, filtering contents and creating empty files."""
+        processed_tar_name = input_.stem.rsplit(".", 1)[0] + ".tar"
+        output = input_.with_name(processed_tar_name)
+        if input_ == output:
+            raise AssertionError(
+                "We generated a filtered filename that matched the input."
+            )
+
+        with (
+            tarfile.open(input_) as input_tar,
+            tarfile.open(output, mode="w") as output_tar,
+        ):
+            for member in input_tar:
+                path = Path("/" + member.name.lstrip('./'))
+                if any(path.is_relative_to(dir_) for dir_ in filter_dirs):
+                    continue
+                if path in filter_files:
+                    continue
+
+                if member.isfile():
+                    output_tar.addfile(
+                        member, input_tar.extractfile(member.name)
+                    )
+                else:
+                    output_tar.addfile(member)
+
+            for path in create_empty_files:
+                for parent in reversed(path.parents):
+                    if parent == Path("/"):
+                        continue
+                    try:
+                        if output_tar.getmember(f".{parent}").isdir():
+                            continue
+                        raise AssertionError(
+                            f"{parent} exists in the tarball, but not a "
+                            "directory."
+                        )
+                    except KeyError:
+                        tarinfo = tarfile.TarInfo(name=f".{parent}")
+                        tarinfo.mode = 0o755
+                        tarinfo.type = tarfile.DIRTYPE
+                        output_tar.addfile(tarinfo)
+                tarinfo = tarfile.TarInfo(name=f".{path}")
+                tarinfo.mode = 0o644
+                tarinfo.size = 0
+                output_tar.addfile(tarinfo, BytesIO(b""))
+
+        # Compress the processed tarball for compatibility with piuparts < 1.3
+        output_tar_gz = output.with_suffix(".tar.gz")
+        with (
+            open(output, "rb") as uncompressed,
+            gzip.open(output_tar_gz, "wb") as compressed,
+        ):
+            shutil.copyfileobj(uncompressed, compressed)
+
+        output.unlink()
+
+        return output_tar_gz
 
     def _prepare_scripts(self, script_directory: Path) -> None:
         """Prepare scripts for piuparts."""

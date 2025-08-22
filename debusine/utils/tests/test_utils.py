@@ -10,6 +10,7 @@
 """Tests for utils module."""
 
 import hashlib
+import stat
 from pathlib import Path
 from unittest import mock
 
@@ -20,6 +21,7 @@ from debusine.test import TestCase
 from debusine.utils import (
     CALCULATE_HASH_CHUNK_SIZE,
     DjangoChoicesEnum,
+    atomic_writer,
     calculate_hash,
     find_file_suffixes,
     find_files_suffixes,
@@ -65,25 +67,36 @@ class TestUtilsTests(TestCase):
 
     def test_parse_range_header_no_header(self) -> None:
         """parse_range_header return None: no "Range" header."""
-        self.assertIsNone(parse_range_header(CaseInsensitiveDict({})))
+        self.assertIsNone(parse_range_header(CaseInsensitiveDict({}), 30))
 
     def test_parse_range_header_invalid_header(self) -> None:
         """parse_range_header raise ValueError: invalid header."""
         invalid_header = "invalid-header"
         error = f'Invalid Range header: "{invalid_header}"'
         with self.assertRaisesRegex(ValueError, error):
-            parse_range_header(CaseInsensitiveDict({"Range": invalid_header}))
+            parse_range_header(
+                CaseInsensitiveDict({"Range": invalid_header}), 30
+            )
+
+    def test_parse_range_header_no_positions(self) -> None:
+        """parse_range_header raise ValueError: neither start nor end."""
+        invalid_header = "bytes=-"
+        error = f'Invalid Range header: "{invalid_header}"'
+        with self.assertRaisesRegex(ValueError, error):
+            parse_range_header(
+                CaseInsensitiveDict({"Range": invalid_header}), 30
+            )
 
     def test_parse_range_header(self) -> None:
         """parse_range_header return dictionary with start and end."""
-        start = 10
-        end = 24
-        range_header = f"bytes={start}-{end}"
-        headers = CaseInsensitiveDict({"Range": range_header})
-
-        self.assertEqual(
-            parse_range_header(headers), {"start": start, "end": end}
-        )
+        for range_header, expected in (
+            ("bytes=10-24", {"start": 10, "end": 24}),
+            ("bytes=10-", {"start": 10, "end": 29}),
+            ("bytes=-10", {"start": 20, "end": 29}),
+        ):
+            with self.subTest(range_header=range_header):
+                headers = CaseInsensitiveDict({"Range": range_header})
+                self.assertEqual(parse_range_header(headers, 30), expected)
 
     def test_parse_content_range_header_no_header(self) -> None:
         """parse_content_range_header return None: no "Content-Range"."""
@@ -273,3 +286,64 @@ class TestUtilsTests(TestCase):
         self.assertEqual(
             list(TestChoices.choices), [("foo", "foo"), ("bar", "bar")]
         )
+
+    def test_atomic_writer(self) -> None:
+        """``atomic_writer`` writes to the target path."""
+        temp_dir = self.create_temporary_directory()
+        path = temp_dir / "file"
+
+        with atomic_writer(path) as fd:
+            fd.write(b"contents\n")
+            self.assertFalse(path.exists())
+            [temp_path] = temp_dir.iterdir()
+            self.assertEqual(temp_path.parent, temp_dir)
+            self.assertRegex(temp_path.name, r"^file.*\.new$")
+
+        self.assertTrue(path.exists())
+        self.assertEqual(path.read_bytes(), b"contents\n")
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(list(temp_dir.iterdir()), [path])
+
+    def test_atomic_writer_text(self) -> None:
+        """``atomic_writer`` can write to the target path as text."""
+        temp_dir = self.create_temporary_directory()
+        path = temp_dir / "file"
+
+        with atomic_writer(path, mode="w") as fd:
+            fd.write("contents\n")
+            self.assertFalse(path.exists())
+            [temp_path] = temp_dir.iterdir()
+            self.assertEqual(temp_path.parent, temp_dir)
+            self.assertRegex(temp_path.name, r"^file.*\.new$")
+
+        self.assertTrue(path.exists())
+        self.assertEqual(path.read_text(), "contents\n")
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(list(temp_dir.iterdir()), [path])
+
+    def test_atomic_writer_chmod(self) -> None:
+        """``atomic_writer`` can set the target path's permissions."""
+        temp_dir = self.create_temporary_directory()
+        path = temp_dir / "file"
+
+        with atomic_writer(path, chmod=0o644) as fd:
+            fd.write(b"contents\n")
+            self.assertFalse(path.exists())
+            [temp_path] = temp_dir.iterdir()
+            self.assertEqual(temp_path.parent, temp_dir)
+            self.assertRegex(temp_path.name, r"^file.*\.new$")
+
+        self.assertTrue(path.exists())
+        self.assertEqual(path.read_bytes(), b"contents\n")
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+        self.assertEqual(list(temp_dir.iterdir()), [path])
+
+    def test_atomic_writer_exceptions(self) -> None:
+        """``atomic_writer`` cleans up after exceptions."""
+        temp_dir = self.create_temporary_directory()
+        path = temp_dir / "file"
+
+        with self.assertRaisesRegex(RuntimeError, "Boom"), atomic_writer(path):
+            raise RuntimeError("Boom")
+
+        self.assertEqual(list(temp_dir.iterdir()), [])

@@ -4,10 +4,8 @@
 PYTHON_ENVIRONMENT := PYTHONASYNCIODEBUG=1 PYTHONDEBUG=1 PYTHONWARNINGS=always::ResourceWarning
 
 ifeq ($(VERBOSE),1)
-    VERBOSE_OPTION_DJANGO_TESTS:= -v 2
     VERBOSE_OPTION_TESTS := -v
 else
-    VERBOSE_OPTION_DJANGO_TESTS :=
     VERBOSE_OPTION_TESTS :=
 endif
 
@@ -24,16 +22,11 @@ djlint:
 
 coverage:
 	python3 -m coverage erase
-	$(PYTHON_ENVIRONMENT) python3 -m coverage run ./manage.py test debusine.db debusine.django debusine.server debusine.web debusine.project debusine.test $(VERBOSE_OPTION_DJANGO_TESTS)
-	$(PYTHON_ENVIRONMENT) DJANGO_SETTINGS_MODULE=debusine.signing.settings python3 -m coverage run ./manage.py test debusine.signing $(VERBOSE_OPTION_DJANGO_TESTS)
-	$(PYTHON_ENVIRONMENT) python3 -m coverage run -m unittest discover debusine.artifacts $(VERBOSE_OPTION_TESTS)
-	$(PYTHON_ENVIRONMENT) python3 -m coverage run -m unittest discover debusine.assets $(VERBOSE_OPTION_TESTS)
-	$(PYTHON_ENVIRONMENT) python3 -m coverage run -m unittest discover debusine.client $(VERBOSE_OPTION_TESTS)
-	$(PYTHON_ENVIRONMENT) python3 -m coverage run -m unittest discover debusine.tasks $(VERBOSE_OPTION_TESTS)
-	$(PYTHON_ENVIRONMENT) python3 -m coverage run -m unittest discover debusine.worker $(VERBOSE_OPTION_TESTS)
-	$(PYTHON_ENVIRONMENT) python3 -m coverage run -m unittest discover debusine.utils $(VERBOSE_OPTION_TESTS)
-	python3 -m coverage combine
+	$(PYTHON_ENVIRONMENT) pytest --ignore=debusine/signing --cov=debusine --cov-append --cov-report= $(VERBOSE_OPTION_TESTS)
+	$(PYTHON_ENVIRONMENT) pytest --ds=debusine.signing.settings --cov=debusine --cov-append --cov-report= debusine/signing $(VERBOSE_OPTION_TESTS)
+ifeq ($(HTML_COVERAGE),1)
 	python3 -m coverage html
+endif
 	python3 -m coverage report --precision=2 --show-missing --skip-covered $(if $(TOTAL_COVERAGE),| perl -pe '$$total = $$1 if /^TOTAL .* (\d+(?:\.\d+)?%)/; END { print "TOTAL COVERAGE $$total\n" }')
 
 css:

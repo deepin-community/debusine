@@ -258,11 +258,7 @@ class FileBackendInterface(Generic[FBC], metaclass=ABCMeta):
         underlying storage and also the FileInStore entry indicating the
         availability of said file in the FileStore.
         """
-        try:
-            FileInStore.objects.get(store=self.db_store, file=fileobj).delete()
-        except FileInStore.DoesNotExist:
-            pass
-
+        FileInStore.objects.filter(store=self.db_store, file=fileobj).delete()
         self.get_entry(fileobj).remove()
 
     # TODO: The mtime_filter interface is subject to change; we may need

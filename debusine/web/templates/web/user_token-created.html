@@ -18,7 +18,7 @@
 {% block content %}
     <h1>{{ title }}</h1>
     <div class="alert alert-primary" role="alert">New token created.</div>
-    <table class="table table-sm">
+    <table class="table table-sm table-hover table-striped table-ths-vertical-align-middle">
         <tbody>
             <tr>
                 <th class="col-2">Created at</th>
@@ -54,7 +54,7 @@
                     <div class="collapse token-secret">
                         <p></p>
                         <p>
-                            Here is an example <tt>~/.config/debusine/client/config.ini</tt> file:
+                            Here is an example <code style="color: inherit;">~/.config/debusine/client/config.ini</code> file:
                         </p>
                         {% include "web/user_token-config_snippet.html" with config_token=token.key %}
                     </div>

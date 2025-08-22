@@ -14,17 +14,14 @@ Debusine integration tests.
 Test Piuparts task.
 """
 
-import logging
 import subprocess
 import textwrap
 import unittest
 
 from utils.client import Client
-from utils.common import Configuration, launch_tests
+from utils.common import Configuration
 from utils.integration_test_helpers_mixin import IntegrationTestHelpersMixin
 from utils.server import DebusineServer
-
-logger = logging.getLogger(__name__)
 
 
 class IntegrationTaskPiupartsTests(
@@ -45,6 +42,7 @@ class IntegrationTaskPiupartsTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         # If debusine-server or nginx was launched just before the
         # integration-tests.py is launched the debusine-server might not be
         # yet available. Let's wait for the debusine-server to be
@@ -90,7 +88,3 @@ class IntegrationTaskPiupartsTests(
         self.assertTrue(
             Client.wait_for_work_request_completed(work_request_id, "success")
         )
-
-
-if __name__ == '__main__':
-    launch_tests("Task piuparts integration tests for debusine")

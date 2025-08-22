@@ -230,6 +230,7 @@ class SortIconTests(TestCase):
         """Create ordering lists."""
         table = mock.Mock()
         table.prefix = ""
+        table.dom_id = "tdom_id"
         table.request = RequestFactory().get("/")
         table_orderings: TableOrderings[User] = TableOrderings(table)
 
@@ -350,6 +351,7 @@ class TableOrderingsTests(TestCase):
         """Create a mock table."""
         table = mock.Mock()
         table.prefix = prefix
+        table.dom_id = "tdom_id"
         if default_order is not None:
             table.default_order = default_order
 
@@ -483,3 +485,37 @@ class TableOrderingsTests(TestCase):
                     ),
                     expected,
                 )
+
+    def test_what_menu_entries(self) -> None:
+        orderings = self._orderings(
+            default_order="username", order="username.desc"
+        )
+        uasc, udesc = orderings.add("username", Ordering("username"))
+        easc, edesc = orderings.add("email", Ordering("username"))
+        orderings.finalize()
+        entries = orderings.what_menu_entries
+
+        self.assertEqual(len(entries), 2)
+        tree = self.assertHTMLValid(entries[0])
+        self.assertTextContentEqual(tree, "Username")
+        self.assertElementHasClass(tree.body.a, "active")
+        tree = self.assertHTMLValid(entries[1])
+        self.assertTextContentEqual(tree, "Email")
+        self.assertElementHasNoClass(tree.body.a, "active")
+
+    def test_how_menu_entries(self) -> None:
+        orderings = self._orderings(
+            default_order="username", order="email.desc"
+        )
+        uasc, udesc = orderings.add("username", Ordering("username"))
+        easc, edesc = orderings.add("email", Ordering("username"))
+        orderings.finalize()
+        entries = orderings.how_menu_entries
+
+        self.assertEqual(len(entries), 2)
+        tree = self.assertHTMLValid(entries[0])
+        self.assertTextContentEqual(tree, easc.sort.label)
+        self.assertElementHasNoClass(tree.body.a, "active")
+        tree = self.assertHTMLValid(entries[1])
+        self.assertTextContentEqual(tree, edesc.sort.label)
+        self.assertElementHasClass(tree.body.a, "active")

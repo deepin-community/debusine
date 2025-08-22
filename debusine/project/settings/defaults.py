@@ -154,6 +154,11 @@ STATICFILES_FINDERS = [
 
 
 STATICFILES_DIRS = [
+    ("vendor/bootstrap5", "/usr/share/javascript/bootstrap5"),
+    # TODO: Investigate dropping this once there's a newer libjs-bootstrap5
+    # in bookworm-backports with the fix for
+    # https://bugs.debian.org/1087969, or once we upgrade to trixie.
+    ("vendor/popperjs2", "/usr/share/javascript/popperjs2"),
     ("vendor/select2.js", "/usr/share/javascript/select2.js"),
     ("vendor/jquery", "/usr/share/javascript/jquery"),
 ]
@@ -185,6 +190,7 @@ TEMPLATES = [
 ]
 
 MIDDLEWARE: list[str] = [
+    'debusine.server.middlewares.virtual_hosts.VirtualHostMiddleware',
     # Introduces correct scoping for contextvars
     'debusine.server.middlewares.context.ContextMiddleware',
     'debusine.server.middlewares.headers.HeadersMiddleware',
@@ -252,6 +258,7 @@ REST_FRAMEWORK = {
     "debusine_exception_handler",
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "debusine.server.views.auth.DebusineTokenAuthentication",
+        "debusine.web.archives.auth.ArchiveAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
 }
@@ -409,6 +416,7 @@ CELERY_BEAT_SCHEDULE = {
 CELERY_BROKER_URL = "redis://localhost:6379"
 CELERY_RESULT_BACKEND = "django-db"
 CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {"global_keyprefix": "celery"}
+CELERY_RESULT_EXTENDED = True
 CELERY_TASK_ROUTES = {
     "debusine.server.scheduler.schedule_task": {"queue": "scheduler"},
     "debusine.server.provisioning.provision": {"queue": "provisioner"},
@@ -421,6 +429,10 @@ EMAIL_TIMEOUT = 5
 
 # The fully qualified domain name for the Debusine deployment
 DEBUSINE_FQDN: str = socket.getfqdn()
+
+# The fully qualified domain name for Debian-format archives hosted by this
+# deployment
+DEBUSINE_DEBIAN_ARCHIVE_FQDN: str | list[str] = f"deb.{DEBUSINE_FQDN}"
 
 # Default CHANNEL_LAYERS pointing at a Redis local configuration
 CHANNEL_LAYERS: dict[str, dict[str, Any]] = {
@@ -454,7 +466,19 @@ DEBUSINE_SIGNING_TRUSTED_CERTS: list[str] = []
 # logic. They provide default values to settings which have not yet been
 # set (neither above nor in local.py).
 _COMPUTE_DEFAULT_SETTINGS = (
-    ('ALLOWED_HOSTS', lambda t: [t['DEBUSINE_FQDN'], 'localhost', '127.0.0.1']),
+    (
+        'ALLOWED_HOSTS',
+        lambda t: [t['DEBUSINE_FQDN']]
+        + (
+            t['DEBUSINE_DEBIAN_ARCHIVE_FQDN']
+            if isinstance(t['DEBUSINE_DEBIAN_ARCHIVE_FQDN'], list)
+            else [t['DEBUSINE_DEBIAN_ARCHIVE_FQDN']]
+        )
+        + [
+            'localhost',
+            '127.0.0.1',
+        ],
+    ),
     ('ADMINS', lambda t: (('Debusine Admins', t['DEBUSINE_CONTACT_EMAIL']),)),
     ('SERVER_EMAIL', lambda t: t['DEBUSINE_CONTACT_EMAIL']),
     ('DEFAULT_FROM_EMAIL', lambda t: t['DEBUSINE_CONTACT_EMAIL']),

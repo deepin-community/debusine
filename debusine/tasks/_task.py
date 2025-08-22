@@ -9,13 +9,14 @@
 r"""
 Collection of tasks.
 
-The debusine.tasks module hierarchy hosts a collection of :class:`BaseTask`
-that are used by workers to fulfill
-:class:`debusine.db.models.WorkRequest`\ s sent by the debusine scheduler.
+The debusine.tasks module hierarchy hosts a collection of
+:py:class:`BaseTask` that are used by workers to fulfill
+:py:class:`debusine.db.models.WorkRequest`\ s sent by the debusine
+scheduler.
 
 Creating a new task requires adding a new file containing a class inheriting
-from the :class:`BaseTask` or :class:`RunCommandTask` base class. The name
-of the class must be unique among all child classes.
+from the :py:class:`BaseTask` or :py:class:`RunCommandTask` base class. The
+name of the class must be unique among all child classes.
 
 A child class must, at the very least, override the :py:meth:`BaseTask.execute`
 method.
@@ -54,7 +55,11 @@ if TYPE_CHECKING:
     from _typeshed import OpenBinaryModeWriting, OpenTextModeWriting
 
 from debusine.artifacts import WorkRequestDebugLogs
-from debusine.artifacts.models import ArtifactCategory, CollectionCategory
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    CollectionCategory,
+    TaskTypes,
+)
 from debusine.client.debusine import Debusine
 from debusine.client.models import ArtifactResponse, RelationType
 from debusine.tasks.executors import (
@@ -73,7 +78,6 @@ from debusine.tasks.models import (
     BaseTaskDataWithExtraRepositories,
     EventReaction,
     LookupSingle,
-    TaskTypes,
     WorkerType,
     build_key_value_lookup_segment,
     build_lookup_string_segments,
@@ -144,7 +148,7 @@ class BaseTask(Generic[TD, DTD], metaclass=ABCMeta):
     :py:meth:`can_run_on` that is executed on the scheduler).
 
     Most concrete task implementations should inherit from
-    :class:`RunCommandTask` instead.
+    :py:class:`RunCommandTask` instead.
     """
 
     #: Class used as the in-memory representation of task data.
@@ -226,8 +230,8 @@ class BaseTask(Generic[TD, DTD], metaclass=ABCMeta):
         # BaseTask generic data
         self._configure(task_data, dynamic_task_data)
 
-        #: A :class:`logging.Logger` instance that can be used in child classes
-        #: when you override methods to implement the task.
+        #: A :py:class:`logging.Logger` instance that can be used in child
+        #: classes when you override methods to implement the task.
         self.logger = logging.getLogger("debusine.tasks")
 
         # Task is aborted: the task does not need to be executed, and can be
@@ -251,7 +255,7 @@ class BaseTask(Generic[TD, DTD], metaclass=ABCMeta):
         # `BaseTask._upload_work_request_debug_logs()` and maybe by
         # required method `upload_artifacts()`.
         #
-        # This is distinct from get_source_artifacts_ids, which is used to
+        # This is distinct from get_input_artifacts_ids, which is used to
         # extract IDs from dynamic_data for use by UI views
         self._source_artifacts_ids: list[int] = []
 
@@ -302,6 +306,24 @@ class BaseTask(Generic[TD, DTD], metaclass=ABCMeta):
                 f"{configuration_key}: unexpected artifact "
                 f"category: '{category}'. "
                 f"Valid categories: {valid_categories}"
+            )
+
+    @staticmethod
+    def ensure_collection_category(
+        *, configuration_key: str, category: str, expected: CollectionCategory
+    ) -> None:
+        """
+        Validate that the collection's category is as expected.
+
+        :param configuration_key: Optional key to identify the source of the
+          artifact. Provides additional context in error messages.
+        :param category: The category to validate.
+        :param expected: The expected collection category.
+        """
+        if category != expected:
+            raise TaskConfigError(
+                f"{configuration_key}: unexpected collection category: "
+                f"'{category}'. Expected: '{expected}'"
             )
 
     @overload
@@ -617,9 +639,10 @@ class BaseTask(Generic[TD, DTD], metaclass=ABCMeta):
         WorkRequestDebugLogs to source_artifact_id.
         """
 
-    def get_source_artifacts_ids(self) -> list[int]:
+    @abstractmethod
+    def get_input_artifacts_ids(self) -> list[int]:
         """
-        Return the list of source artifact IDs used by this task.
+        Return the list of input artifact IDs used by this task.
 
         This refers to the artifacts actually used by the task. If
         dynamic_data is empty, this returns the empty list.
@@ -628,10 +651,6 @@ class BaseTask(Generic[TD, DTD], metaclass=ABCMeta):
         `_source_artifacts_ids` cannot be used for this purpose because it is
         only set during task execution.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__}.get_source_artifacts_ids"
-            " not yet implemented"
-        )
 
     @abstractmethod
     def get_label(self) -> str:
@@ -651,7 +670,11 @@ class BaseTask(Generic[TD, DTD], metaclass=ABCMeta):
     def get_event_reactions(
         self,
         event_name: Literal[  # noqa: U100
-            "on_creation", "on_unblock", "on_success", "on_failure"
+            "on_creation",
+            "on_unblock",
+            "on_assignment",
+            "on_success",
+            "on_failure",
         ],
     ) -> list[EventReaction]:
         """
@@ -668,7 +691,7 @@ class BaseTask(Generic[TD, DTD], metaclass=ABCMeta):
 
 class BaseExternalTask(BaseTask[TD, DTD], Generic[TD, DTD], metaclass=ABCMeta):
     r"""
-    A :class:`BaseTask` that runs on an external worker.
+    A :py:class:`BaseTask` that runs on an external worker.
 
     Concrete subclasses must implement:
 
@@ -932,10 +955,12 @@ class BaseExternalTask(BaseTask[TD, DTD], Generic[TD, DTD], metaclass=ABCMeta):
 def get_environment(
     task_database: TaskDatabaseInterface,
     lookup: LookupSingle,
-    architecture: str | None,
-    backend: str | None,
+    *,
+    architecture: str | None = None,
+    backend: str | None = None,
     default_category: CollectionCategory | None = None,
     image_category: ExecutorImageCategory | None = None,
+    try_variant: str | None = None,
 ) -> ArtifactInfo:
     """
     Get an environment.
@@ -953,8 +978,15 @@ def get_environment(
     :param image_category: try to use an environment with this image
       category; defaults to the image category needed by the executor for
       `self.backend`
+    :param try_variant: None if the environment lookup does not need to be
+      constrained to a particular variant; otherwise, and if `lookup` does
+      not already specify a variant, then try looking up an environment with
+      this variant first, and fall back to looking for an environment with
+      no variant
     :return: the ArtifactInfo of a suitable environment artifact
     """
+    lookups: list[LookupSingle] = []
+
     if (
         isinstance(lookup, str)
         and len(segments := parse_lookup_string_segments(lookup)) == 2
@@ -987,13 +1019,36 @@ def get_environment(
         if backend is not None:
             filters.setdefault("backend", backend)
 
-        lookup = build_lookup_string_segments(
-            segments[0],
-            build_key_value_lookup_segment(lookup_type, filters),
-        )
+        if try_variant is not None and "variant" not in filters:
+            for variant in (try_variant, ""):
+                lookups.append(
+                    build_lookup_string_segments(
+                        segments[0],
+                        build_key_value_lookup_segment(
+                            lookup_type, {**filters, "variant": variant}
+                        ),
+                    )
+                )
+        else:
+            lookups.append(
+                build_lookup_string_segments(
+                    segments[0],
+                    build_key_value_lookup_segment(lookup_type, filters),
+                )
+            )
+    else:
+        lookups.append(lookup)
+
+    for try_lookup in lookups[:-1]:
+        try:
+            return task_database.lookup_single_artifact(
+                try_lookup, default_category=default_category
+            )
+        except KeyError:
+            pass
 
     return task_database.lookup_single_artifact(
-        lookup, default_category=default_category
+        lookups[-1], default_category=default_category
     )
 
 
@@ -1009,7 +1064,7 @@ class BaseTaskWithExecutor(BaseExternalTask[TDE, DTDE], Generic[TDE, DTDE]):
     Concrete subclasses must implement ``fetch_input()``,
     ``configure_for_execution()``, ``run()``,
     ``check_directory_for_consistency_errors()``, and
-    ``upload_artifacts()``, as documented by :class:`BaseExternalTask`.
+    ``upload_artifacts()``, as documented by :py:class:`BaseExternalTask`.
     """
 
     DEFAULT_BACKEND = BackendType.UNSHARE
@@ -1021,6 +1076,7 @@ class BaseTaskWithExecutor(BaseExternalTask[TDE, DTDE], Generic[TDE, DTDE]):
         default_category: CollectionCategory | None = None,
         image_category: ExecutorImageCategory | None = None,
         set_backend: bool = True,
+        try_variant: bool = True,
     ) -> ArtifactInfo:
         """
         Get an environment for an executor-capable task.
@@ -1038,6 +1094,9 @@ class BaseTaskWithExecutor(BaseExternalTask[TDE, DTDE], Generic[TDE, DTDE]):
           for `self.backend`
         :param set_backend: if True (default), try to use an environment
           matching `self.backend`
+        :param try_variant: if True (default), try to use an environment
+          whose variant is `self.name`, but fall back to looking up an
+          environment without a variant if the first lookup fails
         :return: the ArtifactInfo of a suitable environment artifact
         """
         return get_environment(
@@ -1047,6 +1106,7 @@ class BaseTaskWithExecutor(BaseExternalTask[TDE, DTDE], Generic[TDE, DTDE]):
             backend=self.backend if set_backend else None,
             default_category=default_category,
             image_category=image_category,
+            try_variant=self.name if try_variant else None,
         )
 
     def _prepare_executor(self) -> None:
@@ -1147,7 +1207,7 @@ class RunCommandTask(
     BaseExternalTask[TD, DTD], Generic[TD, DTD], metaclass=ABCMeta
 ):
     r"""
-    A :class:`BaseTask` that can execute commands and upload artifacts.
+    A :py:class:`BaseTask` that can execute commands and upload artifacts.
 
     Concrete subclasses must implement:
 
@@ -1157,7 +1217,7 @@ class RunCommandTask(
 
     They must also implement ``configure_for_execution()``,
     ``fetch_input()``, ``check_directory_for_consistency_errors()``, and
-    ``upload_artifacts()``, as documented by :class:`BaseTaskWithExecutor`.
+    ``upload_artifacts()``, as documented by :py:class:`BaseTaskWithExecutor`.
     (They do not need to implement ``run()``, but may do so if they need to
     run multiple commands rather than just one.)
 
@@ -1564,3 +1624,7 @@ class DefaultDynamicData(BaseTask[TD, BaseDynamicTaskData], metaclass=ABCMeta):
     ) -> BaseDynamicTaskData:
         """Return default dynamic data."""
         return BaseDynamicTaskData()
+
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of source artifact IDs used by this task."""
+        return []

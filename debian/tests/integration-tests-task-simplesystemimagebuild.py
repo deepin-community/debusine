@@ -14,7 +14,6 @@ Debusine integration tests.
 Test simplesystemimagebuild related code.
 """
 
-import logging
 import subprocess
 import unittest
 
@@ -22,12 +21,10 @@ import yaml
 
 from debusine.artifacts.models import ArtifactCategory
 from utils.client import Client
-from utils.common import Configuration, launch_tests
+from utils.common import Configuration
 from utils.integration_test_helpers_mixin import IntegrationTestHelpersMixin
 from utils.server import DebusineServer
 from utils.worker import Worker
-
-logger = logging.getLogger(__name__)
 
 
 class IntegrationTaskSimpleSystemImageBuildTests(
@@ -46,6 +43,7 @@ class IntegrationTaskSimpleSystemImageBuildTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         # If debusine-server or nginx was launched just before the
         # integration-tests-simplesystemimagebuild.py is launched the
         # debusine-server might not be yet available. Let's wait for the
@@ -116,7 +114,3 @@ class IntegrationTaskSimpleSystemImageBuildTests(
                 self.assertIn("debian.qcow2", artifact["files"].keys())
 
         self.assertEqual(debian_system_image_artifacts, 1)
-
-
-if __name__ == '__main__':
-    launch_tests("Task simplesystemimagebuild integration tests for debusine")

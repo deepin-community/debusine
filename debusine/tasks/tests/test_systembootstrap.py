@@ -13,6 +13,7 @@ import hashlib
 import io
 import textwrap
 from pathlib import Path
+from textwrap import dedent
 from typing import Any, cast
 from unittest import mock
 from unittest.mock import call
@@ -81,12 +82,14 @@ class SystemBootstrapTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.configure_task()
 
     def tearDown(self) -> None:
         """Delete objects."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def test_configure_task(self) -> None:
         """Ensure self.SAMPLE_TASK_DATA is valid."""
@@ -552,6 +555,30 @@ class SystemBootstrapTests(
     def test_label(self) -> None:
         """Test get_label."""
         self.assertEqual(self.task.get_label(), "bootstrap a system tarball")
+
+    def test_get_source_components_reads_first_source(self) -> None:
+        sources = self.create_temporary_file(
+            contents=dedent(
+                """\
+                Types: deb
+                URIs: http://deb.debian.org/debian
+                Suites: unstable
+                Components: main contrib
+
+                Types: deb
+                URIs: http://deb.debian.org/debian
+                Suites: unstable
+                Components: non-free
+                """
+            ).encode("ascii")
+        )
+        self.assertEqual(
+            SystemBootstrap._get_source_components(sources), ["main", "contrib"]
+        )
+
+    def test_get_source_components_returns_empty_list(self) -> None:
+        sources = self.create_temporary_file(contents=b"")
+        self.assertEqual(SystemBootstrap._get_source_components(sources), [])
 
     @responses.activate
     def test_configure_for_execution(self) -> None:

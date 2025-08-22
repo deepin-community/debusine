@@ -1,4 +1,4 @@
-.. _task-package-upload:
+.. task:: PackageUpload
 
 PackageUpload task
 ------------------
@@ -14,7 +14,7 @@ The ``task_data`` for this task may contain the following keys:
 
 * ``input`` (required): a dictionary describing the input data:
 
-  * ``upload`` (:ref:`lookup-single`, required): a ``debian:upload``
+  * ``upload`` (:ref:`lookup-single`, required): a :artifact:`debian:upload`
     artifact
 
 * ``target`` (required): the upload queue, as an ``ftp://`` or
@@ -28,4 +28,4 @@ The implementation should take care to use a suitable connection
 timeout.  An SSH private key should be provided in the ``~/.ssh/``
 directory of the user running Debusine.
 
-Used by the :ref:`package_upload workflow <workflow-package-upload>`.
+Used by the :workflow:`package_upload` workflow.

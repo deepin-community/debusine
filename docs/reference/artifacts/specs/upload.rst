@@ -1,4 +1,4 @@
-.. _artifact-upload:
+.. artifact:: debian:upload
 
 Category ``debian:upload``
 ==========================
@@ -12,8 +12,7 @@ Debusine native internal upload).
 Note that source uploads in artifacts of this category may lack
 ``.orig.tar.*`` files.  Workflows whose tasks need the actual contents of
 the source package should normally locate the related
-:ref:`debian:source-package <artifact-source-package>` artifact and use that
-instead.
+:artifact:`debian:source-package` artifact and use that instead.
 
 * Data:
 
@@ -32,6 +31,6 @@ instead.
 
 * Relationships:
 
-  * extends: (optional) one ``debian:source-package``
-  * extends: (optional) one or more ``debian:binary-package`` and/or
-    ``debian:binary-packages``
+  * extends: (optional) one :artifact:`debian:source-package`
+  * extends: (optional) one or more :artifact:`debian:binary-package` and/or
+    :artifact:`debian:binary-packages`

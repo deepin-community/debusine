@@ -82,7 +82,7 @@ def debusine_admin(
 def remove_playground():
     """Remove data from an old playground, if present."""
     debusine_admin(
-        "delete_workspace", "debusine/Playground", "--yes", "--force"
+        "workspace", "delete", "debusine/Playground", "--yes", "--force"
     )
     Group.objects.filter(name="Playground").delete()
     User.objects.filter(username="playground-other").delete()

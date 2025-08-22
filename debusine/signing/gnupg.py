@@ -12,15 +12,19 @@
 import os
 import shutil
 import subprocess
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import Generator, Iterable
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import BinaryIO
 
 import gpg
 
-from debusine.signing.models import AvailableKeyFileSystem, ProtectedKey
+from debusine.signing.models import (
+    AvailableKeyFileSystem,
+    ProtectedKey,
+    SigningMode,
+)
 from debusine.signing.signing_utils import SensitiveTemporaryDirectory
 
 
@@ -95,39 +99,54 @@ def gpg_fingerprint(public_key: bytes) -> str:
 
 
 def gpg_sign(
-    private_key: ProtectedKey,
-    public_key: bytes,
+    keys: Iterable[tuple[ProtectedKey, bytes]],
     data_path: Path,
     signature_path: Path,
+    mode: SigningMode = SigningMode.CLEAR,
 ) -> None:
     """Sign data using GnuPG."""
-    with private_key.available(public_key) as available:
-        if not isinstance(available, AvailableKeyFileSystem):
+    match mode:
+        case SigningMode.DETACHED:
+            gpg_mode = gpg.constants.SIG_MODE_DETACH
+        case SigningMode.CLEAR:
+            gpg_mode = gpg.constants.SIG_MODE_CLEAR
+        case _:
             raise GnuPGError(
-                "OpenPGP signing currently only supports software-encrypted "
-                "keys"
+                "OpenPGP signing currently only supports detached or clear "
+                "signatures"
             )
+
+    with ExitStack() as stack:
+        availables: list[AvailableKeyFileSystem] = []
+        for private_key, public_key in keys:
+            available = stack.enter_context(private_key.available(public_key))
+            if not isinstance(available, AvailableKeyFileSystem):
+                raise GnuPGError(
+                    "OpenPGP signing currently only supports "
+                    "software-encrypted keys"
+                )
+            availables.append(available)
+
         with (
             SensitiveTemporaryDirectory("debusine-gnupg-sign-") as tmp,
             gpg_ephemeral_context(Path(tmp)) as ctx,
         ):
-            import_result = ctx.key_import(available._key_path.read_bytes())
-            if not getattr(import_result, "secret_imported", 0):
-                raise GnuPGError("Failed to import secret key")
-            ctx.signers = list(
-                ctx.keylist(pattern=import_result.imports[0].fpr, secret=True)
-            )
+            signers = []
+            for available in availables:
+                import_result = ctx.key_import(available._key_path.read_bytes())
+                if not getattr(import_result, "secret_imported", 0):
+                    raise GnuPGError("Failed to import secret key")
+                signers += ctx.keylist(
+                    pattern=import_result.imports[0].fpr, secret=True
+                )
+            ctx.signers = signers
+
             with (
                 open(data_path, mode="rb") as data_file,
                 open(signature_path, mode="wb") as signature_file,
             ):
                 ctx.sign(
-                    gpg.Data(file=data_file),
-                    sink=signature_file,
-                    # TODO: Cleartext signatures get us what we need to sign
-                    # uploads, but we should also support detached
-                    # signatures.
-                    mode=gpg.constants.SIG_MODE_CLEAR,
+                    gpg.Data(file=data_file), sink=signature_file, mode=gpg_mode
                 )
 
 

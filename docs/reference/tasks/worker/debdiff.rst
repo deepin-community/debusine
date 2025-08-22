@@ -1,20 +1,23 @@
-.. _task-debdiff:
+.. task:: DebDiff
 
 DebDiff task
 ------------
 
-A task to compute the differences between two source or binary Debian packages using the ``debdiff`` utility.
+A task to compute the differences between two source or binary Debian packages
+using the ``debdiff`` utility.
 
 The ``task_data`` associated to this task can contain the following keys:
 
 * ``input`` (required): a dictionary describing the input data
 
   * ``source_artifacts`` (optional): a list with two elements (original, new).
-    Each element is a :ref:`lookup-single` pointing to an artifact of
-    category ``debian:source-package``.
-  * ``binary_artifacts:`` (optional): a list with two elements (original, new).
-    Each element is a :ref:`lookup-multiple` pointing to artifacts of
-    category ``debian:upload``.
+    Each element is a :ref:`lookup-single` pointing to a
+    :artifact:`debian:source-package` artifact.
+  * ``binary_artifacts`` (optional): a list with two elements (original, new).
+    Each element is a :ref:`lookup-multiple` pointing to
+    :artifact:`debian:upload` or :artifact:`debian:binary-package`
+    artifacts. If the lookup returns multiple artifacts, they must be of
+    category :artifact:`debian:binary-package`.
 
 The task computes dynamic metadata as:
 
@@ -30,12 +33,13 @@ The task computes dynamic metadata as:
   If an unsupported flag is passed then the request will fail.
 
 * ``environment`` (:ref:`lookup-single` with default category
-  ``debian:environments``, required): artifact that will be used to run
-  ``debdiff`` (it will be installed if necessary).
+  :collection:`debian:environments`, required): artifact that will be used
+  to run ``debdiff`` (it will be installed if necessary).
 
 * ``host_architecture`` (required): the architecture that we want to run
   ``debdiff``.
 
-The ``debdiff`` output will be provided as a new artifact of category ``debian:debdiff``, described in the :ref:`artifacts reference <artifact-debdiff>`.
+The ``debdiff`` output will be provided as a new :artifact:`debian:debdiff`
+artifact.
 
 The task returns success if ``debdiff`` returns an exit code of 0 or 1, and failure otherwise.

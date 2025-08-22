@@ -1,10 +1,10 @@
-.. _task-make-source-package-upload:
+.. task:: MakeSourcePackageUpload
 
 MakeSourcePackageUpload task
 ----------------------------
 
-This worker task makes a ``debian:upload`` artifact from a
-``debian:source-package`` artifact.  This involves unpacking the
+This worker task makes a :artifact:`debian:upload` artifact from a
+:artifact:`debian:source-package` artifact.  This involves unpacking the
 source package and running ``dpkg-genchanges`` on it.
 
 The ``task_data`` for this task may contain the following keys:
@@ -12,7 +12,7 @@ The ``task_data`` for this task may contain the following keys:
 * ``input`` (required): a dictionary describing the input data:
 
   * ``source_artifact`` (:ref:`lookup-single`, required): a
-    ``debian:source-package`` artifact
+    :artifact:`debian:source-package` artifact
 
 * ``since_version`` (string, optional): include changelog information
   from all versions strictly later than this version in the
@@ -24,17 +24,17 @@ The ``task_data`` for this task may contain the following keys:
   default is to use the distribution from the topmost changelog entry
 
 * ``environment`` (:ref:`lookup-single` with default category
-  ``debian:environments``, required): ``debian:system-tarball``
-  artifact that will be used to run ``dpkg-source`` and
-  ``dpkg-genchanges`` using the ``unshare`` backend.
+  :collection:`debian:environments`, required):
+  :artifact:`debian:system-tarball` artifact that will be used to run
+  ``dpkg-source`` and ``dpkg-genchanges`` using the ``unshare`` backend.
 
 The task computes dynamic metadata as:
 
 .. dynamic_data::
   :method: debusine.tasks.makesourcepackageupload::MakeSourcePackageUpload.build_dynamic_data
 
-The output is a ``debian:upload`` artifact, with ``extends`` and
+The output is a :artifact:`debian:upload` artifact, with ``extends`` and
 ``relates-to`` relationships to the input source package artifact (to
 match the behaviour of ``debusine import-debian-artifact``).
 
-Used by the :ref:`package_upload workflow <workflow-package-upload>`.
+Used by the :workflow:`package_upload` workflow.

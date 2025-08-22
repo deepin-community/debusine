@@ -21,8 +21,11 @@ class LockType(IntEnum):
     the application that owns each lock type.
     """
 
-    #: Used by :py:class:`debusine.server.tasks.aptmirror.APTMirror`.
+    #: Used by :py:class:`debusine.server.tasks.aptmirror`.
     APT_MIRROR = 1
+
+    #: Used by :py:class:`debusine.server.tasks.generate_suite_indexes`.
+    GENERATE_SUITE_INDEXES = 2
 
 
 class LockError(Exception):

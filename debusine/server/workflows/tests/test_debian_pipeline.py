@@ -12,10 +12,13 @@ from typing import Any, ClassVar
 
 from django.test import override_settings
 
-from debusine.artifacts.models import ArtifactCategory, CollectionCategory
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    CollectionCategory,
+    TaskTypes,
+)
 from debusine.assets import KeyPurpose
 from debusine.client.models import LookupChildType
-from debusine.db.context import context
 from debusine.db.models import Artifact, TaskDatabase, WorkRequest
 from debusine.server.scheduler import schedule
 from debusine.server.workflows import (
@@ -31,9 +34,9 @@ from debusine.server.workflows.models import DebianPipelineWorkflowData
 from debusine.tasks import TaskConfigError
 from debusine.tasks.models import (
     BackendType,
-    BaseDynamicTaskData,
     CollectionItemMatcherKind,
-    TaskTypes,
+    DebianPipelineWorkflowDynamicData,
+    LintianFailOnSeverity,
 )
 from debusine.test.django import TestCase
 
@@ -44,7 +47,6 @@ class DebianPipelineWorkflowTests(TestCase):
     source_artifact: ClassVar[Artifact]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data."""
         super().setUpTestData()
@@ -80,6 +82,7 @@ class DebianPipelineWorkflowTests(TestCase):
             "enable_autopkgtest": False,
             "enable_lintian": False,
             "enable_piuparts": False,
+            "enable_blhc": False,
             **extra_data,
         }
 
@@ -99,14 +102,12 @@ class DebianPipelineWorkflowTests(TestCase):
 
         workflow.validate_input()
 
-    def test_validate_input_bad_suite_collection(self) -> None:
+    def test_validate_input_bad_qa_suite(self) -> None:
         """validate_input raises errors in looking up a suite."""
         workflow = self.create_debian_pipeline_workflow(
             extra_task_data={
+                "qa_suite": "nonexistent@debian:suite",
                 "enable_reverse_dependencies_autopkgtest": True,
-                "reverse_dependencies_autopkgtest_suite": (
-                    "nonexistent@debian:suite"
-                ),
             },
             validate=False,
         )
@@ -134,8 +135,10 @@ class DebianPipelineWorkflowTests(TestCase):
 
         self.assertEqual(
             workflow.compute_dynamic_data(TaskDatabase(wr)),
-            BaseDynamicTaskData(
-                subject="hello", parameter_summary="hello_1.0-1"
+            DebianPipelineWorkflowDynamicData(
+                subject="hello",
+                parameter_summary="hello_1.0-1",
+                input_source_artifact_id=source_artifact.id,
             ),
         )
 
@@ -158,6 +161,35 @@ class DebianPipelineWorkflowTests(TestCase):
             r"Valid categories: \['debian:source-package', 'debian:upload'\]$",
         ):
             workflow.compute_dynamic_data(TaskDatabase(wr))
+
+    def test_get_input_artifacts_ids(self) -> None:
+        """Return source artifact id."""
+        upload_artifacts = self.playground.create_upload_artifacts()
+        wr = self.playground.create_workflow(
+            task_name="debian_pipeline",
+            task_data=DebianPipelineWorkflowData(
+                source_artifact=upload_artifacts.upload.id,
+                vendor="debian",
+                codename="sid",
+            ),
+        )
+        workflow = DebianPipelineWorkflow(wr)
+
+        # workflow.dynamic_data is None: return []
+        self.assertIsNone(workflow.dynamic_data)
+        self.assertEqual(workflow.get_input_artifacts_ids(), [])
+
+        # workflow.dynamic_data.source_artifact_id is None: return []
+        workflow.dynamic_data = DebianPipelineWorkflowDynamicData()
+        self.assertEqual(workflow.get_input_artifacts_ids(), [])
+
+        # workflow.dynamic_data.source_artifact_id is the id: return it
+        workflow.dynamic_data.input_source_artifact_id = (
+            upload_artifacts.upload.id
+        )
+        self.assertEqual(
+            workflow.get_input_artifacts_ids(), [upload_artifacts.upload.id]
+        )
 
     def test_source_package_upload(self) -> None:
         """`source_artifact` can be an upload."""
@@ -182,20 +214,19 @@ class DebianPipelineWorkflowTests(TestCase):
         The user didn't specify "architectures", DebianPipelineWorkflow
         checks available architectures and "all" and use them.
         """
-        with context.disable_permission_checks():
-            collection = self.playground.create_collection(
-                "debian",
-                CollectionCategory.ENVIRONMENTS,
-                workspace=self.playground.get_default_workspace(),
+        collection = self.playground.create_collection(
+            "debian",
+            CollectionCategory.ENVIRONMENTS,
+            workspace=self.playground.get_default_workspace(),
+        )
+        for arch in ["amd64", "i386"]:
+            artifact, _ = self.playground.create_artifact(
+                category=ArtifactCategory.SYSTEM_TARBALL,
+                data={"codename": "bookworm", "architecture": arch},
             )
-            for arch in ["amd64", "i386"]:
-                artifact, _ = self.playground.create_artifact(
-                    category=ArtifactCategory.SYSTEM_TARBALL,
-                    data={"codename": "bookworm", "architecture": arch},
-                )
-                collection.manager.add_artifact(
-                    artifact, user=self.playground.get_default_user()
-                )
+            collection.manager.add_artifact(
+                artifact, user=self.playground.get_default_user()
+            )
 
         workflow = self.orchestrate(
             extra_data={
@@ -219,6 +250,7 @@ class DebianPipelineWorkflowTests(TestCase):
             extra_data={
                 "architectures": ["amd64"],
                 "source_artifact": self.source_artifact.id,
+                "enable_blhc": False,
             }
         )
 
@@ -346,6 +378,16 @@ class DebianPipelineWorkflowTests(TestCase):
                         },
                     }
                 ],
+                "package_build_logs": [
+                    {
+                        "collection": "internal@collections",
+                        "child_type": LookupChildType.ARTIFACT_OR_PROMISE,
+                        "name_matcher": {
+                            "kind": CollectionItemMatcherKind.STARTSWITH,
+                            "value": "buildlog-",
+                        },
+                    }
+                ],
                 "codename": "bookworm",
                 "extra_repositories": [
                     {
@@ -358,10 +400,12 @@ class DebianPipelineWorkflowTests(TestCase):
                 "enable_lintian": True,
                 "enable_piuparts": False,
                 "enable_reverse_dependencies_autopkgtest": False,
+                "enable_debdiff": False,
+                "enable_blhc": False,
                 "lintian_backend": BackendType.AUTO,
-                "lintian_fail_on_severity": "none",
+                "lintian_fail_on_severity": LintianFailOnSeverity.ERROR,
                 "piuparts_backend": BackendType.AUTO,
-                "reverse_dependencies_autopkgtest_suite": None,
+                "qa_suite": None,
                 "source_artifact": f"{self.source_artifact.id}@artifacts",
                 "vendor": "debian",
             },
@@ -392,16 +436,28 @@ class DebianPipelineWorkflowTests(TestCase):
                         },
                     }
                 ],
+                "package_build_logs": [
+                    {
+                        "collection": "internal@collections",
+                        "child_type": LookupChildType.ARTIFACT_OR_PROMISE,
+                        "name_matcher": {
+                            "kind": CollectionItemMatcherKind.STARTSWITH,
+                            "value": "buildlog-",
+                        },
+                    }
+                ],
                 "codename": "bookworm",
                 "extra_repositories": None,
                 "enable_autopkgtest": False,
                 "enable_lintian": True,
                 "enable_piuparts": False,
                 "enable_reverse_dependencies_autopkgtest": False,
+                "enable_debdiff": False,
+                "enable_blhc": False,
                 "lintian_backend": BackendType.AUTO,
-                "lintian_fail_on_severity": "none",
+                "lintian_fail_on_severity": LintianFailOnSeverity.ERROR,
                 "piuparts_backend": BackendType.AUTO,
-                "reverse_dependencies_autopkgtest_suite": None,
+                "qa_suite": None,
                 "source_artifact": self.source_artifact.id,
                 "vendor": "debian",
             },
@@ -433,16 +489,28 @@ class DebianPipelineWorkflowTests(TestCase):
                         },
                     }
                 ],
+                "package_build_logs": [
+                    {
+                        "collection": "internal@collections",
+                        "child_type": LookupChildType.ARTIFACT_OR_PROMISE,
+                        "name_matcher": {
+                            "kind": CollectionItemMatcherKind.STARTSWITH,
+                            "value": "buildlog-",
+                        },
+                    }
+                ],
                 "codename": "bookworm",
                 "extra_repositories": None,
                 "enable_autopkgtest": True,
                 "enable_lintian": False,
                 "enable_piuparts": False,
                 "enable_reverse_dependencies_autopkgtest": False,
+                "enable_debdiff": False,
+                "enable_blhc": False,
                 "lintian_backend": BackendType.AUTO,
-                "lintian_fail_on_severity": "none",
+                "lintian_fail_on_severity": LintianFailOnSeverity.ERROR,
                 "piuparts_backend": BackendType.AUTO,
-                "reverse_dependencies_autopkgtest_suite": None,
+                "qa_suite": None,
                 "source_artifact": self.source_artifact.id,
                 "vendor": "debian",
             },
@@ -474,19 +542,101 @@ class DebianPipelineWorkflowTests(TestCase):
                         },
                     }
                 ],
+                "package_build_logs": [
+                    {
+                        "collection": "internal@collections",
+                        "child_type": LookupChildType.ARTIFACT_OR_PROMISE,
+                        "name_matcher": {
+                            "kind": CollectionItemMatcherKind.STARTSWITH,
+                            "value": "buildlog-",
+                        },
+                    }
+                ],
                 "codename": "bookworm",
                 "extra_repositories": None,
                 "enable_autopkgtest": False,
                 "enable_lintian": False,
                 "enable_piuparts": True,
                 "enable_reverse_dependencies_autopkgtest": False,
+                "enable_debdiff": False,
+                "enable_blhc": False,
                 "lintian_backend": BackendType.AUTO,
-                "lintian_fail_on_severity": "none",
+                "lintian_fail_on_severity": LintianFailOnSeverity.ERROR,
                 "piuparts_backend": BackendType.AUTO,
-                "reverse_dependencies_autopkgtest_suite": None,
+                "qa_suite": None,
                 "source_artifact": self.source_artifact.id,
                 "vendor": "debian",
             },
+        )
+
+    def test_populate_qa_debdiff(self) -> None:
+        """Test populate create qa: debdiff enabled."""
+        trixie = self.playground.create_collection(
+            name="trixie",
+            category=CollectionCategory.SUITE,
+        )
+
+        workflow = self.orchestrate(
+            extra_data={
+                "architectures": ["amd64"],
+                "source_artifact": self.source_artifact.id,
+                "enable_debdiff": True,
+                "qa_suite": "trixie@debian:suite",
+            }
+        )
+
+        qa = workflow.children.get(task_name="qa", task_type=TaskTypes.WORKFLOW)
+
+        self.assertEqual(
+            qa.task_data,
+            {
+                "arch_all_host_architecture": "amd64",
+                "architectures": ["amd64"],
+                "autopkgtest_backend": BackendType.AUTO,
+                "binary_artifacts": [
+                    {
+                        "collection": "internal@collections",
+                        "child_type": LookupChildType.ARTIFACT_OR_PROMISE,
+                        "name_matcher": {
+                            "kind": CollectionItemMatcherKind.STARTSWITH,
+                            "value": "build-",
+                        },
+                    }
+                ],
+                "package_build_logs": [
+                    {
+                        "collection": "internal@collections",
+                        "child_type": LookupChildType.ARTIFACT_OR_PROMISE,
+                        "name_matcher": {
+                            "kind": CollectionItemMatcherKind.STARTSWITH,
+                            "value": "buildlog-",
+                        },
+                    }
+                ],
+                "codename": "bookworm",
+                "extra_repositories": None,
+                "enable_autopkgtest": False,
+                "enable_lintian": False,
+                "enable_piuparts": False,
+                "enable_reverse_dependencies_autopkgtest": False,
+                "enable_debdiff": True,
+                "enable_blhc": False,
+                "lintian_backend": BackendType.AUTO,
+                "lintian_fail_on_severity": LintianFailOnSeverity.ERROR,
+                "piuparts_backend": BackendType.AUTO,
+                "qa_suite": str(trixie),
+                "source_artifact": self.source_artifact.id,
+                "vendor": "debian",
+            },
+        )
+
+        self.assertEqual(qa.status, WorkRequest.Statuses.RUNNING)
+
+        self.assertEqual(
+            qa.children.filter(
+                task_name="debdiff", task_type=TaskTypes.WORKFLOW
+            ).count(),
+            1,
         )
 
     def test_populate_qa_piuparts_configuration(self) -> None:
@@ -517,17 +667,29 @@ class DebianPipelineWorkflowTests(TestCase):
                         },
                     }
                 ],
+                "package_build_logs": [
+                    {
+                        "collection": "internal@collections",
+                        "child_type": LookupChildType.ARTIFACT_OR_PROMISE,
+                        "name_matcher": {
+                            "kind": CollectionItemMatcherKind.STARTSWITH,
+                            "value": "buildlog-",
+                        },
+                    }
+                ],
                 "codename": "bookworm",
                 "extra_repositories": None,
                 "enable_autopkgtest": False,
                 "enable_lintian": False,
                 "enable_piuparts": True,
                 "enable_reverse_dependencies_autopkgtest": False,
+                "enable_debdiff": False,
+                "enable_blhc": False,
                 "lintian_backend": BackendType.AUTO,
-                "lintian_fail_on_severity": "none",
+                "lintian_fail_on_severity": LintianFailOnSeverity.ERROR,
                 "piuparts_backend": BackendType.INCUS_LXC,
                 "piuparts_environment": "debian/match:codename=trixie",
-                "reverse_dependencies_autopkgtest_suite": None,
+                "qa_suite": None,
                 "source_artifact": self.source_artifact.id,
                 "vendor": "debian",
             },
@@ -715,6 +877,7 @@ class DebianPipelineWorkflowTests(TestCase):
         self.assertEqual(
             package_upload.task_data,
             {
+                "arch_all_host_architecture": "amd64",
                 "binary_artifacts": [
                     {
                         "collection": "internal@collections",
@@ -728,6 +891,7 @@ class DebianPipelineWorkflowTests(TestCase):
                 "codename": "trixie",
                 "delayed_days": None,
                 "key": None,
+                "binary_key": None,
                 "merge_uploads": False,
                 "require_signature": True,
                 "since_version": "1.1",
@@ -848,6 +1012,7 @@ class DebianPipelineWorkflowTests(TestCase):
         self.assertEqual(
             package_upload_source.task_data,
             {
+                "arch_all_host_architecture": "amd64",
                 "binary_artifacts": [
                     {
                         "collection": "internal@collections",
@@ -861,6 +1026,7 @@ class DebianPipelineWorkflowTests(TestCase):
                 "codename": "trixie",
                 "delayed_days": None,
                 "key": None,
+                "binary_key": None,
                 "merge_uploads": False,
                 "require_signature": True,
                 "since_version": "1.1",
@@ -935,6 +1101,7 @@ class DebianPipelineWorkflowTests(TestCase):
         self.assertEqual(
             package_upload_signed_amd64.task_data,
             {
+                "arch_all_host_architecture": "amd64",
                 "binary_artifacts": [
                     {
                         "collection": "internal@collections",
@@ -948,6 +1115,7 @@ class DebianPipelineWorkflowTests(TestCase):
                 "codename": "trixie",
                 "delayed_days": None,
                 "key": None,
+                "binary_key": None,
                 "merge_uploads": False,
                 "require_signature": True,
                 "since_version": "1.1",
@@ -1091,10 +1259,12 @@ class DebianPipelineWorkflowTests(TestCase):
         self.assertEqual(
             package_upload.task_data,
             {
+                "arch_all_host_architecture": "amd64",
                 "binary_artifacts": [],
                 "codename": "trixie",
                 "delayed_days": None,
                 "key": None,
+                "binary_key": None,
                 "merge_uploads": False,
                 "require_signature": True,
                 "since_version": "1.1",
@@ -1134,6 +1304,7 @@ class DebianPipelineWorkflowTests(TestCase):
         self.assertEqual(
             package_upload.task_data,
             {
+                "arch_all_host_architecture": "amd64",
                 "binary_artifacts": [
                     {
                         "collection": "internal@collections",
@@ -1147,6 +1318,7 @@ class DebianPipelineWorkflowTests(TestCase):
                 "codename": "trixie",
                 "delayed_days": 3,
                 "key": None,
+                "binary_key": None,
                 "merge_uploads": False,
                 "require_signature": True,
                 "since_version": "1.1",
@@ -1219,4 +1391,4 @@ class DebianPipelineWorkflowTests(TestCase):
     def test_get_label(self) -> None:
         """Test get_label."""
         w = self.create_debian_pipeline_workflow()
-        self.assertEqual(w.get_label(), "run Debian pipeline")
+        self.assertEqual(w.get_label(), "debian_pipeline-template")

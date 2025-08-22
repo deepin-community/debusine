@@ -55,6 +55,11 @@ class DebusineServer:
         cmd = ["debusine-admin"] + [command] + [*args]
         result = common.run_as(user, cmd, stdin=stdin)
 
+        if result.stdout:
+            logger.info("stdout: %s", result.stdout)
+        if result.stderr:
+            logger.info("stderr: %s", result.stderr)
+
         return result
 
     @classmethod
@@ -66,27 +71,19 @@ class DebusineServer:
         list_workers: str | None = None,
     ) -> bool:
         """
-        Return True if list_workers has token with the specified state.
+        Return True if ``worker list`` has token with the specified state.
 
         :param token: token that is being verified
         :param connected: True if it is expected that the worker is connected
         :param enabled: True if it is expected that the worker's token enabled
-        :param list_workers: output of the command 'list-workers' or None.
-          If None it executes list-workers
+        :param list_workers: output of the command ``worker list --yaml`` or
+          None.  If None it executes ``worker list --yaml``
         :return: True if a token is connected and enabled as per connected
           and enabled parameters
-
-        list_workers looks like:
-
-        Name Registered           Connected            Token hash  Enabled
-        ---- -------------------  -------------------  ----------  -------
-        pin  date and time+00:00  date and time+00:00  10f14       False
-
-        Connected is a date and time with a timezone or "-"
         """
         if list_workers is None:
             list_workers_output = cls.execute_command(
-                'list_workers', '--yaml'
+                "worker", "list", "--yaml"
             ).stdout
 
         token_hash = hashlib.sha256(token.encode()).hexdigest()

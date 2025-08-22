@@ -20,9 +20,8 @@ Pydantic):
 * ``name`` (string): the name of the pool
 
 * ``provider_account`` (foreign key to ``Asset``): a
-  :ref:`debusine:cloud-provider-account asset
-  <asset-cloud-provider-account>` with details of the provider account to
-  use for this pool
+  :asset:`debusine:cloud-provider-account` asset with details of the
+  provider account to use for this pool
 
 * ``enabled`` (boolean, defaults to True): if True, this pool is available
   for creating instances
@@ -30,10 +29,8 @@ Pydantic):
 * ``architectures`` (array of strings): the task architectures supported by
   workers in this pool
 
-* ``tags`` (array of strings): the `worker tags
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/326>`__
-  supported by workers in this pool (note that worker tags are not fully
-  implemented yet)
+* ``tags`` (array of strings): the :issue:`worker tags <326>` supported by
+  workers in this pool (note that worker tags are not fully implemented yet)
 
 * ``specifications`` (JSON): public information indicating the type of
   instances to create, in a provider-dependent format (see below)

@@ -42,7 +42,7 @@ Work requests and workflows
    Hence they share the same expiration logic.
 
 Work requests follow the same logic as artifacts, they have their own
-``expiration_delay`` and inherit from the the workspace's
+``expiration_delay`` and inherit from the workspace's
 ``default_expiration_delay`` when not set.
 
 In principle a work request is thus deleted when its expiration date is

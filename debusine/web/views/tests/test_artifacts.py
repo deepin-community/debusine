@@ -11,22 +11,23 @@
 
 import abc
 import io
+import json
 import os.path
 import tarfile
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import lxml
 import yaml
-from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db.models import Max
+from django.db.models import Max, TextChoices
 from django.db.models.functions import Lower
 from django.http.response import HttpResponseBase
 from django.test import Client
 from django.urls import reverse
 from django.utils.http import http_date
+from django.utils.timesince import timesince
 from rest_framework import status
 
 from debusine.artifacts.models import ArtifactCategory
@@ -37,9 +38,10 @@ from debusine.db.models import (
     FileInArtifact,
     Token,
     User,
+    WorkRequest,
     Workspace,
-    default_workspace,
 )
+from debusine.db.playground import scenarios
 from debusine.test.django import (
     AllowAll,
     DenyAll,
@@ -71,7 +73,8 @@ class PermissionTests(TestCase, abc.ABC):
         response = self.permission_tests_get(include_token=False)
         self.assertContains(
             response,
-            "Workspace System not found in scope debusine",
+            "Workspace System not found in scope debusine, or you are not "
+            "authorized to see it",
             status_code=status.HTTP_404_NOT_FOUND,
         )
 
@@ -120,7 +123,6 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
     files_contents: ClassVar[dict[str, bytes]]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up the test fixture."""
         super().setUpTestData()
@@ -173,41 +175,6 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
             ),
             headers={"token": self.token.key},
         )
-
-    def assertArtifactSidebarMatches(
-        self, response: TestResponseType, artifact: Artifact
-    ) -> None:
-        """Check the artifact sidebar contents."""
-        sidebar = response.context["sidebar_items"]
-
-        self.assertEqual(sidebar[0].detail, artifact.category)
-        self.assertEqual(sidebar[1].value, artifact.workspace.name)
-
-        if artifact.created_by_work_request:
-            self.assertEqual(
-                sidebar[2].url,
-                artifact.created_by_work_request.get_absolute_url(),
-            )
-        else:
-            self.assertIsNone(sidebar[2].value)
-
-        if artifact.created_by:
-            self.assertEqual(sidebar[3].value, str(artifact.created_by))
-        else:
-            self.assertIsNone(sidebar[3].value)
-
-        self.assertEqual(
-            sidebar[4].detail,
-            date_format(artifact.created_at),
-        )
-
-        if artifact.expire_at:
-            self.assertEqual(
-                sidebar[5].detail,
-                date_format(artifact.expire_at),
-            )
-        else:
-            self.assertEqual(sidebar[5].value, "never")
 
     def assertFile(
         self,
@@ -364,13 +331,12 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
 
     def test_get_success_html_files_list(self) -> None:
         """View shows a list of files."""
+        work_request = self.playground.create_work_request(task_name="noop")
         with context.disable_permission_checks():
-            work_request = self.playground.create_work_request(task_name="noop")
             self.artifact.created_by_work_request = work_request
             self.artifact.save()
         response = self._get()
         tree = self.assertResponseHTML(response)
-        self.assertArtifactSidebarMatches(response, self.artifact)
         self.assertFileList(tree, self.artifact)
         self.assertRelations(tree, self.artifact)
         self.assertFalse(tree.xpath("//div[@id='file-contents']"))
@@ -381,6 +347,10 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
         assert file_button is not None
         self.assertTextContentEqual(file_button, "Files (2)")
 
+        # Assert file contents is displayed by default
+        file_contents = self.assertHasElement(tree, "//div[@id='nav-files']")
+        self.assertIn("show active", file_contents.attrib["class"])
+
     def test_get_success_html_files_list_incomplete(self) -> None:
         """View shows incomplete files in a list differently."""
         self.artifact.fileinartifact_set.filter(path="AUTHORS").update(
@@ -388,18 +358,15 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
         )
         response = self._get()
         tree = self.assertResponseHTML(response)
-        self.assertArtifactSidebarMatches(response, self.artifact)
         self.assertFileList(tree, self.artifact)
         self.assertRelations(tree, self.artifact)
         self.assertFalse(tree.xpath("//div[@id='file-contents']"))
 
     def test_get_success_html_singlefile(self) -> None:
         """View show the content of the only file in the artifact."""
-        with context.disable_permission_checks():
-            self.artifact.fileinartifact_set.filter(path="AUTHORS").delete()
+        self.artifact.fileinartifact_set.filter(path="AUTHORS").delete()
         response = self._get()
         tree = self.assertResponseHTML(response)
-        self.assertArtifactSidebarMatches(response, self.artifact)
         file_button = self.assertHasElement(
             tree, "//button[@id='nav-files-tab']"
         )
@@ -418,14 +385,12 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
         self.artifact.fileinartifact_set.update(complete=False)
         response = self._get()
         tree = self.assertResponseHTML(response)
-        self.assertArtifactSidebarMatches(response, self.artifact)
         self.assertFalse(tree.xpath("//table[@id='file-list']"))
         self.assertFile(tree, self.artifact, suffix="files")
 
     def test_get_success_html_empty_artifact(self) -> None:
         """Test HTML output if there are no files in the artifact."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact([])
+        artifact, _ = self.playground.create_artifact([])
         response = self._get(artifact.id)
         tree = self.assertResponseHTML(response)
         self.assertFalse(tree.xpath("//table[@id='file-list']"))
@@ -450,15 +415,11 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
             self.artifact.save()
         response = self._get()
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertArtifactSidebarMatches(response, self.artifact)
 
     def test_get_success_html_fwd_relations(self) -> None:
         """View shows a list of forward relations."""
-        with context.disable_permission_checks():
-            other_artifact = self.playground.create_build_log_artifact()
-            self.playground.create_artifact_relation(
-                self.artifact, other_artifact
-            )
+        other_artifact = self.playground.create_build_log_artifact()
+        self.playground.create_artifact_relation(self.artifact, other_artifact)
         response = self._get()
         tree = self.assertResponseHTML(response)
         self.assertRelations(tree, self.artifact)
@@ -475,16 +436,13 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
 
     def test_get_success_html_rev_relations(self) -> None:
         """View shows a list of reverse relations."""
-        with context.disable_permission_checks():
-            other_artifact = self.playground.create_build_log_artifact()
-            self.playground.create_artifact_relation(
-                other_artifact, self.artifact
-            )
-            self.playground.create_artifact_relation(
-                other_artifact,
-                self.artifact,
-                relation_type=ArtifactRelation.Relations.EXTENDS,
-            )
+        other_artifact = self.playground.create_build_log_artifact()
+        self.playground.create_artifact_relation(other_artifact, self.artifact)
+        self.playground.create_artifact_relation(
+            other_artifact,
+            self.artifact,
+            relation_type=ArtifactRelation.Relations.EXTENDS,
+        )
         response = self._get()
         tree = self.assertResponseHTML(response)
         self.assertRelations(tree, self.artifact)
@@ -518,11 +476,10 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
 
     def test_ui_shortcuts_source_with_work_request(self) -> None:
         """Check UI shortcuts for artifact with a work request."""
-        with context.disable_permission_checks():
-            work_request = self.playground.create_work_request(task_name="noop")
-            artifact = self.playground.create_source_artifact()
-            artifact.created_by_work_request = work_request
-            artifact.save()
+        work_request = self.playground.create_work_request(task_name="noop")
+        artifact = self.playground.create_source_artifact(
+            work_request=work_request
+        )
         response = self._get(pk=artifact.pk)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
@@ -534,8 +491,7 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
 
     def test_ui_shortcuts_build_log(self) -> None:
         """Check UI shortcuts for build logs."""
-        with context.disable_permission_checks():
-            artifact = self.playground.create_build_log_artifact()
+        artifact = self.playground.create_build_log_artifact()
         response = self._get(pk=artifact.pk)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
@@ -547,11 +503,10 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
 
     def test_ui_shortcuts_build_log_with_work_request(self) -> None:
         """Check UI shortcuts for build logs part of a work request."""
-        with context.disable_permission_checks():
-            work_request = self.playground.create_work_request(task_name="noop")
-            artifact = self.playground.create_build_log_artifact(
-                work_request=work_request
-            )
+        work_request = self.playground.create_work_request(task_name="noop")
+        artifact = self.playground.create_build_log_artifact(
+            work_request=work_request
+        )
         response = self._get(pk=artifact.pk)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
@@ -563,13 +518,13 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
 
     def test_ui_shortcuts_related_build_log(self) -> None:
         """Check UI shortcuts for build logs."""
+        work_request = self.playground.create_work_request(task_name="noop")
         with context.disable_permission_checks():
-            work_request = self.playground.create_work_request(task_name="noop")
             self.artifact.created_by_work_request = work_request
             self.artifact.save()
-            build_log = self.playground.create_build_log_artifact(
-                work_request=work_request
-            )
+        build_log = self.playground.create_build_log_artifact(
+            work_request=work_request
+        )
         response = self._get()
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
@@ -582,17 +537,15 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
 
     def test_ui_shortcuts_multiple_build_log(self) -> None:
         """Check UI shortcuts for a work request with multiple build logs."""
+        work_request = self.playground.create_work_request(task_name="noop")
         with context.disable_permission_checks():
-            work_request = self.playground.create_work_request(task_name="noop")
             self.artifact.created_by_work_request = work_request
             self.artifact.save()
-            # This can happen if the work request is retried.
-            build_logs = [
-                self.playground.create_build_log_artifact(
-                    work_request=work_request
-                )
-                for _ in range(2)
-            ]
+        # This can happen if the work request is retried.
+        build_logs = [
+            self.playground.create_build_log_artifact(work_request=work_request)
+            for _ in range(2)
+        ]
         response = self._get()
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(
@@ -601,6 +554,169 @@ class ArtifactDetailViewTests(ViewTestMixin, PermissionTests):
                 ui_shortcuts.create_artifact_view(build_logs[-1]),
                 ui_shortcuts.create_artifact_download(self.artifact),
             ],
+        )
+
+    def test_metadata(self) -> None:
+        tree = self.assertResponseHTML(self._get())
+        table = self.assertHasElement(tree, "//table[@id='metadata-table']")
+
+        artifact = self.artifact
+
+        # Assert Category
+        category = self.assertHasElement(table, ".//tr[1]/td[1]")
+        self.assertTextContentEqual(category, artifact.category)
+
+        # Assert Workspace
+        workspace_link = self.assertHasElement(table, ".//tr[2]/td[1]/a")
+        self.assertEqual(
+            workspace_link.get("href"), artifact.workspace.get_absolute_url()
+        )
+
+        self.assertTextContentEqual(workspace_link, str(artifact.workspace))
+
+        # Assert Created at
+        created_at = self.assertHasElement(table, ".//tr[3]/td[1]")
+        self.assertTextContentEqual(
+            created_at, f"{timesince(artifact.created_at)} ago"
+        )
+
+        # Assert user
+        user = self.assertHasElement(table, ".//tr[4]/td[1]")
+        self.assertTextContentEqual(user, str(artifact.created_by))
+
+        # Assert Expiration date
+        expiration = self.assertHasElement(table, ".//tr[5]/td[1]")
+        assert artifact.expire_at is not None
+        self.assertTextContentEqual(expiration, date_format(artifact.expire_at))
+
+        # Assert Data
+        data = self.assertHasElement(table, ".//tr[7]/td[1]")
+        self.assertEqual(
+            json.loads(self.get_node_text_normalized(data)), artifact.data
+        )
+
+    def test_origin_created_by_user(self) -> None:
+        self.artifact.created_by = self.user
+        self.artifact.save()
+
+        tree = self.assertResponseHTML(self._get())
+
+        created_by = self.assertHasElement(
+            tree, "//p[@id='artifact-created-by-user']"
+        )
+        self.assertTextContentEqual(
+            created_by, f"Artifact created by {self.user}."
+        )
+        self.assertEqual(
+            created_by.a.attrib["href"], self.user.get_absolute_url()
+        )
+
+    def test_origin_work_request_no_workflow(self) -> None:
+        work_request = self.playground.create_work_request(
+            task_name="noop", assign_new_worker=True
+        )
+        with context.disable_permission_checks():
+            self.artifact.created_by_work_request = work_request
+            self.artifact.save()
+
+        tree = self.assertResponseHTML(self._get())
+        table = self.assertHasElement(tree, "//table[@id='work_request-table']")
+
+        # Assert work_request link
+        work_request_link = self.assertHasElement(table, ".//tr[1]/td[1]/a")
+        self.assertEqual(
+            work_request_link.get("href"), work_request.get_absolute_url()
+        )
+        self.assertTextContentEqual(
+            work_request_link, f"{work_request.id} ({work_request.task_name})"
+        )
+
+        # Assert Status and result
+        status_result = self.assertHasElement(table, ".//tr[2]/td[1]")
+        work_request_status = WorkRequest.Statuses(work_request.status)
+        work_request_result = WorkRequest.Results(work_request.result)
+        self.assertTextContentEqual(
+            status_result,
+            f"{work_request_status.label} {work_request_result.label}",
+        )
+
+        # Assert workspace link
+        workspace_link = self.assertHasElement(table, ".//tr[3]/td[1]/a")
+        self.assertEqual(
+            workspace_link.get("href"),
+            work_request.workspace.get_absolute_url(),
+        )
+        self.assertTextContentEqual(workspace_link, str(work_request.workspace))
+
+        # Assert created by user
+        user = self.assertHasElement(table, ".//tr[4]/td[1]")
+        self.assertTextContentEqual(user, str(work_request.created_by))
+
+        # Assert created at
+        created_at = self.assertHasElement(table, ".//tr[5]/td[1]")
+        self.assertTextContentEqual(
+            created_at, f"{timesince(work_request.created_at)} ago"
+        )
+
+        # Assert worker
+        worker = self.assertHasElement(table, ".//tr[6]/td[1]")
+        assert work_request.worker
+        self.assertTextContentEqual(worker, work_request.worker.name)
+
+        # Assert no workflow table
+        with self.assertRaises(AssertionError):
+            self.assertHasElement(tree, "//table[@id='workflow-table']")
+
+    def test_origin_work_request_workflow(self) -> None:
+        workflow = self.playground.create_workflow()
+
+        work_request = self.playground.create_work_request(
+            task_name="noop", assign_new_worker=True, parent=workflow
+        )
+        with context.disable_permission_checks():
+            self.artifact.created_by_work_request = work_request
+            self.artifact.save()
+
+        tree = self.assertResponseHTML(self._get())
+
+        # Has the work_request-table, tested in
+        # test_origin_work_request_no_workflow()
+        self.assertHasElement(tree, "//table[@id='work_request-table']")
+
+        table = self.assertHasElement(tree, "//table[@id='workflow-table']")
+
+        # Assert workflow link
+        workflow_link = self.assertHasElement(table, ".//tr[1]/td[1]/a")
+        self.assertEqual(workflow_link.get("href"), workflow.get_absolute_url())
+        self.assertTextContentEqual(
+            workflow_link, f"{workflow.id} ({workflow.task_name})"
+        )
+
+        # Assert status and result
+        status_result = self.assertHasElement(table, ".//tr[2]/td[1]")
+        workflow_status = cast(TextChoices, workflow.status)
+        workflow_result = cast(TextChoices, workflow.result)
+        self.assertTextContentEqual(
+            status_result,
+            f"{workflow_status.label} {workflow_result.label}",
+        )
+
+        # Assert workspace link
+        workspace_link = self.assertHasElement(table, ".//tr[3]/td[1]/a")
+        self.assertEqual(
+            workspace_link.get("href"),
+            workflow.workspace.get_absolute_url(),
+        )
+        self.assertTextContentEqual(workspace_link, str(workflow.workspace))
+
+        # Assert created by user
+        user = self.assertHasElement(table, ".//tr[4]/td[1]")
+        self.assertTextContentEqual(user, str(workflow.created_by))
+
+        # Assert created at
+        created_at = self.assertHasElement(table, ".//tr[5]/td[1]")
+        self.assertTextContentEqual(
+            created_at, f"{timesince(workflow.created_at)} ago"
         )
 
 
@@ -781,7 +897,6 @@ class FileDetailViewRawTests(ViewTestMixin, PermissionTests):
     file: ClassVar[FileInArtifact]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up the common test fixture."""
         super().setUpTestData()
@@ -872,7 +987,6 @@ class DownloadPathViewTests(ViewTestMixin, PermissionTests):
     tree_files_contents: ClassVar[dict[str, bytes]]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up the test fixture."""
         super().setUpTestData()
@@ -1255,7 +1369,6 @@ class DownloadPathViewAuthTests(TestCase):
     artifact: ClassVar[Artifact]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up the test fixture."""
         super().setUpTestData()
@@ -1400,16 +1513,8 @@ class DownloadPathViewAuthTests(TestCase):
 class CreateArtifactViewTests(TestCase):
     """Tests for CreateArtifactView."""
 
+    scenario = scenarios.DefaultContext()
     playground_memory_file_store = False
-    user: ClassVar[User]
-
-    @classmethod
-    def setUpTestData(cls) -> None:
-        """Set up test data."""
-        super().setUpTestData()
-        cls.user = get_user_model().objects.create_user(
-            username="testuser", password="testpassword"
-        )
 
     def verify_create_artifact_with_files(
         self, files: list[SimpleUploadedFile]
@@ -1420,10 +1525,10 @@ class CreateArtifactViewTests(TestCase):
         Post the files to create an artifact and verify the created artifact
         and file upload.
         """
-        self.client.force_login(self.user)
+        self.client.force_login(self.scenario.user)
 
         # Create a dummy file for testing
-        workspace = default_workspace()
+        workspace = self.scenario.workspace
         category = ArtifactCategory.WORK_REQUEST_DEBUG_LOGS
 
         files_to_upload: SimpleUploadedFile | list[SimpleUploadedFile]
@@ -1451,7 +1556,7 @@ class CreateArtifactViewTests(TestCase):
         self.assertRedirects(response, artifact.get_absolute_url())
 
         # Verify artifact
-        self.assertEqual(artifact.created_by, self.user)
+        self.assertEqual(artifact.created_by, self.scenario.user)
         self.assertEqual(artifact.workspace, workspace)
         self.assertEqual(artifact.category, category)
         self.assertEqual(artifact.data, {})
@@ -1476,11 +1581,21 @@ class CreateArtifactViewTests(TestCase):
 
     def test_create_artifact_one_file(self) -> None:
         """Post to "user:artifact-create" to create an artifact: one file."""
+        self.playground.create_group_role(
+            self.scenario.workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
         file = SimpleUploadedFile("testfile.txt", b"some_file_content")
         self.verify_create_artifact_with_files([file])
 
     def test_create_artifact_two_files(self) -> None:
         """Post to "user:artifact-create" to create an artifact: two files."""
+        self.playground.create_group_role(
+            self.scenario.workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
         files = [
             SimpleUploadedFile("testfile.txt", b"some_file_content"),
             SimpleUploadedFile("testfile2.txt", b"another_file_content"),
@@ -1491,7 +1606,7 @@ class CreateArtifactViewTests(TestCase):
         """A non-authenticated request cannot get the form (or post)."""
         url = reverse(
             "workspaces:artifacts:create",
-            kwargs={"wname": default_workspace().name},
+            kwargs={"wname": self.scenario.workspace.name},
         )
         for method in ("get", "post"):
             with self.subTest(method):
@@ -1506,14 +1621,19 @@ class CreateArtifactViewTests(TestCase):
 
     def test_invalid_form_data(self) -> None:
         """Invalid form data returns an error."""
+        self.playground.create_group_role(
+            self.scenario.workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
         url = reverse(
             "workspaces:artifacts:create",
-            kwargs={"wname": default_workspace().name},
+            kwargs={"wname": self.scenario.workspace.name},
         )
-        self.client.force_login(self.user)
+        self.client.force_login(self.scenario.user)
         post_data = {
             "category": ArtifactCategory.PACKAGE_BUILD_LOG,
-            "workspace": default_workspace().id,
+            "workspace": self.scenario.workspace.id,
             "files": [
                 SimpleUploadedFile("testfile.txt", b"some_file_content"),
                 SimpleUploadedFile("testfile2.txt", b"another_file_content"),
@@ -1523,6 +1643,7 @@ class CreateArtifactViewTests(TestCase):
                     "source": "hello",
                     "version": "1.0-1",
                     "filename": "testfile.txt",
+                    "architecture": "amd64",
                 }
             ),
         }

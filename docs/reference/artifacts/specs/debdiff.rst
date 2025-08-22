@@ -1,4 +1,4 @@
-.. _artifact-debdiff:
+.. artifact:: debian:debdiff
 
 Category ``debian:debdiff``
 ===========================
@@ -14,4 +14,5 @@ Category ``debian:debdiff``
 
 * Relationships:
 
-  * ``relates-to``: two ``debian:source-package`` or ``debian:upload``
+  * ``relates-to``: two :artifact:`debian:source-package` or
+    :artifact:`debian:upload`

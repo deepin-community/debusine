@@ -33,7 +33,7 @@ from debusine.client.setup import (
     TokenFetchFailed,
     setup_server,
 )
-from debusine.client.tests.utils import MockTable, TestConsole
+from debusine.client.tests.utils import BufferConsole, MockTable
 from debusine.test import TestCase
 
 FEEDBACK_CONFIG_SAVED = "👍 Configuration saved"
@@ -212,7 +212,7 @@ class ServerInfoTests(TestCase):
     ) -> tuple[str | None, list[str], TokenFetchFailed | None]:
         exception: TokenFetchFailed | None
         server = KNOWN_SERVERS["debian"]
-        console = TestConsole()
+        console = BufferConsole()
         with (
             mock.patch(
                 "debusine.client.setup.secrets.token_urlsafe",
@@ -699,7 +699,7 @@ class DebusineClientConfigTests(TestCase):
 
     def test_fetch_token(self) -> None:
         token = "aaaaaa"
-        console = TestConsole()
+        console = BufferConsole()
         cfg = self.make_config()
         with mock.patch(
             "debusine.client.setup.ServerInfo.fetch_token", return_value=token
@@ -709,7 +709,7 @@ class DebusineClientConfigTests(TestCase):
         self.assertEqual(console.output_lines(), [])
 
     def test_fetch_cancelled(self) -> None:
-        console = TestConsole()
+        console = BufferConsole()
         cfg = self.make_config()
         cfg.set_api_token("aaaaaa")
         with mock.patch(
@@ -721,7 +721,7 @@ class DebusineClientConfigTests(TestCase):
 
     def test_fetch_token_error(self) -> None:
         token = "aaaaaa"
-        console = TestConsole()
+        console = BufferConsole()
         cfg = self.make_config()
         cfg.set_api_token(token)
         with mock.patch(
@@ -798,7 +798,7 @@ class ServerSelectorTests(TestCase):
             ) as cmdloop,
             mock.patch("debusine.client.setup.ServerSelector.do_new") as do_new,
         ):
-            console = TestConsole()
+            console = BufferConsole()
             selector = ServerSelector([], console=console)
             selector.cmdloop()
         cmdloop.assert_not_called()
@@ -813,7 +813,7 @@ class ServerSelectorTests(TestCase):
             mock.patch("debusine.client.setup.ServerSelector.do_new") as do_new,
         ):
             selector = ServerSelector(
-                list(KNOWN_SERVERS.values()), console=TestConsole()
+                list(KNOWN_SERVERS.values()), console=BufferConsole()
             )
             selector.cmdloop()
         cmdloop.assert_called()
@@ -836,7 +836,7 @@ class ServerSelectorTests(TestCase):
         ):
             with self.subTest(entered=entered):
                 selector = ServerSelector(
-                    [KNOWN_SERVERS["localhost"]], console=TestConsole()
+                    [KNOWN_SERVERS["localhost"]], console=BufferConsole()
                 )
                 with mock.patch(
                     "debusine.client.dataentry.DataEntry.input_line",
@@ -847,7 +847,7 @@ class ServerSelectorTests(TestCase):
 
     def test_table(self) -> None:
         """Test table display."""
-        console = TestConsole()
+        console = BufferConsole()
         selector = ServerSelector(
             list(KNOWN_SERVERS.values()),
             console=console,
@@ -882,7 +882,7 @@ class ServerSelectorTests(TestCase):
             ),
         ):
             with self.subTest(entries=entries):
-                console = TestConsole()
+                console = BufferConsole()
                 selector = ServerSelector(entries, console=console)
                 selector.menu()
                 self.assertEqual(
@@ -892,14 +892,14 @@ class ServerSelectorTests(TestCase):
     def test_enter_number(self) -> None:
         """Test entering a number to pick an entry."""
         selector = ServerSelector(
-            list(KNOWN_SERVERS.values()), console=TestConsole()
+            list(KNOWN_SERVERS.values()), console=BufferConsole()
         )
         self.assertTrue(selector.onecmd("2"))
         self.assertIs(selector.selected, KNOWN_SERVERS["freexian"])
 
     def test_enter_number_out_of_range(self) -> None:
         """Test entering a number out of range."""
-        console = TestConsole()
+        console = BufferConsole()
         selector = ServerSelector(list(KNOWN_SERVERS.values()), console=console)
         for num in 0, len(KNOWN_SERVERS) + 1, len(KNOWN_SERVERS) + 10:
             with self.subTest(num=num):
@@ -914,7 +914,7 @@ class ServerSelectorTests(TestCase):
 
     def test_enter_invalid_command(self) -> None:
         """Test entering an invalid command."""
-        console = TestConsole()
+        console = BufferConsole()
         selector = ServerSelector(list(KNOWN_SERVERS.values()), console=console)
         for cmd in "-1", "14.3", "mischief":
             with self.subTest(cmd=cmd):
@@ -938,7 +938,7 @@ class ServerConfigEditorTests(TestCase):
     def test_menu(self) -> None:
         """Test formatting the menu."""
         cfg = self._config()
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with mock.patch("debusine.client.setup.Table", new=MockTable):
             editor.menu()
@@ -971,21 +971,21 @@ class ServerConfigEditorTests(TestCase):
         """Test menu showing the default server."""
         cfg = self._config()
         cfg.set_default()
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with mock.patch("debusine.client.setup.Table", new=MockTable):
             editor.menu()
         table = console.tables[0]
         self.assertEqual(
             table.columns[0].args[0],
-            "Configuration for debian" " [green not bold](default server)[/]",
+            "Configuration for debian [green not bold](default server)[/]",
         )
 
     def test_menu_with_token(self) -> None:
         """Test formatting the menu when the token is set."""
         cfg = self._config()
         cfg.set_api_token("12345678")
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         editor.menu()
         self.assertIn("token = present", console.output.getvalue())
@@ -994,7 +994,7 @@ class ServerConfigEditorTests(TestCase):
         """Ensure linter messages appear in the menu."""
         cfg = self._config()
         cfg.set_api_url("http://debusine.debian.net/api/")
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         editor.menu()
         self.assertIn(
@@ -1006,7 +1006,7 @@ class ServerConfigEditorTests(TestCase):
         """Edit the scope."""
         cfg = self._config()
         self.assertEqual(cfg.server.scope, "debian")
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with mock.patch(
             "debusine.client.dataentry.DataEntry.input_line",
@@ -1024,7 +1024,7 @@ class ServerConfigEditorTests(TestCase):
         new_url = "https://debusine.debian.org/api/"
         cfg = self._config()
         self.assertEqual(cfg.server.api_url, old_url)
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with mock.patch(
             "debusine.client.dataentry.DataEntry.input_line",
@@ -1041,7 +1041,7 @@ class ServerConfigEditorTests(TestCase):
         new_token = "12345678"
         cfg = self._config()
         self.assertIsNone(cfg.server.api_token)
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with mock.patch(
             "debusine.client.dataentry.DataEntry.input_line",
@@ -1057,7 +1057,7 @@ class ServerConfigEditorTests(TestCase):
         """Set the current server as default."""
         cfg = self._config()
         self.assertIsNone(cfg.default_server)
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         editor.onecmd("default")
         self.assertEqual(cfg.default_server, "debian")
@@ -1067,7 +1067,7 @@ class ServerConfigEditorTests(TestCase):
         old_token = "12345678"
         cfg = self._config()
         cfg.set_api_token(old_token)
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with mock.patch(
             "debusine.client.dataentry.DataEntry.input_line",
@@ -1082,7 +1082,7 @@ class ServerConfigEditorTests(TestCase):
     def test_quit(self) -> None:
         """Test quitting the editor."""
         cfg = self._config()
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         self.assertTrue(editor.onecmd("quit"))
         output = console.output.getvalue()
@@ -1094,7 +1094,7 @@ class ServerConfigEditorTests(TestCase):
         """Test the save command with a token already present."""
         cfg = self._config()
         cfg.set_api_token("12345678")
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with mock.patch(
             "debusine.client.setup.DebusineClientConfig.save"
@@ -1109,11 +1109,11 @@ class ServerConfigEditorTests(TestCase):
         """Test the save command with a token, user confirmed."""
         cfg = self._config()
 
-        def _mock_fetch_token(console: TestConsole) -> bool:  # noqa: U100
+        def _mock_fetch_token(console: BufferConsole) -> bool:  # noqa: U100
             cfg.set_api_token("12345678")
             return True
 
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with (
             mock.patch.object(cfg, "save") as save,
@@ -1133,11 +1133,11 @@ class ServerConfigEditorTests(TestCase):
         """Test the save command with a token, user cancelled."""
         cfg = self._config()
 
-        def _mock_fetch_token(console: TestConsole) -> bool:  # noqa: U100
+        def _mock_fetch_token(console: BufferConsole) -> bool:  # noqa: U100
             cfg.set_api_token(None)
             return True
 
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with (
             mock.patch.object(cfg, "save") as save,
@@ -1159,7 +1159,7 @@ class ServerConfigEditorTests(TestCase):
 
         call_count = 0
 
-        def _mock_fetch_token(console: TestConsole) -> bool:  # noqa: U100
+        def _mock_fetch_token(console: BufferConsole) -> bool:  # noqa: U100
             nonlocal call_count
             try:
                 match call_count:
@@ -1171,7 +1171,7 @@ class ServerConfigEditorTests(TestCase):
             finally:
                 call_count += 1
 
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with (
             mock.patch.object(cfg, "save") as save,
@@ -1194,7 +1194,7 @@ class ServerConfigEditorTests(TestCase):
     def test_save_abort(self) -> None:
         """Test the save command with a token."""
         cfg = self._config()
-        console = TestConsole()
+        console = BufferConsole()
         editor = ServerConfigEditor(cfg, console=console)
         with (
             mock.patch.object(cfg, "save") as save,
@@ -1221,7 +1221,7 @@ class SetupServerTests(TestCase):
     def test_no_args(self) -> None:
         """Invoke with no arguments."""
         workdir = self.create_temporary_directory()
-        console = TestConsole()
+        console = BufferConsole()
 
         def _select_server(self: ServerSelector) -> None:
             self.selected = ServerInfo.from_string("name", desc="desc")
@@ -1253,7 +1253,7 @@ class SetupServerTests(TestCase):
     def test_no_server_selected(self) -> None:
         """Invoke with no arguments."""
         workdir = self.create_temporary_directory()
-        console = TestConsole()
+        console = BufferConsole()
 
         with (
             mock.patch(
@@ -1274,7 +1274,7 @@ class SetupServerTests(TestCase):
     def test_server_provided(self) -> None:
         """Invoke with server set."""
         workdir = self.create_temporary_directory()
-        console = TestConsole()
+        console = BufferConsole()
 
         with (
             mock.patch(
@@ -1302,7 +1302,7 @@ class SetupServerTests(TestCase):
     def test_scope_provided(self) -> None:
         """Invoke with scope set."""
         workdir = self.create_temporary_directory()
-        console = TestConsole()
+        console = BufferConsole()
 
         def _select_server(self: ServerSelector) -> None:
             self.selected = ServerInfo.from_string("name", desc="desc")
@@ -1352,7 +1352,7 @@ class SetupServerTests(TestCase):
                 """
             )
         )
-        console = TestConsole()
+        console = BufferConsole()
 
         def _select_server(self: ServerSelector) -> None:
             self.selected = KNOWN_SERVERS["debian"]
@@ -1399,7 +1399,7 @@ class SetupServerTests(TestCase):
                 """
             )
         )
-        console = TestConsole()
+        console = BufferConsole()
 
         with (
             mock.patch(

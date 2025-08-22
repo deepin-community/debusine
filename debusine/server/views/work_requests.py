@@ -27,6 +27,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import (
     Artifact,
     ArtifactRelation,
@@ -35,6 +36,7 @@ from debusine.db.models import (
     WorkRequest,
 )
 from debusine.db.models.work_requests import (
+    CannotAbort,
     CannotRetry,
     CannotUnblock,
     WorkRequestQuerySet,
@@ -62,7 +64,7 @@ from debusine.server.views.rest import (
     IsWorkerAuthenticated,
 )
 from debusine.tasks import BaseTask
-from debusine.tasks.models import ActionTypes, TaskTypes
+from debusine.tasks.models import ActionTypes
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +90,9 @@ class WorkRequestView(
 
     def get_queryset(self) -> WorkRequestQuerySet[Any]:
         """Get the query set for this view."""
-        return WorkRequest.objects.in_current_scope()
+        return WorkRequest.objects.in_current_scope().select_related(
+            "workspace__scope"
+        )
 
     def get_object(self) -> WorkRequest:
         """Override to return more API-friendly errors."""
@@ -161,34 +165,9 @@ class WorkRequestView(
             )
 
         task_name = data['task_name']
-
-        task_types = [TaskTypes.WORKER]
-        if request.auth.user.is_superuser:
-            task_types.append(TaskTypes.SERVER)
-
-        for task_type in task_types:
-            if BaseTask.is_valid_task_name(task_type, task_name):
-                break
-        else:
-            valid_task_names = ', '.join(
-                itertools.chain(
-                    *(
-                        BaseTask.task_names(task_type)
-                        for task_type in task_types
-                    ),
-                ),
-            )
-            logger.debug(
-                "Error creating work request: task name is not registered: %s",
-                task_name,
-            )
-            raise DebusineAPIException(
-                title="Cannot create work request: task name is not registered",
-                detail=(
-                    f'Task name: "{task_name}". '
-                    f"Registered task names: {valid_task_names}"
-                ),
-            )
+        task_type = self._validate_task_name(
+            task_name, request.auth.user.is_superuser
+        )
 
         # Return an error if compute_dynamic_data() raise an exception
         # (otherwise it happens during the scheduler() and the user
@@ -201,17 +180,56 @@ class WorkRequestView(
         try:
             w.get_task().compute_dynamic_data(TaskDatabase(w))
         except Exception as exc:
+            if isinstance(exc, AssertionError):
+                logger.exception(
+                    (
+                        "Assertion failed computing dynamic data for task %s "
+                        "with data %s"
+                    ),
+                    task_name,
+                    w.task_data,
+                )
             raise DebusineAPIException(
                 title=(
                     "Cannot create work request: error computing dynamic data"
                 ),
-                detail=f"Task data: {w.task_data} Error: {exc}",
+                detail=f"Task data: {w.task_data} Error: {exc!r}",
             )
 
         w.refresh_from_db()
 
         return Response(
             WorkRequestSerializer(w).data, status=status.HTTP_200_OK
+        )
+
+    def _validate_task_name(
+        self, task_name: str, is_superuser: bool
+    ) -> TaskTypes:
+        """Validate that task_name is valid, return the task_type."""
+        task_types = [TaskTypes.WORKER]
+
+        if is_superuser:
+            task_types.append(TaskTypes.SERVER)
+
+        for task_type in task_types:
+            if BaseTask.is_valid_task_name(task_type, task_name):
+                return task_type
+
+        valid_task_names = ', '.join(
+            itertools.chain(
+                *(BaseTask.task_names(task_type) for task_type in task_types),
+            ),
+        )
+        logger.debug(
+            "Error creating work request: task name is not registered: %s",
+            task_name,
+        )
+        raise DebusineAPIException(
+            title="Cannot create work request: task name is not registered",
+            detail=(
+                f'Task name: "{task_name}". '
+                f"Registered task names: {valid_task_names}"
+            ),
         )
 
     @staticmethod
@@ -307,6 +325,47 @@ class WorkRequestRetryView(GenericAPIViewBase[WorkRequest], BaseAPIView):
         return Response(
             WorkRequestSerializer(new_work_request).data,
             status=status.HTTP_200_OK,
+        )
+
+
+class WorkRequestAbortView(GenericAPIViewBase[WorkRequest], BaseAPIView):
+    """View used to abort a work request."""
+
+    permission_classes = [IsTokenUserAuthenticated]
+    filter_backends = [CanDisplayFilterBackend]
+    lookup_url_kwarg = "work_request_id"
+
+    def get_queryset(self) -> WorkRequestQuerySet[Any]:
+        """Get the query set for this view."""
+        return WorkRequest.objects.in_current_scope()
+
+    def get_object(self) -> WorkRequest:
+        """Override to return more API-friendly errors."""
+        try:
+            return super().get_object()
+        except Http404 as exc:
+            raise NotFound(str(exc))
+
+    def post(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        """Abort a work request."""
+        work_request = self.get_object()
+
+        try:
+            work_request.abort()
+        except CannotAbort as e:
+            raise DebusineAPIException(
+                title="Cannot abort work request",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+
+        logger.info(
+            "%s aborted work request %s", request.auth.user, work_request
+        )
+
+        work_request.refresh_from_db()
+        return Response(
+            WorkRequestSerializer(work_request).data, status=status.HTTP_200_OK
         )
 
 

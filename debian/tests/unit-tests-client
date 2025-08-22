@@ -2,5 +2,6 @@
 
 set -e
 
+cp -a pyproject.toml "$AUTOPKGTEST_TMP/"
 cd "$AUTOPKGTEST_TMP"
-python3 -m unittest discover -v debusine.client
+pytest --rootdir=/usr/lib/python3/dist-packages -c pyproject.toml -v --pyargs debusine.artifacts debusine.assets debusine.client debusine.utils

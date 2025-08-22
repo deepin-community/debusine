@@ -96,6 +96,11 @@ def asset_data_model(
     return model.parse_obj(data)
 
 
+def asset_categories() -> list[AssetCategory]:
+    """List all known asset categories."""
+    return list(_data_models.keys())
+
+
 class KeyPurpose(DjangoChoicesEnum):
     """Choices for SigningKey.purpose."""
 

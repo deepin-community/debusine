@@ -1,4 +1,4 @@
-.. _asset-signing-key:
+.. asset:: debusine:signing-key
 
 Category: ``debusine:signing-key``
 ==================================

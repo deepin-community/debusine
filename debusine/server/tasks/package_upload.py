@@ -57,6 +57,12 @@ class PackageUpload(
             ).id,
         )
 
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        if not self.dynamic_data:
+            return []
+        return [self.dynamic_data.input_upload_id]
+
     def fetch_upload(self, destination: Path) -> list[Path] | None:
         """Download the required artifacts."""
         assert self.dynamic_data
@@ -96,7 +102,7 @@ class PackageUpload(
             # Some upload queues use the appearance of the .changes file as
             # an indication that the upload is complete, so sort it to the
             # end.
-            key=lambda path: path.name.endswith(".changes"),
+            key=lambda path: (path.name.endswith(".changes"), path),
         )
 
     def _make_target(self) -> PackageUploadTarget:

@@ -13,8 +13,16 @@ from typing import Any, TypeVar
 
 from django.db.models import Model, Q, QuerySet
 
-from debusine.db.models import CollectionItem, WorkRequest, Worker, WorkerPool
+from debusine.db.models import (
+    CollectionItem,
+    User,
+    WorkRequest,
+    Worker,
+    WorkerPool,
+    WorkflowTemplate,
+)
 from debusine.db.models.auth import GroupAuditLog, GroupMembership
+from debusine.db.models.work_requests import workflow_flattened
 from debusine.web.forms import WorkflowFilterForm
 from debusine.web.views.table import (
     Column,
@@ -101,6 +109,7 @@ class WorkerTable(Table[Worker]):
         )
         for pk, name in (
             WorkerPool.objects.filter(worker__in=self.queryset)
+            .order_by("name")
             .distinct()
             .values_list("id", "name")
         ):
@@ -200,12 +209,18 @@ class FilterFailedWorkRequests(FilterToggle):
         """Filter the queryset."""
         if not value:
             return queryset
-        # This filter calls workflow_work_requests_failure
-        # for all the workflows. This might need to be changed
-        # (cached in the DB?)
+        # TODO: This filter makes a complex query for all workflows in the
+        # queryset. This will need to be changed (cached in the DB?)
+        # See #656
         work_requests_ids_relevant = []
         for work_request in queryset:
-            if getattr(work_request, "workflow_work_requests_failure", 0) > 0:
+            count = (
+                workflow_flattened(work_request)  # type: ignore[arg-type]
+                .filter(result=WorkRequest.Results.FAILURE)
+                .count()
+                or 0
+            )
+            if count > 0:
                 work_requests_ids_relevant.append(work_request.pk)
         return queryset.filter(id__in=work_requests_ids_relevant)
 
@@ -231,10 +246,8 @@ class WorkflowTable(Table[WorkRequest]):
 
     filter_statuses = FilterStatuses()
     filter_results = FilterField(q_field="result__in")
-    filter_workflow_templates = FilterField(
-        q_field="workflow_data_json__workflow_template_name__in"
-    )
-    filter_started_by = FilterField(q_field="created_by__username__in")
+    filter_workflow_templates = FilterSelectOne("Workflow template")
+    filter_started_by = FilterSelectOne("Started by")
     filter_with_failed_work_requests = FilterFailedWorkRequests(
         "With failed work requests"
     )
@@ -242,6 +255,29 @@ class WorkflowTable(Table[WorkRequest]):
     template_name = "web/_workflow-list.html"
     default_order = "id.desc"
     filter_form_class = WorkflowFilterForm
+
+    def init_filters(self) -> None:
+        """Add filter options based on database contents."""
+        super().init_filters()
+        for wt in (
+            WorkflowTemplate.objects.filter(
+                pk__in=self.queryset.values("workflow_template")
+            )
+            .order_by("name")
+            .distinct()
+        ):
+            self.filters["workflow_templates"].add_option(
+                wt.name, wt.name, query=Q(workflow_template=wt)
+            )
+
+        for user in (
+            User.objects.filter(pk__in=self.queryset.values("created_by"))
+            .order_by("first_name", "last_name")
+            .distinct()
+        ):
+            self.filters["started_by"].add_option(
+                user.username, user.get_full_name(), query=Q(created_by=user)
+            )
 
 
 class CollectionItemTable(Table[CollectionItem]):

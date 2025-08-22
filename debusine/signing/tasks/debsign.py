@@ -30,7 +30,7 @@ from debusine.client.models import (
     FilesResponseType,
     RelationType,
 )
-from debusine.signing.db.models import Key
+from debusine.signing.db.models import Key, sign
 from debusine.signing.models import SigningMode
 from debusine.signing.tasks import BaseSigningTask
 from debusine.signing.tasks.models import DebsignData, DebsignDynamicData
@@ -87,8 +87,8 @@ class Debsign(BaseSigningTask[DebsignData, DebsignDynamicData]):
             ).id,
         )
 
-    def get_source_artifacts_ids(self) -> list[int]:
-        """Return the list of source artifact IDs used by this task."""
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
         if not self.dynamic_data:
             return []
         return [
@@ -185,7 +185,8 @@ class Debsign(BaseSigningTask[DebsignData, DebsignDynamicData]):
             signature_path = execute_directory / "output" / changes_file
             signature_path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                self._key.sign(
+                sign(
+                    [self._key],
                     data_path,
                     signature_path,
                     SigningMode.DEBSIGN,

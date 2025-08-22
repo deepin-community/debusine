@@ -11,6 +11,7 @@
 
 import itertools
 from collections.abc import Generator, Iterable
+from datetime import datetime
 from typing import Any
 
 from django.db import IntegrityError
@@ -20,6 +21,7 @@ from debusine.artifacts.models import (
     BareDataCategory,
     CollectionCategory,
     DebusineTaskConfiguration,
+    TaskTypes,
 )
 from debusine.db.models import Collection, CollectionItem, User, WorkRequest
 from debusine.server.collections.base import (
@@ -27,7 +29,6 @@ from debusine.server.collections.base import (
     ItemAdditionError,
 )
 from debusine.tasks import TaskConfigError
-from debusine.tasks.models import TaskTypes
 
 
 class DebusineTaskConfigurationManager(CollectionManagerInterface):
@@ -47,6 +48,8 @@ class DebusineTaskConfigurationManager(CollectionManagerInterface):
         data: dict[str, Any] | None = None,
         name: str | None = None,  # noqa: U100
         replace: bool = False,
+        created_at: datetime | None = None,
+        replaced_by: CollectionItem | None = None,
     ) -> CollectionItem:
         """Add bare data into the managed collection."""
         if data is None:
@@ -64,7 +67,12 @@ class DebusineTaskConfigurationManager(CollectionManagerInterface):
         name = config.name()
 
         if replace:
-            self.remove_bare_data(name, user=user, workflow=workflow)
+            self.remove_items_by_name(
+                name=name,
+                child_types=[CollectionItem.Types.BARE],
+                user=user,
+                workflow=workflow,
+            )
 
         try:
             return CollectionItem.objects.create_from_bare_data(
@@ -72,29 +80,26 @@ class DebusineTaskConfigurationManager(CollectionManagerInterface):
                 parent_collection=self.collection,
                 name=name,
                 data=data,
+                created_at=created_at,
                 created_by_user=user,
                 created_by_workflow=workflow,
+                replaced_by=replaced_by,
             )
         except IntegrityError as exc:
             raise ItemAdditionError(str(exc))
 
-    def do_remove_bare_data(
+    def do_remove_item(
         self,
-        name: str,
+        item: CollectionItem,
         *,
         user: User | None = None,
         workflow: WorkRequest | None = None,
     ) -> None:
-        """Remove a bare data item from the collection."""
-        CollectionItem.active_objects.filter(
-            name=name,
-            child_type=CollectionItem.Types.BARE,
-            parent_collection=self.collection,
-        ).update(
-            removed_by_user=user,
-            removed_by_workflow=workflow,
-            removed_at=timezone.now(),
-        )
+        """Remove an item from the collection."""
+        item.removed_by_user = user
+        item.removed_by_workflow = workflow
+        item.removed_at = timezone.now()
+        item.save()
 
 
 def lookup_config_by_name(
@@ -161,10 +166,10 @@ def list_configuration(
     if (entry := lookup_config_by_name(config_collection, name)) is None:
         return
 
+    yield entry
+
     # Look up referenced templates
     yield from lookup_templates(config_collection, entry)
-
-    yield entry
 
 
 def build_configuration(

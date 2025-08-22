@@ -8,14 +8,16 @@
 # contained in the LICENSE file.
 
 """Unit tests for the collection models."""
-from datetime import timedelta
+
+from datetime import datetime, timedelta
+from datetime import timezone as tz
 from typing import ClassVar
+from urllib.parse import quote
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.db import transaction
 from django.db.utils import IntegrityError
-from django.urls import reverse
 from django.utils import timezone
 
 from debusine.artifacts.models import (
@@ -173,14 +175,24 @@ class CollectionTests(TestCase):
 
         self.assertEqual(
             collection.get_absolute_url(),
-            reverse(
-                "workspaces:collections:detail",
-                kwargs={
-                    "wname": self.scenario.workspace.name,
-                    "ccat": category,
-                    "cname": name,
-                },
-            ),
+            f"/{self.scenario.scope.name}/{self.scenario.workspace.name}"
+            f"/collection/{CollectionCategory.ENVIRONMENTS}/{name}/",
+        )
+
+    def test_get_absolute_url_different_scope(self) -> None:
+        """get_absolute_url works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        name = "Environments"
+        category = CollectionCategory.ENVIRONMENTS
+        collection = Collection.objects.create(
+            name=name, category=category, workspace=other_workspace
+        )
+
+        self.assertEqual(
+            collection.get_absolute_url(),
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/collection/{CollectionCategory.ENVIRONMENTS}/{name}/",
         )
 
     def test_get_absolute_url_search(self) -> None:
@@ -193,14 +205,24 @@ class CollectionTests(TestCase):
 
         self.assertEqual(
             collection.get_absolute_url_search(),
-            reverse(
-                "workspaces:collections:search",
-                kwargs={
-                    "wname": self.scenario.workspace.name,
-                    "ccat": category,
-                    "cname": name,
-                },
-            ),
+            f"/{self.scenario.scope.name}/{self.scenario.workspace.name}"
+            f"/collection/{CollectionCategory.ENVIRONMENTS}/{name}/search/",
+        )
+
+    def test_get_absolute_url_search_different_scope(self) -> None:
+        """get_absolute_url_search works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        name = "Environments"
+        category = CollectionCategory.ENVIRONMENTS
+        collection = Collection.objects.create(
+            name=name, category=category, workspace=other_workspace
+        )
+
+        self.assertEqual(
+            collection.get_absolute_url_search(),
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/collection/{CollectionCategory.ENVIRONMENTS}/{name}/search/",
         )
 
     def test_constraint_name_category_workspace(self) -> None:
@@ -222,8 +244,7 @@ class CollectionTests(TestCase):
                 name=name, category=category, workspace=self.scenario.workspace
             )
 
-        with context.disable_permission_checks():
-            other_workspace = self.playground.create_workspace(name="other")
+        other_workspace = self.playground.create_workspace(name="other")
         Collection.objects.create(
             name=name, category=category, workspace=other_workspace
         )
@@ -268,7 +289,6 @@ class CollectionTests(TestCase):
         )
         self.assertEqual(type(collection.manager), DebianSuiteManager)
 
-    @context.disable_permission_checks()
     def test_child_items_artifacts_collections(self) -> None:
         """Child items returns expected CollectionItems, artifacts, etc."""
         collection_parent_1 = Collection.objects.create(
@@ -400,15 +420,14 @@ class CollectionItemManagerTests(TestCase):
     def setUpTestData(cls) -> None:
         """Set up common test data."""
         super().setUpTestData()
-        with context.disable_permission_checks():
-            cls.user = cls.playground.create_user(username="John")
-            cls.workspace = cls.playground.create_workspace(name="System")
-            cls.collection = Collection.objects.create(
-                name="Name",
-                category=CollectionCategory.ENVIRONMENTS,
-                workspace=cls.workspace,
-            )
-            cls.workflow = cls.playground.create_work_request(task_name="noop")
+        cls.user = cls.playground.create_user(username="John")
+        cls.workspace = cls.playground.create_workspace(name="System")
+        cls.collection = Collection.objects.create(
+            name="Name",
+            category=CollectionCategory.ENVIRONMENTS,
+            workspace=cls.workspace,
+        )
+        cls.workflow = cls.playground.create_work_request(task_name="noop")
 
     def test_create_from_bare_data(self) -> None:
         """Verify create_from_bare_data method."""
@@ -486,7 +505,51 @@ class CollectionItemManagerTests(TestCase):
                 created_by_workflow=self.workflow,
             )
 
-    @context.disable_permission_checks()
+    def test_create_from_bare_data_created_at(self) -> None:
+        created_at = timezone.now() - timedelta(days=1)
+
+        collection_item = CollectionItem.objects.create_from_bare_data(
+            BareDataCategory.TEST,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.user,
+            created_by_workflow=self.workflow,
+            created_at=created_at,
+        )
+
+        self.assertEqual(collection_item.created_at, created_at)
+        self.assertIsNone(collection_item.removed_at)
+
+    def test_create_from_bare_data_created_at_replaced_by(self) -> None:
+        current_item = CollectionItem.objects.create_from_bare_data(
+            BareDataCategory.TEST,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.user,
+            created_by_workflow=self.workflow,
+        )
+        created_at = timezone.now() - timedelta(days=1)
+
+        old_item = CollectionItem.objects.create_from_bare_data(
+            BareDataCategory.TEST,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.user,
+            created_by_workflow=self.workflow,
+            created_at=created_at,
+            replaced_by=current_item,
+        )
+
+        self.assertEqual(old_item.created_at, created_at)
+        self.assertEqual(old_item.removed_at, current_item.created_at)
+        self.assertEqual(old_item.removed_by_user, current_item.created_by_user)
+        self.assertEqual(
+            old_item.removed_by_workflow, current_item.created_by_workflow
+        )
+
     def test_create_from_artifact(self) -> None:
         """Verify create_from_artifact method."""
         data = {"a": "b"}
@@ -513,6 +576,54 @@ class CollectionItemManagerTests(TestCase):
         self.assertEqual(collection_item.created_by_user, self.user)
         self.assertEqual(collection_item.created_by_workflow, self.workflow)
 
+    def test_create_from_artifact_created_at(self) -> None:
+        artifact, _ = self.playground.create_artifact()
+        created_at = timezone.now() - timedelta(days=1)
+
+        collection_item = CollectionItem.objects.create_from_artifact(
+            artifact,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.user,
+            created_by_workflow=self.workflow,
+            created_at=created_at,
+        )
+
+        self.assertEqual(collection_item.created_at, created_at)
+        self.assertIsNone(collection_item.removed_at)
+
+    def test_create_from_artifact_created_at_replaced_by(self) -> None:
+        current_artifact, _ = self.playground.create_artifact()
+        current_item = CollectionItem.objects.create_from_artifact(
+            current_artifact,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.user,
+            created_by_workflow=self.workflow,
+        )
+        created_at = timezone.now() - timedelta(days=1)
+
+        old_artifact, _ = self.playground.create_artifact()
+        old_item = CollectionItem.objects.create_from_artifact(
+            old_artifact,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.user,
+            created_by_workflow=self.workflow,
+            created_at=created_at,
+            replaced_by=current_item,
+        )
+
+        self.assertEqual(old_item.created_at, created_at)
+        self.assertEqual(old_item.removed_at, current_item.created_at)
+        self.assertEqual(old_item.removed_by_user, current_item.created_by_user)
+        self.assertEqual(
+            old_item.removed_by_workflow, current_item.created_by_workflow
+        )
+
     def test_create_from_collection(self) -> None:
         """Verify create_from_collection method."""
         category = "some-category"
@@ -531,6 +642,7 @@ class CollectionItemManagerTests(TestCase):
             name=name,
             data=data,
             created_by_user=self.user,
+            created_by_workflow=self.workflow,
         )
 
         self.assertEqual(collection_item.parent_collection, self.collection)
@@ -542,8 +654,62 @@ class CollectionItemManagerTests(TestCase):
         self.assertEqual(collection_item.category, category)
         self.assertEqual(collection_item.data, data)
         self.assertEqual(collection_item.created_by_user, self.user)
+        self.assertEqual(collection_item.created_by_workflow, self.workflow)
 
-    @context.disable_permission_checks()
+    def test_create_from_collection_created_at(self) -> None:
+        collection = self.playground.create_collection(
+            "test", CollectionCategory.TEST
+        )
+        created_at = timezone.now() - timedelta(days=1)
+
+        collection_item = CollectionItem.objects.create_from_collection(
+            collection,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.user,
+            created_by_workflow=self.workflow,
+            created_at=created_at,
+        )
+
+        self.assertEqual(collection_item.created_at, created_at)
+        self.assertIsNone(collection_item.removed_at)
+
+    def test_create_from_collection_created_at_replaced_by(self) -> None:
+        current_collection = self.playground.create_collection(
+            "test-current", CollectionCategory.TEST
+        )
+        current_item = CollectionItem.objects.create_from_collection(
+            current_collection,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.user,
+            created_by_workflow=self.workflow,
+        )
+        created_at = timezone.now() - timedelta(days=1)
+
+        old_collection = self.playground.create_collection(
+            "test-old", CollectionCategory.TEST
+        )
+        old_item = CollectionItem.objects.create_from_collection(
+            old_collection,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.user,
+            created_by_workflow=self.workflow,
+            created_at=created_at,
+            replaced_by=current_item,
+        )
+
+        self.assertEqual(old_item.created_at, created_at)
+        self.assertEqual(old_item.removed_at, current_item.created_at)
+        self.assertEqual(old_item.removed_by_user, current_item.created_by_user)
+        self.assertEqual(
+            old_item.removed_by_workflow, current_item.created_by_workflow
+        )
+
     def test_drop_full_history(self) -> None:
         """Verify drop_full_history method."""
         data = {"a": "b"}
@@ -595,7 +761,6 @@ class CollectionItemManagerTests(TestCase):
         collection_item_keep.refresh_from_db()
         self.assertIsNotNone(collection_item_keep.artifact)
 
-    @context.disable_permission_checks()
     def test_drop_full_history_no_retention_period(self) -> None:
         """Verify drop_full_history method without retention_period."""
         data = {"a": "b"}
@@ -644,7 +809,6 @@ class CollectionItemManagerTests(TestCase):
         collection_item_keep.refresh_from_db()
         self.assertIsNotNone(collection_item_keep.artifact)
 
-    @context.disable_permission_checks()
     def test_drop_metadata(self) -> None:
         """Verify drop_metadata method."""
         data = {"a": "b"}
@@ -697,7 +861,6 @@ class CollectionItemManagerTests(TestCase):
         collection_item_keep.refresh_from_db()
         self.assertIsNotNone(collection_item_keep)
 
-    @context.disable_permission_checks()
     def test_drop_metadata_no_retention_period(self) -> None:
         """Verify drop_metadata method."""
         data = {"a": "b"}
@@ -746,13 +909,66 @@ class CollectionItemManagerTests(TestCase):
         collection_item_keep.refresh_from_db()
         self.assertIsNotNone(collection_item_keep)
 
+    def test_active_at(self) -> None:
+        """``active_at`` filters to items active at that time."""
+        items: list[CollectionItem] = []
+        item = self.playground.create_debian_environment(
+            collection=self.collection, codename="bookworm"
+        )
+        item.created_at = datetime(2024, 12, 1, tzinfo=tz.utc)
+        item.save()
+        items.append(item)
+        for timestamp in (
+            datetime(2025, 1, 1, tzinfo=tz.utc),
+            datetime(2025, 2, 1, tzinfo=tz.utc),
+            datetime(2025, 3, 1, tzinfo=tz.utc),
+        ):
+            CollectionItem.objects.active().filter(
+                parent_collection=self.collection, data__codename="trixie"
+            ).update(
+                removed_by_user=self.playground.get_default_user(),
+                removed_at=timestamp,
+            )
+            item = self.playground.create_debian_environment(
+                collection=self.collection, codename="trixie"
+            )
+            item.created_at = timestamp
+            item.save()
+            items.append(item)
+        CollectionItem.objects.active().filter(
+            parent_collection=self.collection, data__codename="trixie"
+        ).update(
+            removed_by_user=self.playground.get_default_user(),
+            removed_at=datetime(2025, 4, 1, tzinfo=tz.utc),
+        )
+
+        for timestamp, expected_items in (
+            (datetime(2024, 11, 30, tzinfo=tz.utc), []),
+            (datetime(2024, 12, 1, tzinfo=tz.utc), [items[0]]),
+            (datetime(2024, 12, 15, tzinfo=tz.utc), [items[0]]),
+            (datetime(2025, 1, 1, tzinfo=tz.utc), [items[0], items[1]]),
+            (datetime(2025, 1, 15, tzinfo=tz.utc), [items[0], items[1]]),
+            (datetime(2025, 2, 1, tzinfo=tz.utc), [items[0], items[2]]),
+            (datetime(2025, 2, 15, tzinfo=tz.utc), [items[0], items[2]]),
+            (datetime(2025, 3, 1, tzinfo=tz.utc), [items[0], items[3]]),
+            (datetime(2025, 3, 15, tzinfo=tz.utc), [items[0], items[3]]),
+            (datetime(2025, 4, 1, tzinfo=tz.utc), [items[0]]),
+        ):
+            self.assertQuerySetEqual(
+                CollectionItem.objects.active_at(timestamp).filter(
+                    parent_collection=self.collection
+                ),
+                expected_items,
+                ordered=False,
+            )
+
 
 class CollectionItemTests(TestCase):
     """Tests for CollectionItem class."""
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Create objects for the tests."""
+        super().setUp()
         self.artifact, _ = self.playground.create_artifact()
 
         self.workspace = self.playground.create_workspace(name="System")
@@ -1016,7 +1232,6 @@ class CollectionItemTests(TestCase):
                 created_by_user=self.user,
             )
 
-    @context.disable_permission_checks()
     def test_debian_environments_no_more_than_one_codename_architecture(
         self,
     ) -> None:
@@ -1185,16 +1400,9 @@ class CollectionItemTests(TestCase):
         item_url = item.get_absolute_url()
         self.assertEqual(
             item_url,
-            reverse(
-                "workspaces:collections:item_detail",
-                kwargs={
-                    "wname": self.workspace.name,
-                    "ccat": self.collection.category,
-                    "cname": self.collection.name,
-                    "iid": item.pk,
-                    "iname": item.name,
-                },
-            ),
+            f"/{self.workspace.scope.name}/{self.workspace.name}"
+            f"/collection/{self.collection.category}/{self.collection.name}"
+            f"/item/{item.pk}/{quote(item.name)}/",
         )
         self.assertTrue(item_url.endswith("/Name%20of%20the%20item/"))
 
@@ -1211,18 +1419,34 @@ class CollectionItemTests(TestCase):
         item_url = item.get_absolute_url()
         self.assertEqual(
             item_url,
-            reverse(
-                "workspaces:collections:item_detail",
-                kwargs={
-                    "wname": self.workspace.name,
-                    "ccat": self.collection.category,
-                    "cname": self.collection.name,
-                    "iid": item.pk,
-                    "iname": item.name,
-                },
-            ),
+            f"/{self.workspace.scope.name}/{self.workspace.name}"
+            f"/collection/{self.collection.category}/{self.collection.name}"
+            f"/item/{item.pk}/some/hierarchical/name/",
         )
-        self.assertTrue(item_url.endswith("/some/hierarchical/name/"))
+
+    def test_get_absolute_url_different_scope(self) -> None:
+        """get_absolute_url works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        collection = self.playground.create_collection(
+            "Name", CollectionCategory.TEST, workspace=other_workspace
+        )
+        item = CollectionItem.objects.create(
+            name="Name of the item",
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            child_type=CollectionItem.Types.BARE,
+            parent_collection=collection,
+            created_by_user=self.user,
+        )
+
+        item_url = item.get_absolute_url()
+        self.assertEqual(
+            item_url,
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/collection/{collection.category}/{collection.name}"
+            f"/item/{item.pk}/{quote(item.name)}/",
+        )
+        self.assertTrue(item_url.endswith("/Name%20of%20the%20item/"))
 
     def test_expand_variables(self) -> None:
         """Variables are correctly expanded, with error handling."""

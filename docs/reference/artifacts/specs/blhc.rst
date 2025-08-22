@@ -1,4 +1,4 @@
-.. _artifact-blhc:
+.. artifact:: debian:blhc
 
 Category ``debian:blhc``
 ========================
@@ -11,4 +11,5 @@ Category ``debian:blhc``
 
 * Relationships:
 
-  * relates-to: the corresponding ``debian:package-build-log`` input artifact.
+  * relates-to: the corresponding :artifact:`debian:package-build-log` input
+    artifact.

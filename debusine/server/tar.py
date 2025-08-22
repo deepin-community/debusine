@@ -111,10 +111,8 @@ class TarArtifact:
                 tarinfo = tarfile.TarInfo(path)
                 tarinfo.size = fileobj.size
                 mtime = self._artifact.created_at.timestamp()
-                # https://github.com/python/typeshed/pull/12521
-                tarinfo.mtime = mtime  # type: ignore[assignment]
-                # https://github.com/python/typeshed/pull/12961
-                self._tar.addfile(tarinfo, file)  # type: ignore[arg-type]
+                tarinfo.mtime = mtime
+                self._tar.addfile(tarinfo, file)
         elif self._tar_closed:
             # No data read and the tar file is closed: stop iterating
             raise StopIteration

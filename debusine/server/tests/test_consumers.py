@@ -23,7 +23,6 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework.fields import DateTimeField
 
-from debusine.db.context import context
 from debusine.db.models import Token, WorkRequest, Worker, Workspace
 from debusine.server import consumers
 from debusine.server.consumers import WorkerConsumer
@@ -263,10 +262,9 @@ class WorkerConsumerTransactionTests(WorkerConsumerMixin, TransactionTestCase):
         """Connect succeeds and consumer send expected two messages."""
         worker = await self.acreate_worker()
 
-        with context.disable_permission_checks():
-            await database_sync_to_async(self.playground.create_work_request)(
-                status=WorkRequest.Statuses.PENDING, worker=worker
-            )
+        await database_sync_to_async(self.playground.create_work_request)(
+            status=WorkRequest.Statuses.PENDING, worker=worker
+        )
 
         await self.assert_messages_send_on_connect(
             worker.token.key,
@@ -280,10 +278,9 @@ class WorkerConsumerTransactionTests(WorkerConsumerMixin, TransactionTestCase):
         """Connect succeeds and consumer send expected two messages."""
         worker = await self.acreate_worker()
 
-        with context.disable_permission_checks():
-            await database_sync_to_async(self.playground.create_work_request)(
-                status=WorkRequest.Statuses.RUNNING, worker=worker
-            )
+        await database_sync_to_async(self.playground.create_work_request)(
+            status=WorkRequest.Statuses.RUNNING, worker=worker
+        )
 
         await self.assert_messages_send_on_connect(
             worker.token.key,
@@ -341,10 +338,9 @@ class WorkerConsumerTransactionTests(WorkerConsumerMixin, TransactionTestCase):
         """Worker disconnect does not interrupt the associated WorkRequest."""
         communicator, worker = await self.connect_to_new_worker()
 
-        with context.disable_permission_checks():
-            work_request: WorkRequest = await database_sync_to_async(
-                self.playground.create_work_request
-            )()
+        work_request: WorkRequest = await database_sync_to_async(
+            self.playground.create_work_request
+        )()
 
         await database_sync_to_async(work_request.assign_worker)(worker)
         await database_sync_to_async(work_request.mark_running)()
@@ -480,8 +476,7 @@ class WorkerConsumerTransactionTests(WorkerConsumerMixin, TransactionTestCase):
             work_request = self.playground.create_work_request()
             work_request.assign_worker(worker)
 
-        with context.disable_permission_checks():
-            await database_sync_to_async(assign_work_request)(worker)
+        await database_sync_to_async(assign_work_request)(worker)
 
         self.assertEqual(
             await communicator.receive_json_from(),
@@ -663,14 +658,9 @@ class WorkRequestCompletedConsumerTests(TransactionTestCase):
 
         now = timezone.now()
 
-        with context.disable_permission_checks():
-            work_request_notified = await database_sync_to_async(
-                self.playground.create_work_request
-            )(
-                assign_new_worker=True,
-                mark_running=True,
-                result=result,
-            )
+        work_request_notified = await database_sync_to_async(
+            self.playground.create_work_request
+        )(assign_new_worker=True, mark_running=True, result=result)
 
         work_request_notified.completed_at = now - timedelta(minutes=1)
         await work_request_notified.asave()
@@ -718,13 +708,12 @@ class WorkRequestCompletedConsumerTests(TransactionTestCase):
 
         now = timezone.now()
 
-        with context.disable_permission_checks():
-            await database_sync_to_async(self.playground.create_work_request)(
-                assign_new_worker=True,
-                mark_running=True,
-                result=result,
-                completed_at=now,
-            )
+        await database_sync_to_async(self.playground.create_work_request)(
+            assign_new_worker=True,
+            mark_running=True,
+            result=result,
+            completed_at=now,
+        )
 
         communicator = await self.connect(
             token_key=self.token.key, query_params={"completed_at_since": now}
@@ -750,14 +739,9 @@ class WorkRequestCompletedConsumerTests(TransactionTestCase):
 
         now = timezone.now()
 
-        with context.disable_permission_checks():
-            work_request_last_created_1 = await database_sync_to_async(
-                self.playground.create_work_request
-            )(
-                assign_new_worker=True,
-                mark_running=True,
-                result=result,
-            )
+        work_request_last_created_1 = await database_sync_to_async(
+            self.playground.create_work_request
+        )(assign_new_worker=True, mark_running=True, result=result)
 
         work_request_last_created_1.completed_at = now
         await work_request_last_created_1.asave()
@@ -823,11 +807,10 @@ class WorkRequestCompletedConsumerTests(TransactionTestCase):
 
     async def test_work_request_completed_selected_workspace(self) -> None:
         """Notification is received: from a monitored workspace."""
-        with context.disable_permission_checks():
-            workspace_name = "lts"
-            workspace = await database_sync_to_async(
-                self.playground.create_workspace
-            )(name=workspace_name)
+        workspace_name = "lts"
+        workspace = await database_sync_to_async(
+            self.playground.create_workspace
+        )(name=workspace_name)
 
         workspace_names = f"{workspace_name},{workspace_name}"
         communicator = await self.connect(
@@ -861,14 +844,13 @@ class WorkRequestCompletedConsumerTests(TransactionTestCase):
     async def test_work_request_completed_workspace_not_monitored(self) -> None:
         """Notification not received: from a non-monitored workspace."""
         # Need to exist when connecting
-        with context.disable_permission_checks():
-            await database_sync_to_async(self.playground.create_workspace)(
-                name=settings.DEBUSINE_DEFAULT_WORKSPACE
-            )
+        await database_sync_to_async(self.playground.create_workspace)(
+            name=settings.DEBUSINE_DEFAULT_WORKSPACE
+        )
 
-            workspace = await database_sync_to_async(
-                self.playground.create_workspace
-            )(name="lts")
+        workspace = await database_sync_to_async(
+            self.playground.create_workspace
+        )(name="lts")
 
         communicator = await self.connect(
             token_key=self.token.key,
@@ -897,10 +879,9 @@ class WorkRequestCompletedConsumerTests(TransactionTestCase):
 
         result = WorkRequest.Results.SUCCESS
 
-        with context.disable_permission_checks():
-            workspace = await database_sync_to_async(
-                self.playground.create_workspace
-            )()
+        workspace = await database_sync_to_async(
+            self.playground.create_workspace
+        )()
 
         work_request = await self.create_work_request(workspace)
         assert work_request.completed_at is not None

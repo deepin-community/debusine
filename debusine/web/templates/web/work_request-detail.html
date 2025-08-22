@@ -1,161 +1,242 @@
 {% extends base_template %}
 {% load debusine %}
+{% block tail_js %}
+    {{ block.super }}
+    {% include "web/_tab_selector.html" %}
+{% endblock %}
 {% block content %}
-    <h1>
+    {% ui work_request as work_request_ui %}
+    <h1 class="mb-4" title="{{ work_request.task_name }}">
         <span class="bi {% icon "work_request" %}" title="Work request"></span>
         {{ title }}
     </h1>
-    {% if specialized_view_path %}
-        <p>
-            <a href="{{ specialized_view_path }}">{{ work_request.task_name }} view</a>
-        </p>
-    {% endif %}
-    {% if work_request.is_workflow or work_request.is_part_of_workflow %}
-        <h2>Workflow information</h2>
-        <ul>
-            {% with work_request_root=work_request.get_workflow_root %}
-                {% if work_request_root != work_request %}
-                    <li>
-                        Root: <a href="{{ work_request_root.get_absolute_url }}">{{ work_request_root.workflow_display_name }}</a>
-                    </li>
+    <nav>
+        <div class="nav nav-tabs mb-3" id="nav-tab" role="tablist">
+            {% if specialized_tab %}
+                <button class="nav-link active"
+                        id="nav-{{ specialized_tab.slug }}-tab"
+                        data-bs-toggle="tab"
+                        data-bs-target="#nav-{{ specialized_tab.slug }}"
+                        type="button"
+                        role="tab"
+                        aria-controls="nav-{{ specialized_tab.slug }}"
+                        aria-selected="false">{{ specialized_tab.label }}</button>
+            {% endif %}
+            <button class="nav-link {% if not specialized_tab %}active{% endif %}"
+                    id="nav-work_request-tab"
+                    data-bs-toggle="tab"
+                    data-bs-target="#nav-work_request"
+                    type="button"
+                    role="tab"
+                    aria-controls="nav-work_request"
+                    aria-selected="false">Work request</button>
+            <button class="nav-link"
+                    id="nav-output-tab"
+                    data-bs-toggle="tab"
+                    data-bs-target="#nav-output"
+                    type="button"
+                    role="tab"
+                    aria-controls="nav-work_request"
+                    aria-selected="false">Output</button>
+            <button class="nav-link"
+                    id="nav-dependencies-tab"
+                    data-bs-toggle="tab"
+                    data-bs-target="#nav-dependencies"
+                    type="button"
+                    role="tab"
+                    aria-controls="nav-dependencies"
+                    aria-selected="false">Dependencies</button>
+            <button class="nav-link"
+                    id="nav-internals-tab"
+                    data-bs-toggle="tab"
+                    data-bs-target="#nav-internals"
+                    type="button"
+                    role="tab"
+                    aria-controls="nav-internals"
+                    aria-selected="false">Internals</button>
+        </div>
+    </nav>
+    <div class="tab-content" id="nav-content">
+        {% if specialized_tab %}
+            <div class="tab-pane show active"
+                 id="nav-{{ specialized_tab.slug }}"
+                 role="tabpanel"
+                 aria-labelledby="nav-{{ specialized_tab.slug }}-tab"
+                 tabindex="0">{% include specialized_tab.template %}</div>
+        {% endif %}
+        <div class="tab-pane {% if not specialized_tab %}show active{% endif %}"
+             id="nav-work_request"
+             role="tabpanel"
+             aria-labelledby="nav-work_request-tab"
+             tabindex="0">
+            <h2>Description</h2>
+            {% include description_template with data=description_data only %}
+            <h2>Input artifacts</h2>
+            {% if not input_artifacts %}
+                <p id="no-input-artifacts">No input artifacts.</p>
+            {% else %}
+                {% include "web/_artifact-table.html" with table_id="input-artifacts" artifacts=input_artifacts only %}
+            {% endif %}
+            {% if work_request.is_workflow or work_request.is_part_of_workflow %}
+                <h2>Workflow information</h2>
+                <ul>
+                    {% for workflow in workflow_parents %}
+                        {% if workflow.is_workflow_root %}
+                            <li class="workflow-ancestor">
+                                <span title="Root workflow">⬆️</span>
+                                {% include "web/_work_request-workflow.html" with work_request=workflow only %}
+                            </li>
+                        {% else %}
+                            <li class="workflow-ancestor">
+                                <span title="Ancestor workflow">⬆️</span>
+                                {% include "web/_work_request-workflow.html" with work_request=workflow only %}
+                            </li>
+                        {% endif %}
+                    {% endfor %}
+                    {% if work_request_ui.workflow_children|lookup:work_request.id %}
+                        <li>{% include "web/_work_request-descendants.html" %}</li>
+                    {% endif %}
+                </ul>
+                {% if perms.db.change_workrequest and work_request.can_be_unblocked and work_request.unblock_strategy == "manual" %}
+                    <div class="card mb-2">
+                        <div class="card-header">Review blocked workflow step</div>
+                        <div class="card-body">
+                            {% if manual_unblock_log_entries %}
+                                {% include "web/_manual_unblock_log.html" with manual_unblock_log_entries=manual_unblock_log_entries only %}
+                            {% endif %}
+                            <form id="manual-unblock-form"
+                                  method="post"
+                                  action="{{ work_request.get_absolute_url_unblock }}">
+                                {% csrf_token %}
+                                {{ manual_unblock_form.as_p }}
+                                <input class="btn btn-success btn-sm"
+                                       type="submit"
+                                       name="action"
+                                       value="Accept">
+                                <input class="btn btn-danger btn-sm"
+                                       type="submit"
+                                       name="action"
+                                       value="Reject">
+                                <input class="btn btn-info btn-sm"
+                                       type="submit"
+                                       name="action"
+                                       value="Record notes only">
+                            </form>
+                        </div>
+                    </div>
+                {% endif %}
+            {% endif %}
+            {% if work_request.requires_signature and user == work_request.created_by %}
+                <div id="requires-signature" class="card mb-2">
+                    <div class="card-header">Waiting for signature</div>
+                    <div class="card-body">
+                        Run <code>debusine --server {{ DEBUSINE_FQDN }}/{{ scope }} provide-signature {{ work_request.id }}</code> to sign this request.
+                        <form method="post" action="{{ work_request.get_absolute_url_abort }}">
+                            {% csrf_token %}
+                            If you do not want to sign it, you can
+                            <button class="btn btn-link in-running-text" type="submit">abort</button>
+                            it instead.
+                        </form>
+                    </div>
+                </div>
+            {% endif %}
+            {% if validation_error %}
+                <h2>Validation error</h2>
+                <pre><code>{{ validation_error }}</code></pre>
+            {% endif %}
+            {% if work_request.output_data.errors %}
+                <h2>Errors</h2>
+                <ul id="errors">
+                    {% for error in work_request.output_data.errors %}
+                        <li>
+                            <pre><code>{{ error.message }}</code></pre>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+        </div>
+        <div class="tab-pane"
+             id="nav-output"
+             role="tabpanel"
+             aria-labelledby="nav-output-tab"
+             tabindex="0">
+            <h2>Output artifacts</h2>
+            {% if not built_artifacts %}
+                <p id="no-output-artifacts">No artifacts produced.</p>
+            {% else %}
+                {% include "web/_artifact-table.html" with table_id="output-artifacts" artifacts=built_artifacts only %}
+            {% endif %}
+            <h2>Output data</h2>
+            {% if work_request_output_data %}
+                {% include "web/_dict_to_ul.html" with dict=work_request_output_data only %}
+            {% else %}
+                <p id="output-no-output-data">No output data.</p>
+            {% endif %}
+        </div>
+        <div class="tab-pane"
+             id="nav-dependencies"
+             role="tabpanel"
+             aria-labelledby="nav-dependencies-tab"
+             tabindex="0">
+            <h2>
+                Dependencies
+                {% help "dependencies" %}
+            </h2>
+            {% if work_request_dependencies %}
+                <p>Work requests that must be completed before this one can run.</p>
+                {% widget work_request_dependencies %}
+            {% else %}
+                <p>This work request does not depend on any other one.</p>
+            {% endif %}
+            <h2>
+                Reverse dependencies
+                {% help "reverse_dependencies" %}
+            </h2>
+            {% if work_request_reverse_dependencies %}
+                <p>Work requests that require this one to complete successfully before they can run.</p>
+                {% widget work_request_reverse_dependencies %}
+            {% else %}
+                <p>This work request is not required by any other one.</p>
+            {% endif %}
+        </div>
+        <div class="tab-pane"
+             id="nav-internals"
+             role="tabpanel"
+             aria-labelledby="nav-internals-tab"
+             tabindex="0">
+            {% with workflow_root=work_request.get_workflow_root %}
+                {% if workflow_root %}
+                    {% with collection=workflow_root.internal_collection %}
+                        <p id="internal-collection">
+                            Internal collection: <a href="{{ collection.get_absolute_url }}">{{ collection.name }}</a>
+                        </p>
+                    {% endwith %}
                 {% endif %}
             {% endwith %}
-            {% if work_request.parent %}
-                <li>
-                    Parent: <a href="{{ work_request.parent.get_absolute_url }}">{{ work_request.parent.workflow_display_name }}</a>
-                </li>
+            <h2>Task data</h2>
+            {% include "web/_card.html" with id="card-task_data" data=task_data only %}
+            <h2>Task data after applying task configuration</h2>
+            {% if is_task_data_configured %}
+                {% include "web/_card.html" with id="card-configured_task_data" data=task_data_configured only %}
+            {% else %}
+                <p id="task_data_not_configured">Work request is not configured.</p>
             {% endif %}
-            {% if work_request.children.all %}
-                <li>{% include "web/_work_request-descendants.html" %}</li>
+            <h2>Dynamic data</h2>
+            {% if show_task_data_dynamic %}
+                {% include "web/_card.html" with id="card-dynamic_data" data=task_data_dynamic only %}
+            {% else %}
+                <p id="dynamic_data_not_available">No dynamic task data.</p>
             {% endif %}
-        </ul>
-        {% if perms.db.change_workrequest and work_request.can_be_unblocked and work_request.unblock_strategy == "manual" %}
-            <div class="card mb-2">
-                <div class="card-header">Review blocked workflow step</div>
-                <div class="card-body">
-                    {% if manual_unblock_log_entries %}
-                        {% include "web/_manual_unblock_log.html" with manual_unblock_log_entries=manual_unblock_log_entries only %}
-                    {% endif %}
-                    <form id="manual-unblock-form"
-                          method="post"
-                          action="{{ work_request.get_absolute_url_unblock }}">
-                        {% csrf_token %}
-                        {{ manual_unblock_form.as_p }}
-                        <input class="btn btn-success btn-sm"
-                               type="submit"
-                               name="action"
-                               value="Accept">
-                        <input class="btn btn-danger btn-sm"
-                               type="submit"
-                               name="action"
-                               value="Reject">
-                        <input class="btn btn-info btn-sm"
-                               type="submit"
-                               name="action"
-                               value="Record notes only">
-                    </form>
-                </div>
-            </div>
-        {% endif %}
-    {% endif %}
-    {% if work_request.requires_signature and user == work_request.created_by %}
-        <div id="requires-signature" class="card mb-2">
-            <div class="card-header">Waiting for signature</div>
-            <div class="card-body">
-                Run <code>debusine provide-signature {{ work_request.id }}</code> to sign this request.
-            </div>
+            <h2>Workflow data</h2>
+            {% include "web/_card.html" with id="card-workflow_data" data=work_request_workflow_data_json only %}
+            <h2>Event reactions</h2>
+            {% include "web/_card.html" with id="card-event_reactions" data=work_request_event_reactions_json only %}
+            <h2>Output data</h2>
+            {% if work_request_output_data %}
+                {% include "web/_card.html" with id="card-output_data" data=work_request_output_data_json only %}
+            {% else %}
+                <p id="internals-no-output-data">No output data.</p>
+            {% endif %}
         </div>
-    {% endif %}
-    {% if validation_error %}
-        <h2>Validation error</h2>
-        <pre><code>{{ validation_error }}</code></pre>
-    {% endif %}
-    {% if work_request.output_data.errors %}
-        <h2>Errors</h2>
-        <ul id="errors">
-            {% for error in work_request.output_data.errors %}
-                <li>
-                    <pre><code>{{ error.message }}</code></pre>
-                </li>
-            {% endfor %}
-        </ul>
-    {% endif %}
-    <div id="metadata" class="card mb-2">
-        {% if task_data_configured %}
-            <div class="card-header">
-                <ul class="nav nav-tabs card-header-tabs">
-                    <li class="nav-item">
-                        <a class="nav-link active"
-                           id="tab_task_data_configured"
-                           data-bs-toggle="tab"
-                           data-bs-target="#task_data_configured"
-                           aria-current="true"
-                           href="#">Configured metadata</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link"
-                           id="tab_task_data_original"
-                           data-bs-toggle="tab"
-                           data-bs-target="#task_data_original"
-                           href="#">Original metadata</a>
-                    </li>
-                </ul>
-            </div>
-            <div class="card-body text-white bg-dark tab-content">
-                <div class="tab-pane active"
-                     id="task_data_configured"
-                     aria-labelledby="tab_task_data_configured">{{ task_data }}</div>
-                <div class="tab-pane"
-                     id="task_data_original"
-                     aria-labelledby="tab_task_data_original">{{ task_data_original }}</div>
-            </div>
-        {% else %}
-            <div class="card-header">Metadata</div>
-            <div class="card-body text-white bg-dark">{{ task_data }}</div>
-        {% endif %}
     </div>
-    <table id="artifacts" class="table table-sm wr-artifacts">
-        <thead>
-            <tr>
-                <th></th>
-                <th>Type</th>
-                <th>Name</th>
-                <th></th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <th title="Input artifacts"
-                    rowspan="{{ source_artifacts|length|add:"1" }}">
-                    <span class="bi {% icon 'artifacts_input' %}"></span>
-                </th>
-            </tr>
-            {% if source_artifacts %}
-                {% include "web/_artifact-list.html" with artifacts=source_artifacts only %}
-            {% elif source_artifacts_not_implemented %}
-                <tr>
-                    <td colspan="4">Listing source artifacts not yet implemented for this task type</td>
-                </tr>
-            {% else %}
-                <tr>
-                    <td colspan="4">No input artifacts</td>
-                </tr>
-            {% endif %}
-        </tbody>
-        <tbody>
-            <tr>
-                <th title="Output artifacts"
-                    rowspan="{{ built_artifacts|length|add:"1" }}">
-                    <span class="bi {% icon 'artifacts_output' %}"></span>
-                </th>
-            </tr>
-            {% if built_artifacts %}
-                {% include "web/_artifact-list.html" with artifacts=built_artifacts only %}
-            {% else %}
-                <tr>
-                    <td colspan="4">No artifacts produced</td>
-                </tr>
-            {% endif %}
-        </tbody>
-    </table>
 {% endblock %}

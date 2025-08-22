@@ -9,7 +9,7 @@
 
 """Test server for the tests."""
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from aiohttp import web
@@ -31,7 +31,7 @@ class DebusineAioHTTPTestCase(AioHTTPTestCase):
 
     WORK_REQUEST_ID = 10
     WORK_REQUEST_RESULT = "success"
-    COMPLETED_AT = datetime.utcnow()
+    COMPLETED_AT = datetime.now(timezone.utc)
     ON_COMPLETED_WORK_REQUESTS = 1
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:

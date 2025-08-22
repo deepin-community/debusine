@@ -23,7 +23,6 @@ from debusine.artifacts.models import (
     DebusinePromise,
 )
 from debusine.client.models import LookupChildType
-from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
     Collection,
@@ -34,14 +33,13 @@ from debusine.db.models import (
     Workspace,
     default_workspace,
 )
-from debusine.server.collections.debian_suite import DebianSuiteManager
 from debusine.server.collections.lookup import (
     LookupResult,
     lookup_multiple,
     lookup_single,
     reconstruct_lookup,
 )
-from debusine.server.collections.tests.test_base import TestManager
+from debusine.server.collections.tests.test_base import DebusineTestManager
 from debusine.tasks.models import LookupMultiple, LookupSingle
 from debusine.test.django import TestCase
 
@@ -141,6 +139,7 @@ class LookupMixin(TestCase):
     @staticmethod
     def make_result(
         obj: Artifact | Collection | CollectionItem,
+        parent_collection_lookup: LookupSingle | None = None,
     ) -> LookupResult:
         """Make a LookupResult from an underlying object."""
         match obj:
@@ -155,6 +154,10 @@ class LookupMixin(TestCase):
             case CollectionItem():
                 return LookupResult(
                     result_type=CollectionItem.Types(obj.child_type),
+                    parent_collection_lookup=(
+                        parent_collection_lookup
+                        or f"{obj.parent_collection.id}@collections"
+                    ),
                     collection_item=obj,
                     artifact=obj.artifact,
                     collection=obj.collection,
@@ -173,6 +176,7 @@ class LookupSingleTests(LookupMixin, TestCase):
         *,
         user: User | bool | AnonymousUser = True,
         workspace: Workspace | None = None,
+        parent_collection_lookup: LookupSingle | None = None,
         **kwargs: Any,
     ) -> None:
         """Assert that a lookup's result is as expected."""
@@ -185,7 +189,9 @@ class LookupSingleTests(LookupMixin, TestCase):
             lookup_single(
                 lookup, workspace or default_workspace(), user=user, **kwargs
             ),
-            self.make_result(expected),
+            self.make_result(
+                expected, parent_collection_lookup=parent_collection_lookup
+            ),
         )
 
     def assert_lookup_fails(
@@ -214,7 +220,6 @@ class LookupSingleTests(LookupMixin, TestCase):
         with self.assertRaisesRegex(LookupError, "Empty lookup"):
             lookup_single("", default_workspace(), user=AnonymousUser())
 
-    @context.disable_permission_checks()
     def test_specific_artifact(self) -> None:
         """`nnn@artifacts` finds a specific artifact."""
         artifacts = [self.playground.create_artifact()[0] for _ in range(3)]
@@ -224,7 +229,6 @@ class LookupSingleTests(LookupMixin, TestCase):
             with self.subTest(lookup=lookup):
                 self.assert_lookup_equal(lookup, artifact)
 
-    @context.disable_permission_checks()
     def test_specific_artifact_integer(self) -> None:
         """Integer lookups find a specific artifact."""
         artifacts = [self.playground.create_artifact()[0] for _ in range(3)]
@@ -247,19 +251,18 @@ class LookupSingleTests(LookupMixin, TestCase):
 
     def test_specific_artifact_restricts_workspace(self) -> None:
         """`nnn@artifacts` requires the given workspace or a public one."""
-        with context.disable_permission_checks():
-            private_workspaces = []
-            for i in range(2):
-                workspace = self.playground.create_workspace(name=f"private{i}")
-                self.owners.assign_role(workspace, "owner")
-                private_workspaces.append(workspace)
-            public_workspace = self.playground.create_workspace(
-                name="public", public=True
-            )
-            artifacts = [
-                self.playground.create_artifact(workspace=workspace)[0]
-                for workspace in private_workspaces + [public_workspace]
-            ]
+        private_workspaces = []
+        for i in range(2):
+            workspace = self.playground.create_workspace(name=f"private{i}")
+            self.owners.assign_role(workspace, "owner")
+            private_workspaces.append(workspace)
+        public_workspace = self.playground.create_workspace(
+            name="public", public=True
+        )
+        artifacts = [
+            self.playground.create_artifact(workspace=workspace)[0]
+            for workspace in private_workspaces + [public_workspace]
+        ]
 
         for artifact, workspace, visible in (
             (artifacts[0], private_workspaces[0], True),
@@ -321,15 +324,14 @@ class LookupSingleTests(LookupMixin, TestCase):
 
     def test_specific_collection_restricts_workspace(self) -> None:
         """`nnn@collections` requires the given workspace or a public one."""
-        with context.disable_permission_checks():
-            private_workspaces = []
-            for i in range(2):
-                workspace = self.playground.create_workspace(name=f"private{i}")
-                self.owners.assign_role(workspace, "owner")
-                private_workspaces.append(workspace)
-            public_workspace = self.playground.create_workspace(
-                name="public", public=True
-            )
+        private_workspaces = []
+        for i in range(2):
+            workspace = self.playground.create_workspace(name=f"private{i}")
+            self.owners.assign_role(workspace, "owner")
+            private_workspaces.append(workspace)
+        public_workspace = self.playground.create_workspace(
+            name="public", public=True
+        )
         collections = [
             self.playground.create_collection(
                 str(i), CollectionCategory.TEST, workspace=workspace
@@ -364,21 +366,18 @@ class LookupSingleTests(LookupMixin, TestCase):
 
     def test_user_restrictions(self) -> None:
         """`name@collections` respects user restrictions."""
-        with context.disable_permission_checks():
-            wpublic = self.playground.create_workspace(
-                name="public", public=True
-            )
-            cpublic = self.playground.create_collection(
-                "test", CollectionCategory.TEST, workspace=wpublic
-            )
-            wprivate = self.playground.create_workspace(
-                name="private", public=False
-            )
-            self.owners.assign_role(wprivate, "owner")
-            cprivate = self.playground.create_collection(
-                "test", CollectionCategory.TEST, workspace=wprivate
-            )
-            wstart = self.playground.create_workspace(name="start", public=True)
+        wpublic = self.playground.create_workspace(name="public", public=True)
+        cpublic = self.playground.create_collection(
+            "test", CollectionCategory.TEST, workspace=wpublic
+        )
+        wprivate = self.playground.create_workspace(
+            name="private", public=False
+        )
+        self.owners.assign_role(wprivate, "owner")
+        cprivate = self.playground.create_collection(
+            "test", CollectionCategory.TEST, workspace=wprivate
+        )
+        wstart = self.playground.create_workspace(name="start", public=True)
 
         lookup = f"test@{CollectionCategory.TEST}"
 
@@ -433,14 +432,11 @@ class LookupSingleTests(LookupMixin, TestCase):
 
     def test_internal_collection(self) -> None:
         """`internal@collections` works in a workflow context."""
-        with context.disable_permission_checks():
-            template = WorkflowTemplate.objects.create(
-                name="test", workspace=default_workspace(), task_name="noop"
-            )
-            workflow_root = self.playground.create_workflow(
-                template, task_data={}
-            )
-            self.playground.create_collection("test", CollectionCategory.TEST)
+        template = WorkflowTemplate.objects.create(
+            name="test", workspace=default_workspace(), task_name="noop"
+        )
+        workflow_root = self.playground.create_workflow(template, task_data={})
+        self.playground.create_collection("test", CollectionCategory.TEST)
 
         assert workflow_root.internal_collection is not None
         self.assert_lookup_equal(
@@ -463,15 +459,14 @@ class LookupSingleTests(LookupMixin, TestCase):
 
     def test_explicit_category_restricts_workspace(self) -> None:
         """Collection lookups require the given workspace or a public one."""
-        with context.disable_permission_checks():
-            private_workspaces: list[Workspace] = []
-            for i in range(2):
-                workspace = self.playground.create_workspace(name=f"private{i}")
-                self.owners.assign_role(workspace, "owner")
-                private_workspaces.append(workspace)
-            public_workspace = self.playground.create_workspace(
-                name="public", public=True
-            )
+        private_workspaces: list[Workspace] = []
+        for i in range(2):
+            workspace = self.playground.create_workspace(name=f"private{i}")
+            self.owners.assign_role(workspace, "owner")
+            private_workspaces.append(workspace)
+        public_workspace = self.playground.create_workspace(
+            name="public", public=True
+        )
         collections = [
             self.playground.create_collection(
                 workspace.name, CollectionCategory.TEST, workspace=workspace
@@ -525,7 +520,6 @@ class LookupSingleTests(LookupMixin, TestCase):
         ):
             lookup_single("debian", default_workspace(), user=self.user)
 
-    @context.disable_permission_checks()
     def test_collection_member(self) -> None:
         """Looking up collection members works."""
         self.playground.create_collection("bullseye", CollectionCategory.SUITE)
@@ -544,16 +538,23 @@ class LookupSingleTests(LookupMixin, TestCase):
             (trixie, src2),
         ):
             items.append(
-                DebianSuiteManager(suite).add_source_package(
+                suite.manager.add_artifact(
                     source_package_artifact,
                     user=self.user,
-                    component="main",
-                    section="devel",
+                    variables={"component": "main", "section": "devel"},
                 )
             )
 
-        self.assert_lookup_equal("bookworm@debian:suite/source:src1", items[0])
-        self.assert_lookup_equal("bookworm@debian:suite/src2_2.0", items[1])
+        self.assert_lookup_equal(
+            "bookworm@debian:suite/source:src1",
+            items[0],
+            parent_collection_lookup="bookworm@debian:suite",
+        )
+        self.assert_lookup_equal(
+            "bookworm@debian:suite/src2_2.0",
+            items[1],
+            parent_collection_lookup="bookworm@debian:suite",
+        )
         with self.assertRaisesRegex(
             KeyError, "'bullseye@debian:suite' has no item 'source:src1'"
         ):
@@ -563,18 +564,16 @@ class LookupSingleTests(LookupMixin, TestCase):
                 user=self.user,
             )
 
-    @context.disable_permission_checks()
     def test_no_lookup_through_artifact(self) -> None:
         """Lookup segments cannot continue after an artifact."""
         suite = self.playground.create_collection(
             "bookworm", CollectionCategory.SUITE
         )
         source_package_artifact = self.create_source_package("src1", "1.0")
-        DebianSuiteManager(suite).add_source_package(
+        suite.manager.add_artifact(
             source_package_artifact,
             user=self.user,
-            component="main",
-            section="devel",
+            variables={"component": "main", "section": "devel"},
         )
 
         with self.assertRaisesRegex(
@@ -588,12 +587,12 @@ class LookupSingleTests(LookupMixin, TestCase):
                 user=self.user,
             )
 
-    @context.disable_permission_checks()
     def test_expect_type(self) -> None:
         """`expect_type` requires the result to be of that type."""
         collection = self.playground.create_collection(
             "collection", CollectionCategory.WORKFLOW_INTERNAL
         )
+        collection_lookup = f"collection@{CollectionCategory.WORKFLOW_INTERNAL}"
         bare_item = self.playground.create_bare_data_item(collection, "bare")
         artifact_item = self.create_artifact_item(collection, "artifact")
         collection_item = self.create_collection_item(
@@ -614,11 +613,14 @@ class LookupSingleTests(LookupMixin, TestCase):
             ("sub-collection", LookupChildType.COLLECTION, collection_item),
             ("sub-collection", LookupChildType.ANY, collection_item),
         ):
-            lookup = f"collection@{CollectionCategory.WORKFLOW_INTERNAL}/{name}"
+            lookup = f"{collection_lookup}/{name}"
             with self.subTest(lookup=lookup, expect_type=expect_type):
                 if expected is not None:
                     self.assert_lookup_equal(
-                        lookup, expected, expect_type=expect_type
+                        lookup,
+                        expected,
+                        expect_type=expect_type,
+                        parent_collection_lookup=collection_lookup,
                     )
                 else:
                     with self.assertRaisesRegex(
@@ -649,6 +651,7 @@ class LookupMultipleTests(LookupMixin, TestCase):
         expected: Iterable[Artifact | Collection | CollectionItem],
         *,
         workspace: Workspace | None = None,
+        parent_collection_lookup: LookupSingle | None = None,
         **kwargs: Any,
     ) -> None:
         """Assert that a lookup's result is as expected."""
@@ -659,7 +662,12 @@ class LookupMultipleTests(LookupMixin, TestCase):
                 user=self.user,
                 **kwargs,
             ),
-            tuple(self.make_result(item) for item in expected),
+            tuple(
+                self.make_result(
+                    item, parent_collection_lookup=parent_collection_lookup
+                )
+                for item in expected
+            ),
         )
 
     def assert_lookup_fails(
@@ -679,7 +687,6 @@ class LookupMultipleTests(LookupMixin, TestCase):
                 **kwargs,
             )
 
-    @context.disable_permission_checks()
     def test_not_collection(self) -> None:
         """The `collection` key does not identify a collection."""
         artifact = self.playground.create_artifact()[0]
@@ -696,12 +703,12 @@ class LookupMultipleTests(LookupMixin, TestCase):
                 user=AnonymousUser(),
             )
 
-    @context.disable_permission_checks()
     def test_child_type_bare(self) -> None:
         """Restrict to bare items."""
         collection = self.playground.create_collection(
             "collection", CollectionCategory.TEST
         )
+        collection_lookup = f"collection@{CollectionCategory.TEST}"
         other_collection = self.playground.create_collection(
             "other-collection", CollectionCategory.TEST
         )
@@ -712,14 +719,11 @@ class LookupMultipleTests(LookupMixin, TestCase):
         self.playground.create_bare_data_item(other_collection, "bare3")
 
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "child_type": "bare",
-            },
+            {"collection": collection_lookup, "child_type": "bare"},
             (bare1, bare2),
+            parent_collection_lookup=collection_lookup,
         )
 
-    @context.disable_permission_checks()
     def test_child_type_artifact(self) -> None:
         """Restrict to artifacts."""
         bookworm = self.playground.create_collection(
@@ -751,17 +755,17 @@ class LookupMultipleTests(LookupMixin, TestCase):
             (trixie, src2),
         ):
             items.append(
-                DebianSuiteManager(suite).add_source_package(
+                suite.manager.add_artifact(
                     source_package_artifact,
                     user=self.user,
-                    component="main",
-                    section="devel",
+                    variables={"component": "main", "section": "devel"},
                 )
             )
 
         self.assert_lookup_equal(
             {"collection": "bookworm@debian:suite", "child_type": "artifact"},
             items[:2],
+            parent_collection_lookup="bookworm@debian:suite",
         )
         self.assert_lookup_equal(
             {
@@ -769,17 +773,20 @@ class LookupMultipleTests(LookupMixin, TestCase):
                 "child_type": "artifact-or-promise",
             },
             [bare2] + items[:2],
+            parent_collection_lookup="bookworm@debian:suite",
         )
         self.assert_lookup_equal(
-            {"collection": "bookworm@debian:suite"}, items[:2]
+            {"collection": "bookworm@debian:suite"},
+            items[:2],
+            parent_collection_lookup="bookworm@debian:suite",
         )
 
-    @context.disable_permission_checks()
     def test_child_type_collection(self) -> None:
         """Restrict to collections."""
         collection = self.playground.create_collection(
             "collection", CollectionCategory.TEST
         )
+        collection_lookup = f"collection@{CollectionCategory.TEST}"
         other_collection = self.playground.create_collection(
             "other-collection", CollectionCategory.TEST
         )
@@ -790,19 +797,17 @@ class LookupMultipleTests(LookupMixin, TestCase):
         self.create_collection_item(other_collection, "collection3")
 
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "child_type": "collection",
-            },
+            {"collection": collection_lookup, "child_type": "collection"},
             (collection1, collection2),
+            parent_collection_lookup=collection_lookup,
         )
 
-    @context.disable_permission_checks()
     def test_child_type_any(self) -> None:
         """Don't restrict by child type."""
         collection = self.playground.create_collection(
             "collection", CollectionCategory.TEST
         )
+        collection_lookup = f"collection@{CollectionCategory.TEST}"
         bare = self.playground.create_bare_data_item(collection, "bare")
         artifact = self.create_artifact_item(collection, "artifact")
         sub_collection = self.create_collection_item(
@@ -810,11 +815,9 @@ class LookupMultipleTests(LookupMixin, TestCase):
         )
 
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "child_type": "any",
-            },
+            {"collection": collection_lookup, "child_type": "any"},
             (bare, artifact, sub_collection),
+            parent_collection_lookup=collection_lookup,
         )
 
     def test_expect_type(self) -> None:
@@ -865,7 +868,6 @@ class LookupMultipleTests(LookupMixin, TestCase):
                             expect_type=expect_type,
                         )
 
-    @context.disable_permission_checks()
     def test_category(self) -> None:
         """Restrict by category."""
         bookworm = self.playground.create_collection(
@@ -878,21 +880,22 @@ class LookupMultipleTests(LookupMixin, TestCase):
         items = []
         for source_package_artifact in (src1, src2):
             items.append(
-                DebianSuiteManager(bookworm).add_source_package(
+                bookworm.manager.add_artifact(
                     source_package_artifact,
                     user=self.user,
-                    component="main",
-                    section="devel",
+                    variables={"component": "main", "section": "devel"},
                 )
             )
         for binary_package_artifact in (bin1, bin2):
             items.append(
-                DebianSuiteManager(bookworm).add_binary_package(
+                bookworm.manager.add_artifact(
                     binary_package_artifact,
                     user=self.user,
-                    component="main",
-                    section="devel",
-                    priority="optional",
+                    variables={
+                        "component": "main",
+                        "section": "devel",
+                        "priority": "optional",
+                    },
                 )
             )
 
@@ -902,6 +905,7 @@ class LookupMultipleTests(LookupMixin, TestCase):
                 "category": ArtifactCategory.SOURCE_PACKAGE,
             },
             items[:2],
+            parent_collection_lookup="bookworm@debian:suite",
         )
         self.assert_lookup_equal(
             {
@@ -909,54 +913,47 @@ class LookupMultipleTests(LookupMixin, TestCase):
                 "category": ArtifactCategory.BINARY_PACKAGE,
             },
             items[2:],
+            parent_collection_lookup="bookworm@debian:suite",
         )
 
-    @context.disable_permission_checks()
     def test_name_matcher(self) -> None:
         """Restrict by name."""
         collection = self.playground.create_collection(
             "collection", CollectionCategory.TEST
         )
+        collection_lookup = f"collection@{CollectionCategory.TEST}"
         items = [
             self.create_artifact_item(collection, name)
             for name in ("foo", "foobar", "rebar")
         ]
 
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "name": "foo",
-            },
+            {"collection": collection_lookup, "name": "foo"},
             (items[0],),
+            parent_collection_lookup=collection_lookup,
         )
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "name__startswith": "foo",
-            },
+            {"collection": collection_lookup, "name__startswith": "foo"},
             items[:2],
+            parent_collection_lookup=collection_lookup,
         )
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "name__endswith": "bar",
-            },
+            {"collection": collection_lookup, "name__endswith": "bar"},
             items[1:],
+            parent_collection_lookup=collection_lookup,
         )
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "name__contains": "oo",
-            },
+            {"collection": collection_lookup, "name__contains": "oo"},
             items[:2],
+            parent_collection_lookup=collection_lookup,
         )
 
-    @context.disable_permission_checks()
     def test_data_matchers(self) -> None:
         """Restrict by data."""
         collection = self.playground.create_collection(
             "collection", CollectionCategory.TEST
         )
+        collection_lookup = f"collection@{CollectionCategory.TEST}"
         item_specs: list[tuple[str, dict[str, Any]]] = [
             ("foo", {"package": "foo"}),
             ("foobar_1.0", {"package": "foobar", "version": "1.0"}),
@@ -968,54 +965,45 @@ class LookupMultipleTests(LookupMixin, TestCase):
         ]
 
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "data__package": "foo",
-            },
+            {"collection": collection_lookup, "data__package": "foo"},
             (items[0],),
+            parent_collection_lookup=collection_lookup,
         )
         self.assert_lookup_equal(
             {
-                "collection": f"collection@{CollectionCategory.TEST}",
+                "collection": collection_lookup,
                 "data__package__startswith": "foo",
             },
             items[:2],
+            parent_collection_lookup=collection_lookup,
         )
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "data__package__endswith": "bar",
-            },
+            {"collection": collection_lookup, "data__package__endswith": "bar"},
             items[1:],
+            parent_collection_lookup=collection_lookup,
         )
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "data__package__contains": "oo",
-            },
+            {"collection": collection_lookup, "data__package__contains": "oo"},
             items[:2],
+            parent_collection_lookup=collection_lookup,
         )
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "data__version": "1.0",
-            },
+            {"collection": collection_lookup, "data__version": "1.0"},
             (items[1],),
+            parent_collection_lookup=collection_lookup,
         )
         self.assert_lookup_equal(
-            {
-                "collection": f"collection@{CollectionCategory.TEST}",
-                "data__some_id": 123,
-            },
+            {"collection": collection_lookup, "data__some_id": 123},
             (items[2],),
+            parent_collection_lookup=collection_lookup,
         )
 
-    @context.disable_permission_checks()
     def test_lookup_filters(self) -> None:
         """Restrict by custom lookup filter."""
         collection = self.playground.create_collection(
             "collection", CollectionCategory.TEST
         )
+        collection_lookup = f"collection@{CollectionCategory.TEST}"
         item_specs: list[tuple[str, dict[str, Any]]] = [
             ("foo", {"package": "foo"}),
             ("foobar_1.0", {"package": "foobar", "version": "1.0"}),
@@ -1038,14 +1026,14 @@ class LookupMultipleTests(LookupMixin, TestCase):
             return Q(data__package=value)
 
         with mock.patch.object(
-            TestManager, "do_lookup_filter", side_effect=do_lookup_filter
+            DebusineTestManager,
+            "do_lookup_filter",
+            side_effect=do_lookup_filter,
         ) as mock_do_lookup_filter:
             self.assert_lookup_equal(
-                {
-                    "collection": f"collection@{CollectionCategory.TEST}",
-                    "lookup__test": "foo",
-                },
+                {"collection": collection_lookup, "lookup__test": "foo"},
                 (items[0],),
+                parent_collection_lookup=collection_lookup,
             )
             mock_do_lookup_filter.assert_called_once_with(
                 "test",
@@ -1057,12 +1045,10 @@ class LookupMultipleTests(LookupMixin, TestCase):
             mock_do_lookup_filter.reset_mock()
 
             self.assert_lookup_equal(
-                {
-                    "collection": f"collection@{CollectionCategory.TEST}",
-                    "lookup__test": "foobar",
-                },
+                {"collection": collection_lookup, "lookup__test": "foobar"},
                 (items[1],),
                 workflow_root=workflow_root,
+                parent_collection_lookup=collection_lookup,
             )
             mock_do_lookup_filter.assert_called_once_with(
                 "test",
@@ -1072,7 +1058,6 @@ class LookupMultipleTests(LookupMixin, TestCase):
                 workflow_root=workflow_root,
             )
 
-    @context.disable_permission_checks()
     def test_alternatives(self) -> None:
         """The list syntax allows specifying several lookups at once."""
         trixie = self.playground.create_collection(
@@ -1135,9 +1120,9 @@ class LookupMultipleTests(LookupMixin, TestCase):
             ],
             default_category=CollectionCategory.SUITE,
             expect_type=LookupChildType.ARTIFACT,
+            parent_collection_lookup=f"trixie@{CollectionCategory.SUITE}",
         )
 
-    @context.disable_permission_checks()
     def test_artifact_expired(self) -> None:
         """If one artifact has expired, `lookup_multiple` raises LookupError."""
         artifacts = [self.playground.create_artifact()[0] for _ in range(3)]
@@ -1150,7 +1135,6 @@ class LookupMultipleTests(LookupMixin, TestCase):
             expect_type=LookupChildType.ARTIFACT,
         )
 
-    @context.disable_permission_checks()
     def test_collection_removed(self) -> None:
         """If one collection is gone, `lookup_multiple` raises LookupError."""
         collections = [
@@ -1178,12 +1162,12 @@ class LookupMultipleTests(LookupMixin, TestCase):
             f"hidden",
         )
 
-    @context.disable_permission_checks()
     def test_query_count(self) -> None:
         """`lookup_multiple` makes a constant number of DB queries."""
         collection = self.playground.create_collection(
             "collection", CollectionCategory.TEST
         )
+        collection_lookup = f"collection@{CollectionCategory.TEST}"
         artifact_items = [
             self.create_artifact_item(collection, f"artifact{i}")
             for i in range(10)
@@ -1200,16 +1184,18 @@ class LookupMultipleTests(LookupMixin, TestCase):
         # 3. list the set of collection items.
         with self.assertNumQueries(3):
             self.assert_lookup_equal(
-                {"collection": f"collection@{CollectionCategory.TEST}"},
+                {"collection": collection_lookup},
                 artifact_items,
+                parent_collection_lookup=collection_lookup,
             )
         with self.assertNumQueries(3):
             self.assert_lookup_equal(
                 {
-                    "collection": f"collection@{CollectionCategory.TEST}",
+                    "collection": collection_lookup,
                     "child_type": "collection",
                 },
                 collection_items,
+                parent_collection_lookup=collection_lookup,
             )
 
 
@@ -1221,6 +1207,7 @@ class ReconstructLookupTests(LookupMixin, TestCase):
         collection = self.playground.create_collection(
             "test", CollectionCategory.TEST
         )
+        collection_lookup = f"test@{CollectionCategory.TEST}"
         item_bare = self.playground.create_bare_data_item(collection, "bare")
         item_artifact = self.create_artifact_item(collection, "artifact")
         item_collection = self.create_collection_item(collection, "collection")
@@ -1232,40 +1219,21 @@ class ReconstructLookupTests(LookupMixin, TestCase):
             (item_collection, "collection"),
         ):
             self.assertEqual(
-                reconstruct_lookup(self.make_result(item)),
-                f"{collection.id}@collections/name:{name}",
+                reconstruct_lookup(
+                    self.make_result(
+                        item, parent_collection_lookup=collection_lookup
+                    )
+                ),
+                f"{collection_lookup}/name:{name}",
             )
             self.assertEqual(
                 reconstruct_lookup(
-                    self.make_result(item), workflow_root=workflow
+                    self.make_result(
+                        item, parent_collection_lookup=collection_lookup
+                    ),
+                    workflow_root=workflow,
                 ),
-                f"{collection.id}@collections/name:{name}",
-            )
-
-    def test_collection_item_internal_collection(self) -> None:
-        """Collection items in the internal collection are handled specially."""
-        workflow = self.playground.create_workflow()
-        assert workflow.internal_collection is not None
-        item_bare = self.playground.create_bare_data_item(
-            workflow.internal_collection, "bare"
-        )
-        item_artifact = self.create_artifact_item(
-            workflow.internal_collection, "artifact"
-        )
-        item_collection = self.create_collection_item(
-            workflow.internal_collection, "collection"
-        )
-
-        for item, name in (
-            (item_bare, "bare"),
-            (item_artifact, "artifact"),
-            (item_collection, "collection"),
-        ):
-            self.assertEqual(
-                reconstruct_lookup(
-                    self.make_result(item), workflow_root=workflow
-                ),
-                f"internal@collections/name:{name}",
+                f"{collection_lookup}/name:{name}",
             )
 
     def test_artifact(self) -> None:

@@ -13,7 +13,6 @@ import filecmp
 import logging
 import os
 import shutil
-import tempfile
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -28,6 +27,7 @@ from debusine.server.file_backend.interface import (
     FileBackendInterface,
 )
 from debusine.server.file_backend.models import LocalFileBackendConfiguration
+from debusine.utils import atomic_writer
 
 logger = logging.getLogger(__name__)
 
@@ -120,15 +120,13 @@ class LocalFileBackendEntry(
             destination_directory.relative_to(self.backend._base_directory),
         )
 
-        # To make it easy to identify files that were not finished
-        # copying: copy to a temp file + rename
-        temporary_file = tempfile.NamedTemporaryFile(
-            dir=destination_directory, suffix=".temp", delete=False
-        )
-        temporary_file.close()
-
-        shutil.copy(local_path, temporary_file.name)
-        os.rename(temporary_file.name, destination_file)
+        with (
+            local_path.open(mode="rb") as local_file,
+            atomic_writer(
+                destination_file, mode="wb", chmod=0o600
+            ) as storage_file,
+        ):
+            shutil.copyfileobj(local_file, storage_file)
 
         self._sync_file(destination_file)
 

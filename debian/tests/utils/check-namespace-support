@@ -1,0 +1,10 @@
+#!/bin/sh
+
+set -e
+
+# Does this system have enough namespace support?
+
+if ! unshare -U -m -p -f -r --mount-proc true; then
+	echo 'skipping: container has insufficient privilege' >&2
+	exit 77
+fi

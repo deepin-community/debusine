@@ -12,16 +12,20 @@
 import io
 import logging
 from datetime import datetime, timedelta
+from enum import ReprEnum
 from typing import Any, ClassVar, Literal
 from unittest import mock
 
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
-from django.core.exceptions import ValidationError
+from django.core.exceptions import (
+    ImproperlyConfigured,
+    PermissionDenied,
+    ValidationError,
+)
 from django.db import transaction
 from django.test import override_settings
-from django.urls import reverse
 from django.utils import timezone
 
 try:
@@ -36,7 +40,9 @@ from debusine.artifacts.models import (
     DebusinePromise,
     DebusineTaskConfiguration,
     RuntimeStatistics,
+    TaskTypes,
 )
+from debusine.client.models import LookupChildType
 from debusine.db.context import ContextConsistencyError, context
 from debusine.db.models import (
     Artifact,
@@ -52,13 +58,18 @@ from debusine.db.models import (
     Workspace,
     default_workspace,
 )
-from debusine.db.models.permissions import PartialCheckResult
+from debusine.db.models.permissions import PermissionUser, Role, Roles
+from debusine.db.models.tests.utils import RolesTestCase
 from debusine.db.models.work_requests import (
+    CannotAbort,
     CannotRetry,
     DeleteUnused,
     InternalTaskError,
     MAX_AUTOMATIC_RETRIES,
+    SkipWorkRequest,
     WorkRequestRetryReason,
+    WorkRequestRoleBase,
+    WorkRequestRoles,
     compute_workflow_runtime_status,
     workflow_flattened,
 )
@@ -67,25 +78,27 @@ from debusine.server.collections import CollectionManagerInterface
 from debusine.server.collections.debusine_task_configuration import (
     DebusineTaskConfigurationManager,
 )
+from debusine.server.collections.lookup import lookup_single
 from debusine.server.management.commands.delete_expired import (
     DeleteExpiredWorkRequests,
     DeleteOperation,
 )
 from debusine.server.tasks import ServerNoop
-from debusine.server.tasks.tests.helpers import TestBaseWaitTask
+from debusine.server.tasks.tests.helpers import SampleBaseWaitTask
 from debusine.server.tasks.wait import Delay
 from debusine.server.workflows import NoopWorkflow
 from debusine.server.workflows.models import (
     BaseWorkflowData,
     WorkRequestWorkflowData,
 )
-from debusine.server.workflows.tests.helpers import TestWorkflow
+from debusine.server.workflows.tests.helpers import SampleWorkflow
 from debusine.signing.tasks import SigningNoop
 from debusine.tasks import Noop, TaskConfigError
 from debusine.tasks.models import (
     ActionRecordInTaskHistory,
     ActionRetryWithDelays,
     ActionSendNotification,
+    ActionSkipIfLookupResultChanged,
     ActionTypes,
     ActionUpdateCollectionWithArtifacts,
     ActionUpdateCollectionWithData,
@@ -95,9 +108,9 @@ from debusine.tasks.models import (
     EventReactions,
     NoopData,
     OutputData,
+    OutputDataError,
     SbuildData,
     SbuildInput,
-    TaskTypes,
 )
 from debusine.tasks.server import TaskDatabaseInterface
 from debusine.test.django import (
@@ -113,7 +126,179 @@ from debusine.test.test_utils import (
 )
 
 
-class TestWorkflowData(BaseWorkflowData):
+class WorkRequestRolesTests(RolesTestCase[WorkRequestRoles]):
+    """Tests for the WorkRequestRoles class."""
+
+    scenario = scenarios.DefaultContext()
+    roles_class = WorkRequestRoles
+
+    def test_invariants(self) -> None:
+        self.assertRolesInvariants()
+
+    def test_from_iterable(self) -> None:
+        for value, expected in (
+            ([], []),
+            (["owner"], [WorkRequest.Roles.OWNER]),
+            (["creator"], [WorkRequest.Roles.CREATOR]),
+            (["contributor"], [WorkRequest.Roles.CONTRIBUTOR]),
+            (["viewer"], [WorkRequest.Roles.VIEWER]),
+            (
+                ["owner", WorkRequest.Roles.CREATOR],
+                [WorkRequest.Roles.OWNER],
+            ),
+            (
+                ["contributor", "creator"],
+                [WorkRequest.Roles.CONTRIBUTOR, WorkRequest.Roles.CREATOR],
+            ),
+            (
+                ["viewer", "creator"],
+                [WorkRequest.Roles.VIEWER, WorkRequest.Roles.CREATOR],
+            ),
+            (
+                ["contributor", "viewer", "creator"],
+                [WorkRequest.Roles.CONTRIBUTOR, WorkRequest.Roles.CREATOR],
+            ),
+            (["viewer", "owner"], [WorkRequest.Roles.OWNER]),
+            (["creator", "owner"], [WorkRequest.Roles.OWNER]),
+            (
+                [
+                    "owner",
+                    "owner",
+                    WorkRequest.Roles.OWNER,
+                    WorkRequest.Roles.VIEWER,
+                    WorkRequest.Roles.CREATOR,
+                ],
+                [WorkRequest.Roles.OWNER],
+            ),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    WorkRequest.Roles.from_iterable(value),
+                    frozenset(expected),
+                )
+
+    def test_choices(self) -> None:
+        self.assertChoices()
+
+    def test_init(self) -> None:
+        r = WorkRequestRoleBase("test")
+        r._setup()
+        self.assertEqual(r.implied_by_scope_roles, frozenset())
+        self.assertEqual(r.implied_by_workspace_roles, frozenset([]))
+        self.assertEqual(r.implied_by_public, False)
+        self.assertEqual(r.implied_by_creator, False)
+
+    def test_init_invalid_implication(self) -> None:
+        r = WorkRequestRoleBase("test", implied_by=[None])
+        with self.assertRaisesRegex(
+            ImproperlyConfigured,
+            r"WorkRequest roles do not support implications by None",
+        ):
+            r._setup()
+
+    def test_q_non_authenticated(self) -> None:
+        """Test generating Q objects with anonymous users."""
+        wr = self.playground.create_work_request()
+        for role, expected in (
+            (WorkRequestRoles.OWNER, False),
+            (WorkRequestRoles.CREATOR, False),
+            (WorkRequestRoles.CONTRIBUTOR, False),
+            (WorkRequestRoles.VIEWER, True),
+        ):
+            with self.subTest(role=role):
+                expected_qs = [wr] if expected else []
+                self.assertQuerySetEqual(
+                    WorkRequest.objects.filter(pk=wr.pk).filter(
+                        role.q(AnonymousUser())
+                    ),
+                    expected_qs,
+                )
+
+    def test_values(self) -> None:
+        role = WorkRequest.Roles.OWNER
+        self.assertEqual(role.label, "Owner")
+        self.assertEqual(
+            role.implied_by_scope_roles, frozenset([Scope.Roles.OWNER])
+        )
+        self.assertEqual(
+            role.implied_by_workspace_roles, frozenset([Workspace.Roles.OWNER])
+        )
+        self.assertFalse(role.implied_by_public)
+        self.assertFalse(role.implied_by_creator)
+        self.assertTrue(role.implies(WorkRequest.Roles.CREATOR))
+        self.assertTrue(role.implies(WorkRequest.Roles.VIEWER))
+
+        role = WorkRequest.Roles.CREATOR
+        self.assertEqual(role.label, "Creator")
+        self.assertEqual(
+            role.implied_by_scope_roles, frozenset([Scope.Roles.OWNER])
+        )
+        self.assertEqual(
+            role.implied_by_workspace_roles,
+            frozenset([Workspace.Roles.OWNER]),
+        )
+        self.assertFalse(role.implied_by_public)
+        self.assertTrue(role.implied_by_creator)
+        self.assertFalse(role.implies(WorkRequest.Roles.VIEWER))
+
+        role = WorkRequest.Roles.CONTRIBUTOR
+        self.assertEqual(role.label, "Contributor")
+        self.assertEqual(
+            role.implied_by_scope_roles, frozenset([Scope.Roles.OWNER])
+        )
+        self.assertEqual(
+            role.implied_by_workspace_roles,
+            frozenset([Workspace.Roles.OWNER, Workspace.Roles.CONTRIBUTOR]),
+        )
+        self.assertFalse(role.implied_by_public)
+        self.assertFalse(role.implied_by_creator)
+        self.assertTrue(role.implies(WorkRequest.Roles.VIEWER))
+
+        role = WorkRequest.Roles.VIEWER
+        self.assertEqual(role.label, "Viewer")
+        self.assertEqual(
+            Workspace.Roles.VIEWER.implied_by_scope_roles,
+            frozenset([Scope.Roles.OWNER]),
+        )
+        self.assertEqual(
+            role.implied_by_workspace_roles,
+            frozenset(
+                [
+                    Workspace.Roles.OWNER,
+                    Workspace.Roles.CONTRIBUTOR,
+                    Workspace.Roles.VIEWER,
+                ]
+            ),
+        )
+        self.assertTrue(role.implied_by_public)
+        self.assertFalse(role.implied_by_creator)
+        self.assertFalse(role.implies(WorkRequest.Roles.CREATOR))
+
+    def test_values_implication_order(self) -> None:
+        class TestRoles(Roles, WorkRequestRoleBase, ReprEnum):
+            OWNER = Role("owner", implied_by=[Workspace.Roles.OWNER])
+            VIEWER = Role("viewer", implied_by=[Workspace.Roles.VIEWER, OWNER])
+
+        TestRoles.setup()
+        role = TestRoles.VIEWER
+        self.assertEqual(
+            role.implied_by_scope_roles, frozenset([Scope.Roles.OWNER])
+        )
+        self.assertEqual(
+            role.implied_by_workspace_roles,
+            frozenset(
+                [
+                    Workspace.Roles.OWNER,
+                    Workspace.Roles.CONTRIBUTOR,
+                    Workspace.Roles.VIEWER,
+                ]
+            ),
+        )
+        self.assertTrue(role.implied_by_public)
+        self.assertFalse(role.implied_by_creator)
+
+
+class SampleWorkflowData(BaseWorkflowData):
     """Workflow data to test instantiation."""
 
     ivar: int = 1
@@ -121,7 +306,7 @@ class TestWorkflowData(BaseWorkflowData):
 
 
 class WorkRequestManagerTestsTestWorkflow(
-    TestWorkflow[TestWorkflowData, BaseDynamicTaskData]
+    SampleWorkflow[SampleWorkflowData, BaseDynamicTaskData]
 ):
     """Workflow used to test instantiation of data."""
 
@@ -142,6 +327,33 @@ class WorkRequestManagerTests(TestCase):
     """Tests for WorkRequestManager."""
 
     scenario = scenarios.DefaultContext()
+
+    def assertRoleAnnotations(
+        self,
+        user: PermissionUser,
+        work_requests: dict[str, WorkRequest],
+        expected: dict[str, dict[str, bool]],
+    ) -> None:
+        """
+        Ensure the roles computed by the database match the expected set.
+
+        :param expected: a dict in the form ``{pk: {role: bool}}``
+        """
+        names = {v: k for k, v in work_requests.items()}
+        by_wr: dict[str, dict[str, bool]] = {}
+        for work_request in WorkRequest.objects.with_role_annotations(user):
+            has_roles: dict[str, bool] = {}
+            for role in WorkRequest.Roles:
+                has_roles[role] = getattr(work_request, f"is_{role}")
+            by_wr[names[work_request]] = has_roles
+
+            roles_for: str = getattr(work_request, "roles_for")
+            if user is None or not user.is_authenticated:
+                self.assertEqual(roles_for, "")
+            else:
+                self.assertEqual(roles_for, str(user.pk))
+
+        self.assertEqual(by_wr, expected)
 
     def test_create_workflow(self) -> None:
         """Workflows are created correctly."""
@@ -305,8 +517,7 @@ class WorkRequestManagerTests(TestCase):
         )
         wr.full_clean()
 
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace(name="test")
+        workspace = self.playground.create_workspace(name="test")
 
         parent = WorkRequest.objects.create(
             workspace=workspace,
@@ -377,8 +588,7 @@ class WorkRequestManagerTests(TestCase):
         )
         wr.full_clean()
 
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace(name="test")
+        workspace = self.playground.create_workspace(name="test")
 
         parent = WorkRequest.objects.create(
             workspace=workspace,
@@ -459,7 +669,7 @@ class WorkRequestManagerTests(TestCase):
         )
 
         worker = Worker.objects.create_with_fqdn(
-            "computer.lan", Token.objects.create()
+            "computer.lan", token=Token.objects.create()
         )
 
         work_request_2 = self.playground.create_work_request(
@@ -473,7 +683,7 @@ class WorkRequestManagerTests(TestCase):
     def test_raise_value_error_exclude_assigned_and_worker(self) -> None:
         """WorkRequestManager.pending() raises ValueError."""
         worker = Worker.objects.create_with_fqdn(
-            "computer.lan", Token.objects.create()
+            "computer.lan", token=Token.objects.create()
         )
 
         with self.assertRaisesRegex(
@@ -583,10 +793,9 @@ class WorkRequestManagerTests(TestCase):
             WorkRequest.objects.expired(timezone.now()), []
         )
 
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace(name="test")
-            workspace.default_expiration_delay = timedelta(days=2)
-            workspace.save()
+        workspace = self.playground.create_workspace(
+            name="test", default_expiration_delay=timedelta(days=2)
+        )
         wr.workspace = workspace
         wr.created_at = timezone.now() - timedelta(days=3)
         wr.expiration_delay = None
@@ -660,6 +869,209 @@ class WorkRequestManagerTests(TestCase):
         ):
             WorkRequest.objects.in_current_workspace()
 
+    def test_with_role_annotations_anonymous(self) -> None:
+        ws_public = self.scenario.workspace
+        ws_private = self.playground.create_workspace(name="private")
+        work_requests: dict[str, WorkRequest] = {
+            "public": self.playground.create_work_request(workspace=ws_public),
+            "private": self.playground.create_work_request(
+                workspace=ws_private
+            ),
+        }
+
+        self.assertRoleAnnotations(
+            AnonymousUser(),
+            work_requests,
+            {
+                "public": {
+                    WorkRequest.Roles.OWNER: False,
+                    WorkRequest.Roles.CREATOR: False,
+                    WorkRequest.Roles.CONTRIBUTOR: False,
+                    WorkRequest.Roles.VIEWER: True,
+                },
+                "private": {
+                    WorkRequest.Roles.OWNER: False,
+                    WorkRequest.Roles.CREATOR: False,
+                    WorkRequest.Roles.CONTRIBUTOR: False,
+                    WorkRequest.Roles.VIEWER: False,
+                },
+            },
+        )
+
+    def test_with_role_annotations(self) -> None:
+        other = self.playground.create_user("other")
+
+        ws_public = self.scenario.workspace
+        ws_private = self.playground.create_workspace(name="private")
+        ws_contributed = self.playground.create_workspace(name="contributed")
+        self.playground.create_group_role(
+            ws_contributed,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
+        ws_owned = self.playground.create_workspace(name="owned")
+        self.playground.create_group_role(
+            ws_owned, Workspace.Roles.OWNER, users=[self.scenario.user]
+        )
+
+        work_requests: dict[str, WorkRequest] = {
+            "created_public": self.playground.create_work_request(
+                workspace=ws_public
+            ),
+            "other_public": self.playground.create_work_request(
+                workspace=ws_public, created_by=other
+            ),
+            "created_private": self.playground.create_work_request(
+                workspace=ws_private
+            ),
+            "other_private": self.playground.create_work_request(
+                workspace=ws_private, created_by=other
+            ),
+            "created_contributed": self.playground.create_work_request(
+                workspace=ws_contributed
+            ),
+            "other_contributed": self.playground.create_work_request(
+                workspace=ws_contributed, created_by=other
+            ),
+            "created_owned": self.playground.create_work_request(
+                workspace=ws_owned
+            ),
+            "other_owned": self.playground.create_work_request(
+                workspace=ws_owned, created_by=other
+            ),
+        }
+
+        self.assertRoleAnnotations(
+            self.scenario.user,
+            work_requests,
+            {
+                "created_public": {
+                    WorkRequest.Roles.OWNER: False,
+                    WorkRequest.Roles.CREATOR: True,
+                    WorkRequest.Roles.CONTRIBUTOR: False,
+                    WorkRequest.Roles.VIEWER: True,
+                },
+                "other_public": {
+                    WorkRequest.Roles.OWNER: False,
+                    WorkRequest.Roles.CREATOR: False,
+                    WorkRequest.Roles.CONTRIBUTOR: False,
+                    WorkRequest.Roles.VIEWER: True,
+                },
+                "created_private": {
+                    WorkRequest.Roles.OWNER: False,
+                    WorkRequest.Roles.CREATOR: True,
+                    WorkRequest.Roles.CONTRIBUTOR: False,
+                    WorkRequest.Roles.VIEWER: False,
+                },
+                "other_private": {
+                    WorkRequest.Roles.OWNER: False,
+                    WorkRequest.Roles.CREATOR: False,
+                    WorkRequest.Roles.CONTRIBUTOR: False,
+                    WorkRequest.Roles.VIEWER: False,
+                },
+                "created_contributed": {
+                    WorkRequest.Roles.OWNER: False,
+                    WorkRequest.Roles.CREATOR: True,
+                    WorkRequest.Roles.CONTRIBUTOR: True,
+                    WorkRequest.Roles.VIEWER: True,
+                },
+                "other_contributed": {
+                    WorkRequest.Roles.OWNER: False,
+                    WorkRequest.Roles.CREATOR: False,
+                    WorkRequest.Roles.CONTRIBUTOR: True,
+                    WorkRequest.Roles.VIEWER: True,
+                },
+                "created_owned": {
+                    WorkRequest.Roles.OWNER: True,
+                    WorkRequest.Roles.CREATOR: True,
+                    WorkRequest.Roles.CONTRIBUTOR: True,
+                    WorkRequest.Roles.VIEWER: True,
+                },
+                "other_owned": {
+                    WorkRequest.Roles.OWNER: True,
+                    WorkRequest.Roles.CREATOR: True,
+                    WorkRequest.Roles.CONTRIBUTOR: True,
+                    WorkRequest.Roles.VIEWER: True,
+                },
+            },
+        )
+
+    def test_workflows(self) -> None:
+        template = self.playground.create_workflow_template(
+            name="test", task_name="noop"
+        )
+        workflow = self.playground.create_workflow(template, task_data={})
+        self.playground.create_work_request()
+        self.assertQuerySetEqual(WorkRequest.objects.workflows(), [workflow])
+
+    def test_needs_input(self) -> None:
+        template = self.playground.create_workflow_template(
+            name="test", task_name="noop"
+        )
+        workflow1 = self.playground.create_workflow(template, task_data={})
+        workflow1.workflow_runtime_status = (
+            WorkRequest.RuntimeStatuses.NEEDS_INPUT
+        )
+        workflow1.save()
+        self.playground.create_workflow(template, task_data={})
+        self.assertQuerySetEqual(WorkRequest.objects.needs_input(), [workflow1])
+
+    @override_permission(WorkRequest, "can_retry", AllowAll)
+    def test_unsuperseded(self) -> None:
+        wr_old, wr_untouched = (
+            self.playground.create_work_request() for _ in range(2)
+        )
+        wr_old.mark_aborted()
+        wr_retried = wr_old.retry()
+
+        self.assertQuerySetEqual(
+            WorkRequest.objects.unsuperseded(),
+            [wr_untouched, wr_retried],
+            ordered=False,
+        )
+
+    def test_terminated(self) -> None:
+        wr_completed = self.playground.create_work_request(
+            status=WorkRequest.Statuses.COMPLETED
+        )
+        wr_aborted = self.playground.create_work_request(
+            status=WorkRequest.Statuses.ABORTED
+        )
+        self.playground.create_work_request(status=WorkRequest.Statuses.PENDING)
+        self.playground.create_work_request(status=WorkRequest.Statuses.RUNNING)
+        self.playground.create_work_request(status=WorkRequest.Statuses.BLOCKED)
+
+        self.assertQuerySetEqual(
+            WorkRequest.objects.terminated(),
+            [wr_completed, wr_aborted],
+            ordered=False,
+        )
+
+    def test_with_workflow_root_id(self) -> None:
+        standalone = self.playground.create_work_request()
+        expected_pairs: list[tuple[int, int | None]] = [(standalone.id, None)]
+
+        roots = [self.playground.create_workflow() for _ in range(2)]
+        expected_pairs += [(root.id, root.id) for root in roots]
+
+        for root in roots:
+            for _c in range(2):
+                child = root.create_child("noop", task_type=TaskTypes.WORKFLOW)
+                expected_pairs.append((child.id, root.id))
+
+                for _g in range(2):
+                    grandchild = child.create_child("noop")
+                    expected_pairs.append((grandchild.id, root.id))
+
+        self.assertQuerySetEqual(
+            # mypy doesn't understand that `with_workflow_root_id()` returns
+            # a query set annotated with `workflow_root_id`.
+            WorkRequest.objects.with_workflow_root_id().values_list(
+                "id", "workflow_root_id"
+            ),  # type: ignore[misc]
+            expected_pairs,
+        )
+
 
 class WorkRequestTests(TestCase):
     """Tests for the WorkRequest class."""
@@ -691,6 +1103,82 @@ class WorkRequestTests(TestCase):
         self.assertEqual(
             raised.exception.message_dict,
             {"task_data": messages},
+        )
+
+    def test_get_absolute_url(self) -> None:
+        wr = self.playground.create_work_request()
+        self.assertEqual(
+            wr.get_absolute_url(),
+            f"/{wr.workspace.scope.name}/{wr.workspace.name}"
+            f"/work-request/{wr.pk}/",
+        )
+
+    def test_get_absolute_url_different_scope(self) -> None:
+        """``get_absolute_url`` works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        wr = self.playground.create_work_request(workspace=other_workspace)
+        self.assertEqual(
+            wr.get_absolute_url(),
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/work-request/{wr.pk}/",
+        )
+
+    def test_get_absolute_url_retry(self) -> None:
+        wr = self.playground.create_work_request()
+        self.assertEqual(
+            wr.get_absolute_url_retry(),
+            f"/{wr.workspace.scope.name}/{wr.workspace.name}"
+            f"/work-request/{wr.pk}/retry/",
+        )
+
+    def test_get_absolute_url_retry_different_scope(self) -> None:
+        """``get_absolute_url_retry`` works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        wr = self.playground.create_work_request(workspace=other_workspace)
+        self.assertEqual(
+            wr.get_absolute_url_retry(),
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/work-request/{wr.pk}/retry/",
+        )
+
+    def test_get_absolute_url_abort(self) -> None:
+        wr = self.playground.create_work_request()
+        self.assertEqual(
+            wr.get_absolute_url_abort(),
+            f"/{wr.workspace.scope.name}/{wr.workspace.name}"
+            f"/work-request/{wr.pk}/abort/",
+        )
+
+    def test_get_absolute_url_abort_different_scope(self) -> None:
+        """``get_absolute_url_abort`` works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        wr = self.playground.create_work_request(workspace=other_workspace)
+        self.assertEqual(
+            wr.get_absolute_url_abort(),
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/work-request/{wr.pk}/abort/",
+        )
+
+    def test_get_absolute_url_unblock(self) -> None:
+        wr = self.playground.create_work_request()
+        self.assertEqual(
+            wr.get_absolute_url_unblock(),
+            f"/{wr.workspace.scope.name}/{wr.workspace.name}"
+            f"/work-request/{wr.pk}/unblock/",
+        )
+
+    def test_get_absolute_url_unblock_different_scope(self) -> None:
+        """``get_absolute_url_unblock`` works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        wr = self.playground.create_work_request(workspace=other_workspace)
+        self.assertEqual(
+            wr.get_absolute_url_unblock(),
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/work-request/{wr.pk}/unblock/",
         )
 
     def test_clean_task_data_must_be_dict(self) -> None:
@@ -1157,13 +1645,12 @@ class WorkRequestTests(TestCase):
             wr.retry()
 
         # Create the looked up artifact
-        with context.disable_permission_checks():
-            tarball, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data=create_system_tarball_data(
-                    codename="bookworm", architecture="amd64"
-                ),
-            )
+        tarball, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data=create_system_tarball_data(
+                codename="bookworm", architecture="amd64"
+            ),
+        )
         collection.manager.add_artifact(tarball, user=self.scenario.user)
 
         self.assertTrue(wr.verify_retry())
@@ -1736,6 +2223,115 @@ class WorkRequestTests(TestCase):
             wr_aborted.id,
         )
 
+    @override_permission(WorkRequest, "can_abort", DenyAll)
+    def test_verify_abort_no_permission(self) -> None:
+        """Aborting a work request without permission fails."""
+        wr = self.workflow.create_child("noop")
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
+
+        self.assertFalse(wr.verify_abort())
+        with self.assertRaisesRegex(
+            PermissionDenied, fr"{self.scenario.user} cannot abort {wr}"
+        ):
+            wr.abort()
+
+    @override_permission(WorkRequest, "can_abort", AllowAll)
+    def test_verify_abort_superseded(self) -> None:
+        """Superseded work requests cannot be aborted."""
+        wr = self.workflow.create_child("noop")
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
+
+        self.assertTrue(wr.verify_abort())
+
+        wr1 = self.workflow.create_child("noop")
+        wr1.supersedes = wr
+        self.assertFalse(wr.verify_abort())
+        with self.assertRaisesRegex(
+            CannotAbort, r"^Cannot abort old superseded tasks$"
+        ):
+            wr.abort()
+
+    @override_permission(WorkRequest, "can_abort", AllowAll)
+    def test_verify_abort_pending_blocked_running(self) -> None:
+        """Only pending/blocked/running work requests can be aborted."""
+        wr = self.workflow.create_child("noop")
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
+        msg = r"^Only pending, blocked, or running tasks can be aborted$"
+
+        wr.status = WorkRequest.Statuses.COMPLETED
+        wr.result = WorkRequest.Results.SUCCESS
+        wr.save()
+        self.assertFalse(wr.verify_abort())
+        with self.assertRaisesRegex(CannotAbort, msg):
+            wr.abort()
+
+        wr.status = WorkRequest.Statuses.ABORTED
+        wr.result = WorkRequest.Results.NONE
+        wr.save()
+        self.assertFalse(wr.verify_abort())
+        with self.assertRaisesRegex(CannotAbort, msg):
+            wr.abort()
+
+    @override_permission(WorkRequest, "can_abort", AllowAll)
+    def test_abort_non_workflow(self) -> None:
+        """A non-workflow work request can be aborted."""
+        wr = self.workflow.create_child("noop")
+        worker = self.playground.create_worker()
+        wr.assign_worker(worker)
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
+
+        self.assertTrue(wr.verify_abort())
+        wr.abort()
+
+        wr.refresh_from_db()
+        self.assertEqual(wr.aborted_by, self.scenario.user)
+        self.assertEqual(wr.status, WorkRequest.Statuses.ABORTED)
+        self.assertIsNone(wr.worker)
+
+    @override_permission(WorkRequest, "can_abort", AllowAll)
+    def test_abort_workflow(self) -> None:
+        """Aborting a workflow aborts all its child work requests as well."""
+        child1 = self.workflow.create_child(
+            "noop", task_type=TaskTypes.WORKFLOW
+        )
+        grandchild1 = child1.create_child("noop")
+        grandchild2 = child1.create_child("noop")
+        grandchild3 = child1.create_child(
+            "noop", status=WorkRequest.Statuses.COMPLETED
+        )
+        child2 = self.workflow.create_child("noop")
+        child3 = WorkRequest.objects.create_workflow_callback(
+            parent=self.workflow, step="invisible", visible=False
+        )
+        worker = self.playground.create_worker()
+        grandchild1.assign_worker(worker)
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
+
+        self.assertTrue(self.workflow.verify_abort())
+        self.workflow.abort()
+
+        for work_request in (
+            self.workflow,
+            child1,
+            grandchild1,
+            grandchild2,
+            child2,
+            child3,
+        ):
+            work_request.refresh_from_db()
+            self.assertEqual(work_request.aborted_by, self.scenario.user)
+            self.assertEqual(work_request.status, WorkRequest.Statuses.ABORTED)
+            self.assertIsNone(work_request.worker)
+
+        grandchild3.refresh_from_db()
+        self.assertIsNone(grandchild3.aborted_by)
+        self.assertEqual(grandchild3.status, WorkRequest.Statuses.COMPLETED)
+
     def test_is_workflow_task_type_workflow(self) -> None:
         """A WORKFLOW work request is a workflow."""
         self.assertTrue(self.workflow.is_workflow)
@@ -1863,10 +2459,9 @@ class WorkRequestTests(TestCase):
         wr.expiration_delay = timedelta(days=0)
         self.assertEqual(wr.effective_expiration_delay(), timedelta(days=0))
 
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace(name="test")
-        workspace.default_expiration_delay = timedelta(days=2)
-        wr.workspace = workspace
+        wr.workspace = self.playground.create_workspace(
+            name="test", default_expiration_delay=timedelta(days=2)
+        )
 
         wr.expiration_delay = timedelta(days=1)
         self.assertEqual(wr.effective_expiration_delay(), timedelta(days=1))
@@ -2001,35 +2596,226 @@ class WorkRequestTests(TestCase):
         task = Noop({})
         self.assertEqual(wr.get_label(task), "noop")
 
-    def test_can_display_delegate_to_workspace(self) -> None:
-        """Test the can_display predicate delegating to containing workspace."""
-        with override_permission(Workspace, "can_display", AllowAll):
-            self.assertPermission(
-                "can_display",
-                users=(AnonymousUser(), self.scenario.user),
-                allowed=self.workflow,
+    def test_get_roles(self) -> None:
+        other = self.playground.create_user("other")
+
+        workspaces: dict[str, Workspace] = {
+            "public": self.scenario.workspace,
+            "private": self.playground.create_workspace(name="private"),
+            "contributed": self.playground.create_workspace(name="contributed"),
+            "owned": self.playground.create_workspace(name="owned"),
+        }
+        self.playground.create_group_role(
+            workspaces["contributed"],
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
+        self.playground.create_group_role(
+            workspaces["owned"],
+            Workspace.Roles.OWNER,
+            users=[self.scenario.user],
+        )
+
+        work_requests: dict[str, WorkRequest] = {}
+        for ws_name, ws in workspaces.items():
+            work_requests[f"created_{ws_name}"] = (
+                self.playground.create_work_request(
+                    workspace=ws, created_by=self.scenario.user
+                )
             )
-        with override_permission(Workspace, "can_display", DenyAll):
-            self.assertPermission(
-                "can_display",
-                users=(AnonymousUser(), self.scenario.user),
-                denied=self.workflow,
+            work_requests[f"other_{ws_name}"] = (
+                self.playground.create_work_request(
+                    workspace=ws, created_by=other
+                )
             )
 
-    def test_can_retry_delegate_to_workspace(self) -> None:
+        expected: dict[str, list[WorkRequestRoles]] = {
+            "created_public": [
+                WorkRequest.Roles.CREATOR,
+                WorkRequest.Roles.VIEWER,
+            ],
+            "other_public": [WorkRequest.Roles.VIEWER],
+            "created_private": [WorkRequest.Roles.CREATOR],
+            "other_private": [],
+            "created_contributed": [
+                WorkRequest.Roles.CREATOR,
+                WorkRequest.Roles.CONTRIBUTOR,
+            ],
+            "other_contributed": [
+                WorkRequest.Roles.CONTRIBUTOR,
+            ],
+            "created_owned": [WorkRequest.Roles.OWNER],
+            "other_owned": [WorkRequest.Roles.OWNER],
+        }
+
+        base_queryset = WorkRequest.objects.filter(
+            pk__in=[ws.pk for ws in work_requests.values()]
+        ).select_related("workspace", "created_by")
+        names_by_pk = {wr.pk: name for name, wr in work_requests.items()}
+        for name, queryset, num_queries in (
+            (
+                "plain",
+                base_queryset,
+                {
+                    "created_public": 2,
+                    "other_public": 3,
+                    "created_private": 3,
+                    "other_private": 4,
+                    "created_contributed": 3,
+                    "other_contributed": 4,
+                    "created_owned": 3,
+                    "other_owned": 4,
+                },
+            ),
+            (
+                "annotated",
+                base_queryset.with_role_annotations(self.scenario.user),
+                {
+                    "created_public": 0,
+                    "other_public": 0,
+                    "created_private": 0,
+                    "other_private": 0,
+                    "created_contributed": 0,
+                    "other_contributed": 0,
+                    "created_owned": 0,
+                    "other_owned": 0,
+                },
+            ),
+            (
+                "annotated_anonymous",
+                base_queryset.with_role_annotations(AnonymousUser()),
+                {
+                    "created_public": 2,
+                    "other_public": 3,
+                    "created_private": 3,
+                    "other_private": 4,
+                    "created_contributed": 3,
+                    "other_contributed": 4,
+                    "created_owned": 3,
+                    "other_owned": 4,
+                },
+            ),
+        ):
+            with self.subTest(queryset=name):
+                actual: dict[str, frozenset[WorkRequestRoles]] = {}
+                for wr in queryset:
+                    wr_name = names_by_pk[wr.pk]
+                    with (
+                        self.subTest(work_request=wr_name),
+                        self.assertNumQueries(num_queries[wr_name]),
+                    ):
+                        actual[wr_name] = wr.get_roles(self.scenario.user)
+
+                self.assertEqual(
+                    actual, {k: frozenset(v) for k, v in expected.items()}
+                )
+
+    def test_can_display_public(self) -> None:
+        """Test the can_display predicate delegating to containing workspace."""
+        wr = self.playground.create_work_request()
+        predicate = wr.can_display
+        self.assertPermissionPredicate(predicate, AnonymousUser(), True)
+        self.assertPermissionPredicate(predicate, self.scenario.user, True)
+        with self.scenario.assign_role(
+            self.scenario.workspace, Workspace.Roles.CONTRIBUTOR
+        ):
+            self.assertPermissionPredicate(predicate, self.scenario.user, True)
+        with self.scenario.assign_role(
+            self.scenario.workspace, Workspace.Roles.OWNER
+        ):
+            self.assertPermissionPredicate(predicate, self.scenario.user, True)
+
+    def test_can_display_private(self) -> None:
+        """Test the can_display predicate delegating to containing workspace."""
+        other = self.playground.create_user("other")
+        self.scenario.workspace.public = False
+        self.scenario.workspace.save()
+        wr = self.playground.create_work_request()
+        predicate = wr.can_display
+        self.assertPermissionPredicate(predicate, AnonymousUser(), False)
+        for creator, roles, expected in (
+            (True, [], False),
+            (True, [Workspace.Roles.CONTRIBUTOR], True),
+            (True, [Workspace.Roles.OWNER], True),
+            (False, [], False),
+            (False, [Workspace.Roles.CONTRIBUTOR], True),
+            (False, [Workspace.Roles.OWNER], True),
+        ):
+            with (
+                self.subTest(creator=creator, roles=roles),
+                self.scenario.assign_role(self.scenario.workspace, *roles),
+            ):
+                if creator:
+                    wr.created_by = self.scenario.user
+                else:
+                    wr.created_by = other
+                wr.save()
+                self.assertPermissionPredicate(
+                    predicate, self.scenario.user, expected
+                )
+
+    def test_can_retry(self) -> None:
         """Test the can_retry predicate delegating to containing workspace."""
-        with override_permission(Workspace, "can_display", AllowAll):
-            self.assertPermission(
-                "can_retry",
-                users=(AnonymousUser(), self.scenario.user),
-                allowed=self.workflow,
-            )
-        with override_permission(Workspace, "can_display", DenyAll):
-            self.assertPermission(
-                "can_retry",
-                users=(AnonymousUser(), self.scenario.user),
-                denied=self.workflow,
-            )
+        user = self.scenario.user
+        wr = self.playground.create_work_request()
+        for u, roles, expected in (
+            (AnonymousUser(), [], False),
+            (user, [], False),
+            (user, [Workspace.Roles.VIEWER], False),
+            (user, [Workspace.Roles.CONTRIBUTOR], True),
+            (user, [Workspace.Roles.OWNER], True),
+        ):
+            with (
+                self.subTest(user=u, roles=roles),
+                self.scenario.assign_role(self.scenario.workspace, *roles),
+            ):
+                self.assertPermissionPredicate(wr.can_retry, u, expected)
+
+    def test_can_abort(self) -> None:
+        """Test the can_abort predicate."""
+        scope_owner = self.playground.create_user("scope_owner")
+        self.playground.create_group_role(
+            self.scenario.scope, Scope.Roles.OWNER, users=[scope_owner]
+        )
+
+        workspace_owner = self.playground.create_user("workspace_owner")
+        self.playground.create_group_role(
+            self.scenario.workspace,
+            Workspace.Roles.OWNER,
+            users=[workspace_owner],
+        )
+
+        # Anonymous and unrelated users are not allowed.
+        self.assertPermission(
+            "can_abort",
+            users=(AnonymousUser(), self.playground.create_user("unrelated")),
+            denied=self.workflow,
+        )
+        # Workers are not allowed.
+        self.assertPermission(
+            "can_abort",
+            users=None,
+            token=self.playground.create_worker_token(),
+            denied=self.workflow,
+        )
+        # Work request creator has access.
+        self.assertPermission(
+            "can_abort",
+            users=self.workflow.created_by,
+            allowed=[self.workflow],
+        )
+        # Scope owner has access.
+        self.assertPermission(
+            "can_abort",
+            users=scope_owner,
+            allowed=[self.workflow],
+        )
+        # Workspace owner has access.
+        self.assertPermission(
+            "can_abort",
+            users=workspace_owner,
+            allowed=[self.workflow],
+        )
 
     def test_can_unblock(self) -> None:
         """Test the can_unblock predicate."""
@@ -2077,11 +2863,25 @@ class WorkRequestTests(TestCase):
         child_2 = self.workflow.create_child(
             task_type=TaskTypes.WORKFLOW, task_name="noop"
         )
-        child_3 = child_2.create_child(task_name="noop")
+        child_3 = WorkRequest.objects.create_workflow_callback(
+            parent=self.workflow, step="invisible", visible=False
+        )
+        child_4 = child_2.create_child(task_name="noop")
 
         self.assertQuerySetEqual(
-            workflow_flattened(self.workflow), [child_1, child_3], ordered=False
+            workflow_flattened(self.workflow), [child_1, child_4], ordered=False
         )
+        self.assertQuerySetEqual(
+            workflow_flattened(self.workflow, include_workflows=True),
+            [self.workflow, child_1, child_2, child_4],
+            ordered=False,
+        )
+        self.assertQuerySetEqual(
+            workflow_flattened(self.workflow, include_invisible=True),
+            [child_1, child_3, child_4],
+            ordered=False,
+        )
+        self.assertQuerySetEqual(workflow_flattened(child_1), [child_1])
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
     def test_mark_aborted_propagates_last_activity_at(self) -> None:
@@ -2216,7 +3016,7 @@ class WorkRequestTests(TestCase):
         """Test compute_workflow_runtime_status returns NEEDS_INPUT."""
 
         class WaitNoop(
-            TestBaseWaitTask[BaseTaskData, BaseDynamicTaskData],
+            SampleBaseWaitTask[BaseTaskData, BaseDynamicTaskData],
         ):
             TASK_VERSION = 1
 
@@ -2257,7 +3057,7 @@ class WorkRequestTests(TestCase):
         """Test compute_workflow_runtime_status returns WAITING."""
 
         class WaitNoop(
-            TestBaseWaitTask[BaseTaskData, BaseDynamicTaskData],
+            SampleBaseWaitTask[BaseTaskData, BaseDynamicTaskData],
         ):
             TASK_VERSION = 1
 
@@ -2418,7 +3218,7 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         super().setUpTestData()
 
         cls.worker = Worker.objects.create_with_fqdn(
-            "computer.lan", Token.objects.create()
+            "computer.lan", token=Token.objects.create()
         )
         cls.work_request = cls.playground.create_work_request(
             task_name='noop',
@@ -2564,6 +3364,31 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
             [(worker_pool.id, worker.id, 10)],
         )
 
+    def test_mark_completed_merges_output_data(self) -> None:
+        """mark_completed() updates any existing output data."""
+        # This particular set of data wouldn't happen (we won't record
+        # errors and then also record runtime statistics), but it's enough
+        # to test that we merge multiple output data structures.
+        self.work_request.output_data = OutputData(
+            runtime_statistics=RuntimeStatistics(duration=1),
+            errors=[OutputDataError(message="message", code="code")],
+        )
+
+        self.work_request.mark_completed(
+            WorkRequest.Results.FAILURE,
+            output_data=OutputData(
+                runtime_statistics=RuntimeStatistics(duration=2, cpu_time=1)
+            ),
+        )
+
+        self.assertEqual(
+            self.work_request.output_data,
+            OutputData(
+                runtime_statistics=RuntimeStatistics(duration=2, cpu_time=1),
+                errors=[OutputDataError(message="message", code="code")],
+            ),
+        )
+
     def test_mark_running_updates_workflow_last_activity_at(self) -> None:
         """
         Test mark_running() updates its workflow's activity.
@@ -2629,16 +3454,19 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         self.assertEqual(workflow.status, WorkRequest.Statuses.RUNNING)
 
     def test_maybe_finish_workflow_all_succeeded(self) -> None:
-        """All children succeeded: COMPLETED/SUCCESS."""
+        """All children succeeded: COMPLETED/SUCCESS or COMPLETED/SKIPPED."""
         template = self.playground.create_workflow_template("test", "noop")
         workflow = self.playground.create_workflow(template, task_data={})
-        children = [workflow.create_child("noop") for _ in range(2)]
+        children = [workflow.create_child("noop") for _ in range(3)]
         workflow.mark_running()
         workflow.unblock_workflow_children()
 
-        for child in children:
-            child.refresh_from_db()
-            self.assertTrue(child.mark_completed(WorkRequest.Results.SUCCESS))
+        children[0].refresh_from_db()
+        children[0].mark_completed(WorkRequest.Results.SUCCESS)
+        children[1].refresh_from_db()
+        children[1].mark_completed(WorkRequest.Results.SUCCESS)
+        children[2].refresh_from_db()
+        children[2].mark_completed(WorkRequest.Results.SKIPPED)
 
         workflow.refresh_from_db()
         self.assertEqual(workflow.status, WorkRequest.Statuses.COMPLETED)
@@ -2647,7 +3475,7 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         self.assertLess(workflow.completed_at, timezone.now())
 
     def test_maybe_finish_workflow_allow_failure(self) -> None:
-        """Some children failed but are allowed to fail: COMPLETED/SUCCESS."""
+        """Some children failed but are allowed to fail."""
         template = self.playground.create_workflow_template("test", "noop")
         workflow = self.playground.create_workflow(template, task_data={})
         children = [
@@ -2657,7 +3485,7 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
                     allow_failure=True, display_name="test", step="test"
                 ),
             )
-            for _ in range(2)
+            for _ in range(3)
         ]
         workflow.mark_running()
         workflow.unblock_workflow_children()
@@ -2666,6 +3494,8 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         children[0].mark_completed(WorkRequest.Results.FAILURE)
         children[1].refresh_from_db()
         children[1].mark_completed(WorkRequest.Results.SUCCESS)
+        children[2].refresh_from_db()
+        children[2].mark_completed(WorkRequest.Results.SKIPPED)
 
         workflow.refresh_from_db()
         self.assertEqual(workflow.status, WorkRequest.Statuses.COMPLETED)
@@ -2966,6 +3796,13 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         rdep.refresh_from_db()
         self.assertEqual(rdep.status, WorkRequest.Statuses.PENDING)
 
+    def test_dependencies_skipped_only_dep(self) -> None:
+        """Skipped result, with nothing else to do, gets rdep pending."""
+        rdep = self.create_rdep()
+        self.work_request.mark_completed(WorkRequest.Results.SKIPPED)
+        rdep.refresh_from_db()
+        self.assertEqual(rdep.status, WorkRequest.Statuses.PENDING)
+
     def test_dependencies_failure_allow_failure(self) -> None:
         """Failure result, with allow_failure, gets rdep pending."""
         rdep = self.create_rdep()
@@ -3094,6 +3931,63 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
             {"task_name": ["does-not-exist: invalid Worker task name"]},
         )
 
+    def test_create_child_inherits_priority(self) -> None:
+        """A child inherits the effective priority of its parent as its base."""
+        parent = self.playground.create_workflow()
+        parent.priority_base = 5
+        parent.priority_adjustment = 1
+        parent.save()
+
+        wr = parent.create_child(task_name="noop")
+        self.assertEqual(wr.priority_base, 6)
+
+    def test_create_child_relative_priority(self) -> None:
+        """A child can be given a priority relative to its parent's priority."""
+        parent = self.playground.create_workflow()
+        parent.priority_base = 5
+        parent.priority_adjustment = 1
+        parent.save()
+
+        wr = parent.create_child(task_name="noop", relative_priority=-2)
+        self.assertEqual(wr.priority_base, 4)
+
+    def test_create_child_inherits_task_configuration(self) -> None:
+        """A child inherits the task_configuration of its parent by_default."""
+        parent = self.playground.create_workflow()
+        parent.task_data["task_configuration"] = "test"
+        parent.save()
+
+        wr = parent.create_child(task_name="noop")
+        self.assertEqual(wr.task_data["task_configuration"], "test")
+
+    def test_create_child_inherits_task_configuration_default(self) -> None:
+        """A child inherits the task_configuration of its parent by_default."""
+        parent = self.playground.create_workflow()
+        parent.save()
+
+        wr = parent.create_child(task_name="noop")
+        self.assertNotIn("task_configuration", wr.task_data)
+
+    def test_create_child_can_override_task_configuration(self) -> None:
+        parent = self.playground.create_workflow()
+        parent.task_data["task_configuration"] = "test"
+        parent.save()
+
+        wr = parent.create_child(
+            task_name="noop", task_data={"task_configuration": "other"}
+        )
+        self.assertEqual(wr.task_data["task_configuration"], "other")
+
+    def test_create_child_can_disable_task_configuration(self) -> None:
+        parent = self.playground.create_workflow()
+        parent.task_data["task_configuration"] = "test"
+        parent.save()
+
+        wr = parent.create_child(
+            task_name="noop", task_data={"task_configuration": None}
+        )
+        self.assertEqual(wr.task_data["task_configuration"], None)
+
     @preserve_task_registry()
     def test_get_triggered_actions(self) -> None:
         """`get_triggered_actions` combines actions from various sources."""
@@ -3104,7 +3998,11 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
             def get_event_reactions(
                 self,
                 event_name: Literal[
-                    "on_creation", "on_unblock", "on_success", "on_failure"
+                    "on_creation",
+                    "on_unblock",
+                    "on_assignment",
+                    "on_success",
+                    "on_failure",
                 ],
             ) -> list[EventReaction]:
                 """Return event reactions for this task."""
@@ -3151,7 +4049,193 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
             },
         )
 
-    @context.disable_permission_checks()
+    def test_skip_if_lookup_result_changed_with_no_change(self) -> None:
+        """Don't skip work request if lookup result did not change."""
+        workflow = self.playground.create_workflow()
+        wr = workflow.create_child(
+            task_name="noop", status=WorkRequest.Statuses.PENDING
+        )
+        self.playground.create_collection("test", CollectionCategory.TEST)
+        lookup = f"test@{CollectionCategory.TEST}/name:foo"
+        action = ActionSkipIfLookupResultChanged.parse_obj(
+            {"lookup": lookup, "collection_item_id": None}
+        )
+        wr.event_reactions = EventReactions(on_assignment=[action])
+        wr.save()
+        worker = self.playground.create_worker()
+
+        # No exception is raised.
+        wr.assign_worker(worker)
+
+    def test_skip_if_lookup_result_changed_with_change(self) -> None:
+        """Skip work request if lookup result changed."""
+        workflow = self.playground.create_workflow()
+        wr = workflow.create_child(
+            task_name="noop", status=WorkRequest.Statuses.PENDING
+        )
+        collection = self.playground.create_collection(
+            "test", CollectionCategory.TEST
+        )
+        lookup = f"test@{CollectionCategory.TEST}/name:foo"
+        action = ActionSkipIfLookupResultChanged.parse_obj(
+            {"lookup": lookup, "collection_item_id": None}
+        )
+        wr.event_reactions = EventReactions(on_assignment=[action])
+        wr.save()
+        CollectionItem.objects.create_from_artifact(
+            self.playground.create_artifact()[0],
+            parent_collection=collection,
+            name="foo",
+            data={},
+            created_by_user=self.playground.get_default_user(),
+        )
+        worker = self.playground.create_worker()
+
+        with self.assertRaises(SkipWorkRequest):
+            wr.assign_worker(worker)
+
+        wr.refresh_from_db()
+        self.assertEqual(wr.status, WorkRequest.Statuses.COMPLETED)
+        self.assertEqual(wr.result, WorkRequest.Results.SKIPPED)
+        self.assertEqual(
+            wr.output_data,
+            OutputData(skip_reason=f"Result of lookup {lookup!r} changed"),
+        )
+
+    def test_skip_if_lookup_result_changed_invalid_lookup(self) -> None:
+        """Log an error and don't skip work request if the lookup is invalid."""
+        workflow = self.playground.create_workflow()
+        wr = workflow.create_child(
+            task_name="noop", status=WorkRequest.Statuses.PENDING
+        )
+        self.playground.create_collection("test", CollectionCategory.TEST)
+        action = ActionSkipIfLookupResultChanged.parse_obj(
+            {"lookup": "", "collection_item_id": None}
+        )
+        wr.event_reactions = EventReactions(on_assignment=[action])
+        wr.save()
+        worker = self.playground.create_worker()
+
+        # No exception is raised.
+        with self.assertLogsContains(
+            f"Empty lookup in WorkRequest {wr}",
+            logger="debusine.db.models.work_requests",
+            level=logging.ERROR,
+        ):
+            wr.assign_worker(worker)
+
+    def test_skip_if_lookup_result_changed_resolves_promise_artifact(
+        self,
+    ) -> None:
+        """Skip if lookup result changed: resolve promise with artifact."""
+        workflow = self.playground.create_workflow()
+        wr = workflow.create_child(
+            task_name="noop", status=WorkRequest.Statuses.PENDING
+        )
+        collection = self.playground.create_collection(
+            "test", CollectionCategory.TEST
+        )
+        artifact_1, _ = self.playground.create_artifact()
+        item_1 = CollectionItem.objects.create_from_artifact(
+            artifact_1,
+            parent_collection=collection,
+            name="foo",
+            data={},
+            created_by_user=self.playground.get_default_user(),
+        )
+        lookup = f"test@{CollectionCategory.TEST}/name:foo"
+        action = ActionSkipIfLookupResultChanged.parse_obj(
+            {
+                "lookup": lookup,
+                "collection_item_id": item_1.id,
+                "promise_name": "expected",
+            }
+        )
+        wr.event_reactions = EventReactions(on_assignment=[action])
+        wr.save()
+        artifact_2, _ = self.playground.create_artifact()
+        item_1.removed_at = timezone.now()
+        item_1.save()
+        CollectionItem.objects.create_from_artifact(
+            artifact_2,
+            parent_collection=collection,
+            name="foo",
+            data={},
+            created_by_user=self.playground.get_default_user(),
+        )
+        worker = self.playground.create_worker()
+
+        with self.assertRaises(SkipWorkRequest):
+            wr.assign_worker(worker)
+
+        wr.refresh_from_db()
+        self.assertEqual(wr.status, WorkRequest.Statuses.COMPLETED)
+        self.assertEqual(wr.result, WorkRequest.Results.SKIPPED)
+        self.assertEqual(
+            wr.output_data,
+            OutputData(skip_reason=f"Result of lookup {lookup!r} changed"),
+        )
+        self.assertEqual(
+            lookup_single(
+                "internal@collections/name:expected",
+                wr.workspace,
+                user=wr.created_by,
+                workflow_root=workflow,
+                expect_type=LookupChildType.ARTIFACT,
+            ).artifact,
+            artifact_2,
+        )
+
+    def test_skip_if_lookup_result_changed_resolves_promise_bare_data(
+        self,
+    ) -> None:
+        """Skip if lookup result changed: resolve promise with bare data."""
+        workflow = self.playground.create_workflow()
+        wr = workflow.create_child(
+            task_name="noop", status=WorkRequest.Statuses.PENDING
+        )
+        collection = self.playground.create_collection(
+            "test", CollectionCategory.TEST
+        )
+        item_1 = self.playground.create_bare_data_item(collection, "foo")
+        lookup = f"test@{CollectionCategory.TEST}/name:foo"
+        action = ActionSkipIfLookupResultChanged.parse_obj(
+            {
+                "lookup": lookup,
+                "collection_item_id": item_1.id,
+                "promise_name": "expected",
+            }
+        )
+        wr.event_reactions = EventReactions(on_assignment=[action])
+        wr.save()
+        item_1.removed_at = timezone.now()
+        item_1.save()
+        item_2 = self.playground.create_bare_data_item(
+            collection, "foo", data={"foo": "bar"}
+        )
+        worker = self.playground.create_worker()
+
+        with self.assertRaises(SkipWorkRequest):
+            wr.assign_worker(worker)
+
+        wr.refresh_from_db()
+        self.assertEqual(wr.status, WorkRequest.Statuses.COMPLETED)
+        self.assertEqual(wr.result, WorkRequest.Results.SKIPPED)
+        self.assertEqual(
+            wr.output_data,
+            OutputData(skip_reason=f"Result of lookup {lookup!r} changed"),
+        )
+        self.assertEqual(
+            lookup_single(
+                "internal@collections/name:expected",
+                wr.workspace,
+                user=wr.created_by,
+                workflow_root=workflow,
+                expect_type=LookupChildType.BARE,
+            ).collection_item.data,
+            item_2.data,
+        )
+
     def test_update_collection_with_artifacts(self) -> None:
         """Update collection with artifacts on task completion."""
         wr = WorkRequest.objects.create(
@@ -3257,7 +4341,6 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         self.assertEqual(item.artifact, a_added)
         self.assertEqual(item.data, {"name": "actiontest2", "type": "rebuild"})
 
-    @context.disable_permission_checks()
     def test_update_collection_with_artifacts_no_name_template(self) -> None:
         """Without name_template, variables are passed through."""
         wr = WorkRequest.objects.create(
@@ -3296,7 +4379,36 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         assert item is not None
         self.assertIsNotNone(item.artifact, tarball)
 
-    @context.disable_permission_checks()
+    def test_update_collection_with_artifacts_created_at(self) -> None:
+        sid = self.playground.create_collection("sid", CollectionCategory.SUITE)
+        yesterday = timezone.now() - timedelta(days=1)
+        wr = self.playground.create_work_request(
+            event_reactions=EventReactions(
+                on_success=[
+                    ActionUpdateCollectionWithArtifacts(
+                        artifact_filters={
+                            "category": ArtifactCategory.BINARY_PACKAGE
+                        },
+                        collection=sid.id,
+                        variables={
+                            "component": "main",
+                            "section": "devel",
+                            "priority": "optional",
+                        },
+                        created_at=yesterday,
+                    )
+                ]
+            )
+        )
+        binary = self.playground.create_minimal_binary_package_artifact()
+        binary.created_by_work_request = wr
+        binary.save()
+        self.assertFalse(sid.child_items.exists())
+
+        wr.mark_completed(WorkRequest.Results.SUCCESS)
+
+        self.assertEqual(sid.child_items.get().created_at, yesterday)
+
     def test_update_collection_with_artifacts_constraint_violation(
         self,
     ) -> None:
@@ -3356,7 +4468,6 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         ):
             wr.mark_completed(WorkRequest.Results.SUCCESS)
 
-    @context.disable_permission_checks()
     def test_update_collection_with_artifacts_invalid_variables(self) -> None:
         """A failure to expand variables is an error."""
         wr = WorkRequest.objects.create(
@@ -3396,8 +4507,7 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
             task_type=TaskTypes.WORKFLOW,
             task_name="test",
         )
-        with context.disable_permission_checks():
-            different_workspace = self.playground.create_workspace(name="test")
+        different_workspace = self.playground.create_workspace(name="test")
         Collection.objects.create(
             name="test_differentworkspace",
             category=CollectionCategory.WORKFLOW_INTERNAL,
@@ -3491,6 +4601,35 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         assert item is not None
         self.assertEqual(item.data, {"package": "hello", "version": "1.0-1"})
 
+    def test_update_collection_with_data_created_at(self) -> None:
+        collection = self.playground.create_singleton_collection(
+            CollectionCategory.PACKAGE_BUILD_LOGS
+        )
+        yesterday = timezone.now() - timedelta(days=1)
+        wr = self.playground.create_work_request()
+        wr.event_reactions = EventReactions(
+            on_success=[
+                ActionUpdateCollectionWithData(
+                    collection=collection.id,
+                    category=BareDataCategory.PACKAGE_BUILD_LOG,
+                    data={
+                        "work_request_id": wr.id,
+                        "vendor": "debian",
+                        "codename": "sid",
+                        "architecture": "all",
+                        "srcpkg_name": "hello",
+                        "srcpkg_version": "1.0",
+                    },
+                    created_at=yesterday,
+                )
+            ]
+        )
+        self.assertFalse(collection.child_items.exists())
+
+        wr.mark_completed(WorkRequest.Results.SUCCESS)
+
+        self.assertEqual(collection.child_items.get().created_at, yesterday)
+
     def test_update_collection_with_data_no_name_template(self) -> None:
         """Without name_template, name=None is passed."""
         workflow = WorkRequest.objects.create(
@@ -3532,8 +4671,7 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
             task_type=TaskTypes.WORKFLOW,
             task_name="test",
         )
-        with context.disable_permission_checks():
-            different_workspace = self.playground.create_workspace(name="test")
+        different_workspace = self.playground.create_workspace(name="test")
         Collection.objects.create(
             name="test_differentworkspace",
             category=CollectionCategory.WORKFLOW_INTERNAL,
@@ -3677,10 +4815,12 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
         wr.mark_completed(WorkRequest.Results.SUCCESS, output_data)
 
         self.assertFalse(
-            CollectionItem.active_objects.filter(
+            CollectionItem.objects.active()
+            .filter(
                 child_type=CollectionItem.Types.BARE,
                 category=BareDataCategory.HISTORICAL_TASK_RUN,
-            ).exists()
+            )
+            .exists()
         )
 
     def test_record_in_task_history_bad_task_data(self) -> None:
@@ -3689,7 +4829,9 @@ class WorkRequestWorkerTests(ChannelsHelpersMixin, TestCase):
             assign_new_worker=True, mark_running=True
         )
         assert wr.started_at is not None
-        wr.task_data = {"nonsense": 0}
+        wr.task_data["nonsense"] = 0
+        assert isinstance(wr.configured_task_data, dict)
+        wr.configured_task_data["nonsense"] = 0
         # Covering this case requires a manually-added event reaction; it
         # isn't added automatically if we can't construct the task.
         wr.event_reactions = EventReactions(
@@ -3894,7 +5036,7 @@ class WorkflowTemplateTests(TestCase):
         """Test orchestrator validation of task data."""
 
         class ValidatingWorkflow(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Workflow used to test validation of template data."""
 
@@ -3930,28 +5072,68 @@ class WorkflowTemplateTests(TestCase):
         self.scenario.workspace.save()
         template = self.playground.create_workflow_template("test", "noop")
         with mock.patch(
-            "debusine.db.models.workspaces.Workspace.context_has_role",
-            return_value=PartialCheckResult.DENY,
+            "debusine.db.models.workspaces.Workspace.has_role",
+            return_value=False,
         ):
             self.assertFalse(template.can_run(self.scenario.user))
 
-    def test_can_display_delegate_to_workspace(self) -> None:
-        """Test the can_display predicate delegating to containing workspace."""
-        template = self.playground.create_workflow_template(
-            name="test", task_name="noop"
-        )
-        with override_permission(Workspace, "can_display", AllowAll):
-            self.assertPermission(
-                "can_display",
-                users=(AnonymousUser(), self.scenario.user),
-                allowed=template,
-            )
-        with override_permission(Workspace, "can_display", DenyAll):
-            self.assertPermission(
-                "can_display",
-                users=(AnonymousUser(), self.scenario.user),
-                denied=template,
-            )
+    def test_can_display_public_workspace(self) -> None:
+        """Test the can_retry predicate delegating to containing workspace."""
+        user = self.scenario.user
+        wr = self.playground.create_work_request()
+        for u, roles, expected in (
+            (AnonymousUser(), [], True),
+            (user, [], True),
+            (user, [Workspace.Roles.VIEWER], True),
+            (user, [Workspace.Roles.CONTRIBUTOR], True),
+            (user, [Workspace.Roles.OWNER], True),
+        ):
+            with (
+                self.subTest(user=u, roles=roles),
+                self.playground.assign_role(self.scenario.workspace, u, *roles),
+            ):
+                self.assertEqual(wr.can_display(u), expected)
+                expected_qs = [wr] if expected else []
+                self.assertQuerySetEqual(
+                    WorkRequest.objects.filter(pk=wr.pk).can_display(u),
+                    expected_qs,
+                )
+
+    def test_can_display_private_workspace(self) -> None:
+        """Test the can_retry predicate delegating to containing workspace."""
+        other = self.playground.create_user("other")
+        user = self.scenario.user
+        self.scenario.workspace.public = False
+        self.scenario.workspace.save()
+        wr = self.playground.create_work_request()
+        for u, creator, roles, expected in (
+            (AnonymousUser(), False, [], False),
+            (user, False, [], False),
+            (user, False, [Workspace.Roles.VIEWER], True),
+            (user, False, [Workspace.Roles.CONTRIBUTOR], True),
+            (user, False, [Workspace.Roles.OWNER], True),
+            (user, True, [], False),
+            (user, True, [Workspace.Roles.VIEWER], True),
+            (user, True, [Workspace.Roles.CONTRIBUTOR], True),
+            (user, True, [Workspace.Roles.OWNER], True),
+        ):
+            with (
+                self.subTest(user=u, creator=creator, roles=roles),
+                self.playground.assign_role(self.scenario.workspace, u, *roles),
+            ):
+                if u.is_authenticated:
+                    if creator:
+                        wr.created_by = u
+                    else:
+                        wr.created_by = other
+                    wr.save()
+
+                self.assertEqual(wr.can_display(u), expected)
+                expected_qs = [wr] if expected else []
+                self.assertQuerySetEqual(
+                    WorkRequest.objects.filter(pk=wr.pk).can_display(u),
+                    expected_qs,
+                )
 
     def test_can_run_public_workspace(self) -> None:
         """Test can_run on public workspaces."""
@@ -4044,7 +5226,7 @@ class WorkflowTemplateTests(TestCase):
         # A worker token cannot in any case
         self.assertPermission(
             "can_run",
-            users=(None, AnonymousUser(), self.scenario.user),
+            users=[None],
             denied=[template],
             token=self.playground.create_worker_token(),
         )
@@ -4097,13 +5279,21 @@ class WorkflowTemplateTests(TestCase):
         template = self.playground.create_workflow_template("test", "noop")
         self.assertEqual(
             template.get_absolute_url(),
-            reverse(
-                "workspaces:workflow_templates:detail",
-                kwargs={
-                    "wname": self.scenario.workspace.name,
-                    "name": template.name,
-                },
-            ),
+            f"/{self.scenario.scope.name}/{self.scenario.workspace.name}"
+            f"/workflow-template/{template.name}/",
+        )
+
+    def test_get_absolute_url_different_scope(self) -> None:
+        """get_absolute_url works in another scope."""
+        other_scope = self.playground.get_or_create_scope(name="other")
+        other_workspace = self.playground.create_workspace(scope=other_scope)
+        template = self.playground.create_workflow_template(
+            "test", "noop", workspace=other_workspace
+        )
+        self.assertEqual(
+            template.get_absolute_url(),
+            f"/{other_scope.name}/{other_workspace.name}"
+            f"/workflow-template/{template.name}/",
         )
 
 
@@ -4165,7 +5355,7 @@ class DeleteUnusedTests(TestCase):
         # Make work_request_keep to be kept: referenced by a
         # CollectionItem (via created_by_workflow) and
         # WorkRequest.internal_collection != collection_1
-        collection_1.manager.add_bare_data(
+        item_1 = collection_1.manager.add_bare_data(
             name="Item-1",
             user=self.playground.get_default_user(),
             category=BareDataCategory.TEST,
@@ -4187,8 +5377,8 @@ class DeleteUnusedTests(TestCase):
 
         # work_request_keep still kept: now is referenced by a
         # CollectionItem.removed_by_workflow
-        collection_1.manager.remove_bare_data(
-            name="Item-1",
+        collection_1.manager.remove_item(
+            item=item_1,
             user=self.playground.get_default_user(),
             workflow=work_request_keep,
         )
@@ -4370,6 +5560,7 @@ class ConfigureForWorkerTests(TestCase):
 
     scenario = scenarios.DefaultContext()
 
+    default_config_collection: ClassVar[Collection]
     config_collection: ClassVar[Collection]
     environment: ClassVar[Artifact]
     source: ClassVar[Artifact]
@@ -4381,6 +5572,11 @@ class ConfigureForWorkerTests(TestCase):
     def setUpTestData(cls) -> None:
         """Set up common test data."""
         super().setUpTestData()
+        cls.default_config_collection = Collection.objects.get(
+            workspace=cls.scenario.workspace,
+            name="default",
+            category=CollectionCategory.TASK_CONFIGURATION,
+        )
         cls.config_collection = cls.playground.create_collection(
             "test", CollectionCategory.TASK_CONFIGURATION
         )
@@ -4408,6 +5604,60 @@ class ConfigureForWorkerTests(TestCase):
             BareDataCategory.TASK_CONFIGURATION,
             user=cls.scenario.user,
             data=entry,
+        )
+
+    def test_task_configuration_unspecified(self) -> None:
+        """Test with task_configuration unset."""
+        del self.work_request.task_data["task_configuration"]
+        self.work_request.save()
+        self.work_request.configure_for_worker(self.worker)
+        self.assertEqual(
+            self.work_request.configured_task_data, self.work_request.task_data
+        )
+        assert self.work_request.dynamic_task_data is not None
+        self.assertEqual(
+            self.work_request.dynamic_task_data.get("task_configuration_id"),
+            self.default_config_collection.pk,
+        )
+
+    def test_task_configuration_missing(self) -> None:
+        """Test with task_configuration unset and the collection is missing."""
+        self.default_config_collection.delete()
+        self.work_request.task_data["task_configuration"] = "invalid"
+        self.work_request.save()
+        with self.assertRaisesRegex(
+            KeyError,
+            "'invalid@debusine:task-configuration' does not exist or is hidden",
+        ):
+            self.work_request.configure_for_worker(self.worker)
+        self.assertIsNone(self.work_request.configured_task_data)
+        self.assertIsNone(self.work_request.dynamic_task_data)
+
+    def test_task_configuration_unspecified_and_missing(self) -> None:
+        """Test with task_configuration unset and the collection is missing."""
+        self.default_config_collection.delete()
+        del self.work_request.task_data["task_configuration"]
+        self.work_request.save()
+        self.work_request.configure_for_worker(self.worker)
+        self.assertEqual(
+            self.work_request.configured_task_data, self.work_request.task_data
+        )
+        assert self.work_request.dynamic_task_data is not None
+        self.assertNotIn(
+            "task_configuration_id", self.work_request.dynamic_task_data
+        )
+
+    def test_task_configuration_explicit_none(self) -> None:
+        """Test with task_configuration set to None."""
+        self.work_request.task_data["task_configuration"] = None
+        self.work_request.save()
+        self.work_request.configure_for_worker(self.worker)
+        self.assertEqual(
+            self.work_request.configured_task_data, self.work_request.task_data
+        )
+        assert self.work_request.dynamic_task_data is not None
+        self.assertNotIn(
+            "task_configuration_id", self.work_request.dynamic_task_data
         )
 
     def test_no_task_config(self) -> None:

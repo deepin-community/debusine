@@ -1,0 +1,9 @@
+#!/bin/bash
+
+set -e
+
+source debian/tests/utils/add-debusine-log-files-to-artifacts.sh
+
+debian/tests/utils/integration-tests-setup-debusine-all.sh
+
+pytest --rootdir=. -c /dev/null -v debian/tests/integration-tests-task-aptmirror.py

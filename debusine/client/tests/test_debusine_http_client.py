@@ -36,10 +36,8 @@ except ImportError:
     OrderedRegistry = None  # type: ignore
 
 
-class TestResponse(StrictBaseModel):
+class SampleResponse(StrictBaseModel):
     """A dummy model for test cases."""
-
-    __test__ = False
 
     id: int
     page: int | None = None
@@ -50,6 +48,7 @@ class DebusineHttpClientTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize member variables for the tests."""
+        super().setUp()
         self.api_url = "https://debusine.debian.org/api/1.0"
         self.token = "token-for-server"
 
@@ -100,7 +99,7 @@ class DebusineHttpClientTests(TestCase):
         base_url: str, *, length: int = 4, page_size: int = 3
     ) -> None:
         """Add a set of responses for paginated listing requests."""
-        objects = deque(TestResponse(id=i) for i in range(length))
+        objects = deque(SampleResponse(id=i) for i in range(length))
 
         url = base_url
         for pageno in count(1):
@@ -143,7 +142,7 @@ class DebusineHttpClientTests(TestCase):
             ValueError, "^data argument not allowed with HTTP GET$"
         ):
             debusine_client._api_request(
-                "GET", self.api_url, TestResponse, data={}
+                "GET", self.api_url, SampleResponse, data={}
             )
 
     @responses.activate
@@ -174,7 +173,7 @@ class DebusineHttpClientTests(TestCase):
         with self.assertRaisesRegex(
             ValueError, "^Method must be one of: GET, POST, PUT, PATCH$"
         ):
-            debusine_client._api_request("BAD-METHOD", "", TestResponse)
+            debusine_client._api_request("BAD-METHOD", "", SampleResponse)
 
     @responses.activate
     def test_api_request_not_found_raise_exception(self) -> None:
@@ -199,7 +198,7 @@ class DebusineHttpClientTests(TestCase):
 
         debusine_client = DebusineHttpClient(self.api_url, self.token)
         with self.assertRaises(exceptions.DebusineError) as debusine_error:
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
         exception = debusine_error.exception
 
@@ -219,7 +218,7 @@ class DebusineHttpClientTests(TestCase):
             exceptions.ClientForbiddenError,
             rf"^HTTP 403. Token \({token}\) is invalid or disabled$",
         ):
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
     @responses.activate
     def test_api_request_raise_debusine_error_404(self) -> None:
@@ -236,7 +235,7 @@ class DebusineHttpClientTests(TestCase):
         )
         debusine_client = DebusineHttpClient(self.api_url, self.token)
         with self.assertRaises(exceptions.DebusineError) as debusine_error:
-            debusine_client._api_request("POST", self.api_url, TestResponse)
+            debusine_client._api_request("POST", self.api_url, SampleResponse)
 
         exception = debusine_error.exception
 
@@ -261,7 +260,7 @@ class DebusineHttpClientTests(TestCase):
 
         debusine_client = DebusineHttpClient(self.api_url, self.token)
         with self.assertRaises(exceptions.DebusineError) as debusine_error:
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
         exception = debusine_error.exception
 
@@ -280,7 +279,7 @@ class DebusineHttpClientTests(TestCase):
             r"^Server returned unexpected status code: 418 "
             rf"\({self.api_url}\)$",
         ):
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
         self.assert_token_key_included_in_all_requests(self.token)
 
@@ -296,7 +295,7 @@ class DebusineHttpClientTests(TestCase):
             "^Server returned unexpected status code: 400 "
             fr"\({self.api_url}\)$",
         ):
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
     @responses.activate
     def test_api_request_raise_unexpected_response_400_no_json(self) -> None:
@@ -313,7 +312,7 @@ class DebusineHttpClientTests(TestCase):
             "^Server returned unexpected status code: 400 "
             fr"\({self.api_url}\)$",
         ):
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
     @skipIf(
         [int(part) for part in version("responses").split(".")] < [0, 21],
@@ -343,7 +342,7 @@ class DebusineHttpClientTests(TestCase):
                         method=method, status=requests.codes.ok
                     )
                     debusine_client._api_request(
-                        method, self.api_url, TestResponse
+                        method, self.api_url, SampleResponse
                     )
 
     @skipIf(
@@ -373,7 +372,7 @@ class DebusineHttpClientTests(TestCase):
                     )
                 ):
                     debusine_client._api_request(
-                        responses.GET, self.api_url, TestResponse
+                        responses.GET, self.api_url, SampleResponse
                     )
 
     @responses.activate
@@ -389,7 +388,7 @@ class DebusineHttpClientTests(TestCase):
             exceptions.UnexpectedResponseError,
             fr"^Server \({self.api_url}\) did not return valid object. Error: ",
         ):
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
         self.assert_token_key_included_in_all_requests(self.token)
 
@@ -407,7 +406,7 @@ class DebusineHttpClientTests(TestCase):
 
         # Make a call (the HTTP GET is done, but it failed)
         with self.assertRaises(exceptions.UnexpectedResponseError):
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
         session_mock.assert_called_once()
         session_mock.return_value.get.assert_called_once_with(
@@ -417,7 +416,7 @@ class DebusineHttpClientTests(TestCase):
         session = debusine_client._session
         # Make a call (the HTTP GET is done, but it failed)
         with self.assertRaises(exceptions.UnexpectedResponseError):
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
         # Same session reused
         self.assertIs(debusine_client._session, session)
@@ -432,7 +431,7 @@ class DebusineHttpClientTests(TestCase):
 
         # Make a call (the HTTP GET is done, but it failed)
         with self.assertRaises(exceptions.UnexpectedResponseError):
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
         session_mock.assert_called_once()
         session_mock.return_value.get.assert_called_once_with(
@@ -452,7 +451,7 @@ class DebusineHttpClientTests(TestCase):
 
         # Make a call (the HTTP GET is done, but it failed)
         with self.assertRaises(exceptions.UnexpectedResponseError):
-            debusine_client._api_request("GET", self.api_url, TestResponse)
+            debusine_client._api_request("GET", self.api_url, SampleResponse)
 
         session_mock.assert_called_once()
         session_mock.return_value.get.assert_called_once_with(
@@ -482,7 +481,7 @@ class DebusineHttpClientTests(TestCase):
             debusine_client._api_request(
                 "POST",
                 self.api_url,
-                TestResponse,
+                SampleResponse,
                 data=data,
                 expected_statuses=expected_statuses,
             )
@@ -579,7 +578,7 @@ class DebusineHttpClientTests(TestCase):
                     f"^Cannot connect to {self.api_url}. Error: $",
                 ):
                     debusine_client._api_request(
-                        "GET", self.api_url, TestResponse
+                        "GET", self.api_url, SampleResponse
                     )
 
     @responses.activate
@@ -590,7 +589,7 @@ class DebusineHttpClientTests(TestCase):
             self.api_url, length=4, page_size=3
         )
 
-        iter_ = debusine_client.iter_paginated_get("", TestResponse)
+        iter_ = debusine_client.iter_paginated_get("", SampleResponse)
         for i in range(4):
             obj = next(iter_)
             self.assertEqual(obj.id, i)
@@ -604,14 +603,14 @@ class DebusineHttpClientTests(TestCase):
             self.api_url, length=4, page_size=3
         )
 
-        response = list(debusine_client.iter_paginated_get("", TestResponse))
+        response = list(debusine_client.iter_paginated_get("", SampleResponse))
         self.assertEqual(
             response,
             [
-                TestResponse(id=0, page=1),
-                TestResponse(id=1, page=1),
-                TestResponse(id=2, page=1),
-                TestResponse(id=3, page=2),
+                SampleResponse(id=0, page=1),
+                SampleResponse(id=1, page=1),
+                SampleResponse(id=2, page=1),
+                SampleResponse(id=3, page=2),
             ],
         )
 
@@ -623,7 +622,7 @@ class DebusineHttpClientTests(TestCase):
             self.api_url, length=0, page_size=3
         )
 
-        response = list(debusine_client.iter_paginated_get("", TestResponse))
+        response = list(debusine_client.iter_paginated_get("", SampleResponse))
         self.assertEqual(response, [])
 
     @responses.activate
@@ -639,7 +638,7 @@ class DebusineHttpClientTests(TestCase):
             exceptions.UnexpectedResponseError,
             fr"^Server \({self.api_url}\) did not return valid object. Error: ",
         ):
-            next(debusine_client.iter_paginated_get("", TestResponse))
+            next(debusine_client.iter_paginated_get("", SampleResponse))
 
     @responses.activate
     def test_iter_paginated_get_invalid_response(self) -> None:
@@ -657,4 +656,4 @@ class DebusineHttpClientTests(TestCase):
             exceptions.UnexpectedResponseError,
             fr"^Server \({self.api_url}\) did not return valid object. Error: ",
         ):
-            next(debusine_client.iter_paginated_get("", TestResponse))
+            next(debusine_client.iter_paginated_get("", SampleResponse))

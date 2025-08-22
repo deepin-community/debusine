@@ -22,6 +22,8 @@ from django.utils import timezone
 
 from debusine.db.models import (
     Artifact,
+    ArtifactRelation,
+    CollectionItem,
     File,
     FileInStore,
     FileStore,
@@ -522,8 +524,17 @@ class Command(DebusineBaseCommand):
             Artifact.objects.filter(created_at__lt=one_day_ago)
             .annotate_complete()
             .filter(complete=False)
+            # TODO: Incomplete artifacts ending up as collection items is
+            # most likely a bug, but at the moment it does happen
+            # occasionally.  Exclude such cases and let expiry take care of
+            # them instead.
+            .exclude(id__in=CollectionItem.objects.values("artifact"))
             .prefetch_related("fileinartifact_set")
-        )
+        ).order_by("id")
+
+        ArtifactRelation.objects.filter(
+            Q(artifact__in=to_delete) | Q(target__in=to_delete)
+        ).delete()
 
         for artifact in to_delete:
             for file_in_artifact in artifact.fileinartifact_set.all():

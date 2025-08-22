@@ -10,32 +10,50 @@
 """Schedule WorkRequests to Workers."""
 
 import logging
-from operator import attrgetter
 from typing import Any
 from uuid import uuid4
 
 import django.db
-from celery import shared_task
+from celery import shared_task, states
 from django.conf import settings
 from django.db import connection, transaction
-from django.db.models import DateTimeField, Q
+from django.db.models import (
+    DateTimeField,
+    Exists,
+    IntegerField,
+    JSONField,
+    OuterRef,
+    Q,
+)
 from django.db.models.fields.json import KT
 from django.db.models.functions import Cast
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
+from django_celery_results.models import TaskResult
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import WorkRequest, Worker
+from debusine.db.models.work_requests import SkipWorkRequest
 from debusine.server.celery import run_server_task
 from debusine.server.workflows.celery import run_workflow_task
 from debusine.tasks import TaskConfigError
-from debusine.tasks.models import TaskTypes
+from debusine.tasks.models import OutputData, OutputDataError
 
 logger = logging.getLogger(__name__)
 
 
+class AssignToWorkerError(Exception):
+    """Assigning a work request to a worker failed."""
+
+    def __init__(self, message: str, code: str) -> None:
+        """Construct the exception."""
+        self.message = message
+        self.code = code
+
+
 def _possible_to_schedule_for_worker(worker: Worker) -> bool:
-    if worker.is_busy():
+    if worker.is_at_capacity():
         # Worker already has enough work requests assigned; no scheduling
         # needed
         return False
@@ -67,19 +85,14 @@ def _assign_work_request_to_worker(
     :param worker: the worker that needs a new work request to be
       assigned.
     :return: The assigned work request, or None if it could not be assigned.
+    :raises AssignToWorkerError: if the work request is broken.
     """
     try:
         task = work_request.get_task(worker=worker)
     except TaskConfigError as exc:
-        logger.warning(  # noqa: G200
-            "WorkRequest %s failed to configure, aborting it. "
-            "Task data: %s Error: %s",
-            work_request.id,
-            work_request.task_data,
-            exc,
-        )
-        work_request.mark_completed(WorkRequest.Results.ERROR)
-        return None
+        raise AssignToWorkerError(
+            f"Failed to configure: {exc}", "configure-failed"
+        ) from exc
 
     if not task.can_run_on(worker.metadata()):
         return None
@@ -103,16 +116,16 @@ def _assign_work_request_to_worker(
     with work_request.scheduling_disabled():
         try:
             work_request.assign_worker(worker)
-        except Exception as exc:
-            logger.warning(  # noqa: G200
-                "WorkRequest %s failed to pre-process task data, aborting it. "
-                "Task data: %s Error: %s",
-                work_request.id,
-                work_request.task_data,
-                exc,
+        except SkipWorkRequest:
+            logger.debug(
+                "Skipping work request %s due to on_assignment action",
+                work_request,
             )
-            work_request.mark_completed(WorkRequest.Results.ERROR)
             return None
+        except Exception as exc:
+            raise AssignToWorkerError(
+                f"Failed to compute dynamic data: {exc}", "dynamic-data-failed"
+            ) from exc
 
     if task.TASK_TYPE is TaskTypes.SERVER:
         # Use a slightly more informative task ID than the default.
@@ -158,11 +171,27 @@ def schedule_for_worker(worker: Worker) -> WorkRequest | None:
         qs = qs.exclude(task_name__in=tasks_denylist)
 
     for work_request in qs:
-        assigned_work_request = _assign_work_request_to_worker(
-            work_request, worker
-        )
-        if assigned_work_request is not None:
-            return assigned_work_request
+        try:
+            assigned_work_request = _assign_work_request_to_worker(
+                work_request, worker
+            )
+        except AssignToWorkerError as exc:
+            logger.error(
+                "Error assigning work request %s/%s (%s): %s",
+                work_request.task_type,
+                work_request.task_name,
+                work_request.id,
+                exc.message,
+            )
+            work_request.mark_completed(
+                WorkRequest.Results.ERROR,
+                output_data=OutputData(
+                    errors=[OutputDataError(message=exc.message, code=exc.code)]
+                ),
+            )
+        else:
+            if assigned_work_request is not None:
+                return assigned_work_request
 
     return None
 
@@ -189,15 +218,53 @@ def schedule_internal() -> list[WorkRequest]:
     These don't require a worker, but need some kind of action from the
     scheduler.
     """
-    qs = WorkRequest.objects.pending().filter(
-        Q(
-            task_type=TaskTypes.INTERNAL,
-            task_name__in={"synchronization_point", "workflow"},
+    in_progress_task_results = TaskResult.objects.filter(
+        status__in={
+            states.PENDING,
+            states.RECEIVED,
+            states.STARTED,
+            states.RETRY,
+        },
+        task_name=("debusine.server.workflows.celery.run_workflow_task"),
+    ).annotate(
+        task_args_array=Cast("task_args", JSONField()),
+        first_task_arg=Cast("task_args_array__0", IntegerField()),
+    )
+    qs = (
+        WorkRequest.objects.with_workflow_root_id()
+        .pending()
+        .filter(
+            Q(
+                task_type=TaskTypes.INTERNAL,
+                task_name__in={"synchronization_point", "workflow"},
+            )
+            | Q(task_type__in={TaskTypes.WORKFLOW, TaskTypes.WAIT})
         )
-        | Q(task_type__in={TaskTypes.WORKFLOW, TaskTypes.WAIT})
+        # Only one workflow callback for a given workflow may run at once.
+        .exclude(
+            Q(task_type=TaskTypes.INTERNAL, task_name="workflow")
+            & Exists(
+                in_progress_task_results.filter(
+                    first_task_arg__in=WorkRequest.objects.filter(
+                        parent=OuterRef(OuterRef("parent"))
+                    ),
+                )
+            )
+        )
+        # Only one sub-workflow within a given root workflow may run at once.
+        .exclude(
+            Q(task_type=TaskTypes.WORKFLOW)
+            & Exists(
+                in_progress_task_results.filter(
+                    first_task_arg=OuterRef("workflow_root_id")
+                )
+            )
+        )
+        .order_by("id")
     )
 
-    workflow_roots: set[WorkRequest] = set()
+    running_workflow_callback_parents: set[WorkRequest] = set()
+    workflow_root_ids: set[int] = set()
     result: list[WorkRequest] = []
     for work_request in qs:
         match (work_request.task_type, work_request.task_name):
@@ -209,6 +276,15 @@ def schedule_internal() -> list[WorkRequest]:
                 result.append(work_request)
 
             case (TaskTypes.INTERNAL, "workflow"):
+                # Only one workflow callback for a given workflow may run at
+                # once.  (This duplicates the .exclude() above, because the
+                # set of work requests that we need to skip may grow as we
+                # schedule more workflow callbacks.)
+                assert work_request.parent is not None
+                if work_request.parent in running_workflow_callback_parents:
+                    continue
+                running_workflow_callback_parents.add(work_request.parent)
+
                 # Workflow callbacks are handled by the corresponding
                 # workflow orchestrator.  This may take a while, so we
                 # delegate it to a Celery task.
@@ -222,10 +298,9 @@ def schedule_internal() -> list[WorkRequest]:
                 # called directly from the scheduler, although if a
                 # sub-workflow is pending then its root workflow may deal
                 # with populating it.
-                workflow_root = work_request.get_workflow_root()
                 # Workflows always have a root.
-                assert workflow_root is not None
-                workflow_roots.add(workflow_root)
+                assert work_request.workflow_root_id is not None
+                workflow_root_ids.add(work_request.workflow_root_id)
 
             case (TaskTypes.WAIT, _):
                 # Wait tasks are marked running immediately, but otherwise
@@ -239,7 +314,11 @@ def schedule_internal() -> list[WorkRequest]:
                     f"Unexpected internal task name: {unreachable}"
                 )
 
-    for workflow_root in sorted(workflow_roots, key=attrgetter("id")):
+    for workflow_root in (
+        WorkRequest.objects.filter(id__in=workflow_root_ids)
+        .order_by("id")
+        .select_for_update()
+    ):
         # Workflows are populated by the corresponding workflow
         # orchestrator.  This may take a while, so we delegate it to a
         # Celery task.

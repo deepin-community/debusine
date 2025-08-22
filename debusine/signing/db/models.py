@@ -9,6 +9,7 @@
 
 """Database models for the Debusine signing service."""
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, BinaryIO, ClassVar, TYPE_CHECKING, TypeAlias
 
@@ -159,73 +160,85 @@ class Key(models.Model):
         """Access private_key as a pydantic model."""
         return ProtectedKey.parse_obj(self.private_key)
 
-    def sign(
-        self,
-        data_path: Path,
-        signature_path: Path,
-        mode: SigningMode,
-        created_by_work_request_id: int,
-        username: str | None = None,
-        user_id: int | None = None,
-        resource: dict[str, Any] | None = None,
-        log_file: BinaryIO | None = None,
-    ) -> None:
-        """
-        Sign data in `data_path` using this key.
 
-        `signature_path` will be overwritten with the resulting signature.
-        """
-        match (self.purpose, mode):
-            case KeyPurpose.UEFI, SigningMode.ATTACHED | SigningMode.DETACHED:
-                sbsign(
-                    self.stored_private_key,
-                    self.public_key,
-                    data_path=data_path,
-                    signature_path=signature_path,
-                    detached=(mode == SigningMode.DETACHED),
-                    log_file=log_file,
-                )
-            case KeyPurpose.OPENPGP, SigningMode.CLEAR:
-                # Imported late because the gpg module has to be installed as a
-                # .deb.
-                from debusine.signing.gnupg import gpg_sign
+def sign(
+    keys: Sequence["Key"],
+    data_path: Path,
+    signature_path: Path,
+    mode: SigningMode,
+    created_by_work_request_id: int,
+    username: str | None = None,
+    user_id: int | None = None,
+    resource: dict[str, Any] | None = None,
+    log_file: BinaryIO | None = None,
+) -> None:
+    """
+    Sign data in `data_path` using `keys`.
 
-                gpg_sign(
-                    self.stored_private_key,
-                    self.public_key,
-                    data_path=data_path,
-                    signature_path=signature_path,
-                )
-            case KeyPurpose.OPENPGP, SigningMode.DEBSIGN:
-                # Imported late because the gpg module has to be installed as a
-                # .deb.
-                from debusine.signing.gnupg import gpg_debsign
+    `signature_path` will be overwritten with the resulting signature.
+    """
+    purposes = list({key.purpose for key in keys})
+    assert len(purposes) == 1
+    [purpose] = purposes
 
-                gpg_debsign(
-                    self.stored_private_key,
-                    self.public_key,
-                    self.fingerprint,
-                    data_path=data_path,
-                    signature_path=signature_path,
-                    log_file=log_file,
-                )
-            case _ as unreachable:
-                raise AssertionError(f"Unexpected purpose: {unreachable}")
+    match (purpose, mode):
+        case KeyPurpose.UEFI, SigningMode.ATTACHED | SigningMode.DETACHED:
+            assert len(keys) == 1
+            sbsign(
+                keys[0].stored_private_key,
+                keys[0].public_key,
+                data_path=data_path,
+                signature_path=signature_path,
+                detached=(mode == SigningMode.DETACHED),
+                log_file=log_file,
+            )
+        case KeyPurpose.OPENPGP, SigningMode.DETACHED | SigningMode.CLEAR:
+            # Imported late because the gpg module has to be installed as a
+            # .deb.
+            from debusine.signing.gnupg import gpg_sign
 
-        audit_log_data: dict[str, Any] = {
-            "data_sha256": calculate_hash(data_path, "sha256").hex(),
-        }
-        if resource:
-            audit_log_data["resource"] = resource
-        if username:
-            audit_log_data["username"] = username
-        if user_id:
-            audit_log_data["user_id"] = user_id
+            gpg_sign(
+                [(key.stored_private_key, key.public_key) for key in keys],
+                data_path=data_path,
+                signature_path=signature_path,
+                mode=mode,
+            )
+        case KeyPurpose.OPENPGP, SigningMode.DEBSIGN:
+            # Imported late because the gpg module has to be installed as a
+            # .deb.
+            from debusine.signing.gnupg import gpg_debsign
 
-        AuditLog.objects.create(
-            event=AuditLog.Event.SIGN,
-            purpose=self.purpose,
-            fingerprint=self.fingerprint,
-            data=audit_log_data,
-            created_by_work_request_id=created_by_work_request_id,
-        )
+            assert len(keys) == 1
+            gpg_debsign(
+                keys[0].stored_private_key,
+                keys[0].public_key,
+                keys[0].fingerprint,
+                data_path=data_path,
+                signature_path=signature_path,
+                log_file=log_file,
+            )
+        case _ as unreachable:
+            raise AssertionError(f"Unexpected purpose and mode: {unreachable}")
+
+    audit_log_data: dict[str, Any] = {
+        "data_sha256": calculate_hash(data_path, "sha256").hex(),
+    }
+    if resource:
+        audit_log_data["resource"] = resource
+    if username:
+        audit_log_data["username"] = username
+    if user_id:
+        audit_log_data["user_id"] = user_id
+
+    AuditLog.objects.bulk_create(
+        [
+            AuditLog(
+                event=AuditLog.Event.SIGN,
+                purpose=purpose,
+                fingerprint=key.fingerprint,
+                data=audit_log_data,
+                created_by_work_request_id=created_by_work_request_id,
+            )
+            for key in keys
+        ]
+    )

@@ -1,4 +1,4 @@
-.. _bare-data-promise:
+.. bare-data:: debusine:promise
 
 Category ``debusine:promise``
 =============================

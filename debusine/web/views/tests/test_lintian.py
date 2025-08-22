@@ -15,11 +15,10 @@ from pathlib import Path
 from typing import ClassVar
 
 from django.db.models import F
-from django.http import HttpResponseBase
 from django.template.loader import get_template
 
 from debusine.artifacts import LintianArtifact, PackageBuildLog
-from debusine.db.context import context
+from debusine.artifacts.models import DebianLintian, DebianLintianSummary
 from debusine.db.models import Artifact, FileInArtifact, WorkRequest, Workspace
 from debusine.tasks.models import (
     LintianData,
@@ -27,7 +26,6 @@ from debusine.tasks.models import (
     LintianFailOnSeverity,
     LintianInput,
     LookupMultiple,
-    LookupSingle,
 )
 from debusine.test.django import TestCase
 from debusine.web.views.lintian import LintianView
@@ -46,8 +44,9 @@ class LintianViewTests(TestCase):
     package_binary_file_1: ClassVar[str]
     package_binary_file_2: ClassVar[str]
 
+    DESCRIPTION_LINTIAN_RUN_ID = "description-lintian_run"
+
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()
@@ -91,14 +90,22 @@ class LintianViewTests(TestCase):
         cls.package_source_file = "hello_2.10-3.dsc"
         cls.package_binary_file_1 = "hello_2.10-3.deb"
         cls.package_binary_file_2 = "libhello_2.10-3.deb"
-        summary_binary_package = {
-            "summary": {
-                "package_filename": {
+
+        summary_binary_package = DebianLintian(
+            architecture="all",
+            summary=DebianLintianSummary(
+                package_filename={
                     "hello": cls.package_binary_file_1,
                     "libhello": cls.package_binary_file_2,
-                }
-            }
-        }
+                },
+                tags_found=[],
+                overridden_tags_found=[],
+                lintian_version="2.116.3",
+                distribution="debian/bookworm",
+                tags_count_by_severity={},
+            ),
+        ).dict()
+
         cls.binary_artifact, _ = cls.playground.create_artifact(
             paths=["summary.json", "lintian.txt"],
             create_files=True,
@@ -109,9 +116,20 @@ class LintianViewTests(TestCase):
         cls.binary_artifact.created_by_work_request = cls.work_request
         cls.binary_artifact.save()
 
-        summary_source_package = {
-            "summary": {"package_filename": {"hello": cls.package_source_file}}
-        }
+        summary_source_package = DebianLintian(
+            architecture="source",
+            summary=DebianLintianSummary(
+                package_filename={
+                    "hello": cls.package_source_file,
+                },
+                tags_found=[],
+                overridden_tags_found=[],
+                lintian_version="2.116.3",
+                distribution="debian/bookworm",
+                tags_count_by_severity={},
+            ),
+        ).dict()
+
         cls.source_artifact, _ = cls.playground.create_artifact(
             paths=["lintian.txt"],
             create_files=True,
@@ -204,7 +222,7 @@ class LintianViewTests(TestCase):
         lintian_view = LintianView(self.work_request)
         context_data = lintian_view.get_context_data()
 
-        # Verify "tags" and "tags_count_severity" in separate methods
+        # Verify some keys in separate methods
         context_data.pop("tags")
         context_data.pop("tags_count_severity")
         context_data.pop("request_data")
@@ -215,6 +233,13 @@ class LintianViewTests(TestCase):
                 "result": self.work_request.result,
                 "lintian_txt_path": lintian_txt_path,
                 "fail_on_severity": self.fail_on_severity,
+                "description_data": {},
+                "description_template": "web/_lintian-description.html",
+                "specialized_tab": {
+                    "label": "Lintian",
+                    "slug": "lintian",
+                    "template": "web/_lintian-work_request-detail.html",
+                },
             },
         )
 
@@ -475,14 +500,6 @@ class LintianViewTests(TestCase):
 
         response = self.client.get(self.work_request.get_absolute_url())
 
-        work_request_generic_path = (
-            self.work_request.get_absolute_url() + "?view=generic"
-        )
-        self.assertContains(
-            response,
-            f'<a href="{work_request_generic_path}">Generic view</a>',
-            html=True,
-        )
         result_output = get_template("web/_work_request-result.html").render(
             {"result": self.work_request.result}
         )
@@ -515,72 +532,12 @@ class LintianViewTests(TestCase):
 
         task_data_input = self.work_request.task_data["input"]
 
-        self.assert_contains_artifact_information(
-            response,
-            "Source artifact",
-            task_data_input["source_artifact"],
-            task_data_input["source_artifact"],
-        )
-
-        self.assert_contains_artifacts_information(
-            response,
-            "Binary artifacts",
-            LookupMultiple.parse_obj(task_data_input["binary_artifacts"]),
-            task_data_input["binary_artifacts"],
-        )
-
         tag = response.context["tags"]["hello_2.10-3.dsc"][
             "license-problem-gfdl-non-official-text"
         ].occurrences[0]
 
         tag_output = get_template("web/_lintian_tag.html").render({"tag": tag})
         self.assertContains(response, f"<li>{tag_output}</li>", html=True)
-
-    def assert_contains_artifact_information(
-        self,
-        response: HttpResponseBase,
-        description: str,
-        artifact_lookup: LookupSingle,
-        artifact_id: int,
-    ) -> None:
-        """Assert contains information of an artifact: link and files."""
-        artifact = Artifact.objects.get(id=artifact_id)
-        files = artifact.fileinartifact_set.order_by("path").values_list(
-            "path", flat=True
-        )
-        artifact_path = artifact.get_absolute_url()
-        artifact_link = f'<a href="{artifact_path}">#{artifact_id}</a>'
-        files_li = "".join([f"<li>{file}</li>" for file in files])
-        self.assertContains(
-            response,
-            f"<li>{description} ({artifact_lookup}: {artifact_link})"
-            f"<ul>{files_li}</ul>"
-            f"</li>",
-            html=True,
-        )
-
-    def assert_contains_artifacts_information(
-        self,
-        response: HttpResponseBase,
-        description: str,
-        artifact_lookup: LookupMultiple,
-        artifact_ids: list[int],
-    ) -> None:
-        """Assert contains information of a set of artifacts."""
-        expected_response = (
-            f"<li>{description} ({artifact_lookup.export()})<ul>"
-        )
-        for artifact_id in artifact_ids:
-            artifact = Artifact.objects.get(id=artifact_id)
-            files = artifact.fileinartifact_set.order_by("path").values_list(
-                "path", flat=True
-            )
-            artifact_path = artifact.get_absolute_url()
-            artifact_link = f'<a href="{artifact_path}">#{artifact_id}</a>'
-            files_li = "".join([f"<li>{file}</li>" for file in files])
-            expected_response += f"<li>{artifact_link}<ul>{files_li}</ul></li>"
-        expected_response += "</ul></li>"
-        self.assertContains(response, expected_response, html=True)
 
     def test_template_output_include_note_pointer_comment(self) -> None:
         """Template output of _lintian_tag.html include all the information."""
@@ -640,8 +597,7 @@ class LintianViewTests(TestCase):
 
     def test_find_lintian_txt_url_path_artifact_no_files(self) -> None:
         """_find_lintian_txt_url_path(), artifact no files: return None."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact()
+        artifact, _ = self.playground.create_artifact()
 
         self.assertIsNone(LintianView._find_lintian_txt_url_path([artifact]))
 
@@ -659,6 +615,10 @@ class LintianViewTests(TestCase):
         configured_source_id = orig_source_id + 42
 
         # Try unconfigured
+        self.work_request.configured_task_data = None
+        self.work_request.dynamic_task_data = None
+        self.work_request.save()
+
         response = self.client.get(self.work_request.get_absolute_url())
         self.assertEqual(
             response.context["request_data"]["source_artifact"]["lookup"],
@@ -677,4 +637,133 @@ class LintianViewTests(TestCase):
         self.assertEqual(
             response.context["request_data"]["source_artifact"]["lookup"],
             configured_source_id,
+        )
+
+    def test_description_data(self) -> None:
+        self.work_request.task_data["include_tags"] = [
+            "included-1",
+            "included-2",
+        ]
+        self.work_request.task_data["exclude_tags"] = [
+            "excluded-1",
+            "excluded-2",
+        ]
+
+        # Set some dynamic_data
+        task_data_input = self.work_request.task_data["input"]
+        self.work_request.dynamic_task_data = LintianDynamicData(
+            input_source_artifact_id=task_data_input["source_artifact"],
+            input_binary_artifacts_ids=task_data_input["binary_artifacts"],
+            environment_id=0,
+            subject="hello",
+        ).dict(exclude_unset=True)
+        self.work_request.save()
+
+        response = self.client.get(self.work_request.get_absolute_url())
+
+        # Check contents of context
+        ctx = response.context
+        description_data, description_template = (
+            ctx["description_data"],
+            ctx["description_template"],
+        )
+        self.assertEqual(
+            description_data,
+            {
+                "source_artifact_id": task_data_input["source_artifact"],
+                "binary_artifacts_ids": task_data_input["binary_artifacts"],
+                "environment_id": 0,
+                "exclude_tags": ["excluded-1", "excluded-2"],
+                "include_tags": ["included-1", "included-2"],
+                "fail_on_severity": "warning",
+                "host_architecture": None,
+                "package_name": "hello",
+                "target_distribution": "debian:unstable",
+            },
+        )
+        self.assertEqual(description_template, "web/_lintian-description.html")
+
+        # Check HTML output
+        tree = self.assertResponseHTML(response)
+
+        lintian_run = self.assertHasElement(
+            tree, f"//p[@id='{self.DESCRIPTION_LINTIAN_RUN_ID}']"
+        )
+        self.assertTextContentEqual(
+            lintian_run, "Lintian run for hello package."
+        )
+
+        source_packages = self.assertHasElement(
+            tree, "//li[@id='description-source_artifacts']"
+        )
+        self.assertTextContentEqual(
+            source_packages, "Source packages: debusine:test"
+        )
+
+        binary_packages = self.assertHasElement(
+            tree, "//li[@id='description-binary_artifacts']"
+        )
+        self.assertTextContentEqual(
+            binary_packages, "Binary packages: debusine:test, debusine:test"
+        )
+
+        environment = self.assertHasElement(
+            tree, "//li[@id='description-environment']"
+        )
+        self.assertTextContentEqual(
+            environment, "Executed in environment 0 (deleted)"
+        )
+
+        fail_on_severity = self.assertHasElement(
+            tree, "//li[@id='description-fail_on_severity']"
+        )
+        self.assertTextContentEqual(
+            fail_on_severity, "Fail on severity: warning"
+        )
+
+        host_architecture = self.assertHasElement(
+            tree, "//li[@id='description-host_architecture']"
+        )
+        self.assertTextContentEqual(
+            host_architecture, "Host architecture: auto"
+        )
+
+        target_distribution = self.assertHasElement(
+            tree, "//li[@id='description-target_distribution']"
+        )
+        self.assertTextContentEqual(
+            target_distribution, "Target distribution: debian:unstable"
+        )
+
+        include_tags = self.assertHasElement(
+            tree, "//li[@id='description-include_tags']"
+        )
+        self.assertTextContentEqual(
+            include_tags, "Include tags: included-1 included-2"
+        )
+
+        exclude_tags = self.assertHasElement(
+            tree, "//li[@id='description-exclude_tags']"
+        )
+        self.assertTextContentEqual(
+            exclude_tags, "Exclude tags: excluded-1 excluded-2"
+        )
+
+    def test_description_data_not_configured(self) -> None:
+        response = self.client.get(self.work_request.get_absolute_url())
+
+        # Check contents of context
+        ctx = response.context
+        description_data, description_template = (
+            ctx["description_data"],
+            ctx["description_template"],
+        )
+
+        self.assertEqual(description_data, {})
+        self.assertEqual(description_template, "web/_lintian-description.html")
+
+        # Does not contain description related information because of no data
+        tree = self.assertResponseHTML(response)
+        self.assertFalse(
+            tree.xpath(f"//p[@id='{self.DESCRIPTION_LINTIAN_RUN_ID}']")
         )

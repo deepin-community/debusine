@@ -34,9 +34,11 @@ Its structure is as follows:
 
     This ``errors`` key is not required for the design that we are doing
     here, but it explains why I opted to create an ``output_data`` field
-    instead of a ``runtime_statistics`` field.  See `#432
-    <https://salsa.debian.org/freexian-team/debusine/-/issues/432>`__ for a
+    instead of a ``runtime_statistics`` field.  See :issue:`432` for a
     related issue that we could fix with this.
+
+* ``skip_reason``: may be set to a human-readable explanation of why this
+  work request was skipped rather than being run normally.
 
 .. _runtime-statistics:
 

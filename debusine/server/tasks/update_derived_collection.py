@@ -121,7 +121,7 @@ class UpdateDerivedCollection(
 
         Concrete subclasses may filter the returned query set further.
         """
-        return CollectionItem.active_objects.filter(
+        return CollectionItem.objects.active().filter(
             parent_collection=self.base_collection
         )
 
@@ -131,7 +131,7 @@ class UpdateDerivedCollection(
 
         Concrete subclasses may filter the returned query set further.
         """
-        return CollectionItem.active_objects.filter(
+        return CollectionItem.objects.active().filter(
             parent_collection=self.derived_collection
         )
 

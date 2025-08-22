@@ -63,7 +63,7 @@ except ImportError:
 
 import tenacity
 
-from debusine.artifacts.models import RuntimeStatistics
+from debusine.artifacts.models import RuntimeStatistics, TaskTypes
 from debusine.client.debusine import Debusine
 from debusine.client.exceptions import TokenDisabledError
 from debusine.client.models import WorkRequestResponse
@@ -74,12 +74,7 @@ from debusine.tasks import (
     TaskConfigError,
 )
 from debusine.tasks.executors import analyze_worker_all_executors
-from debusine.tasks.models import (
-    OutputData,
-    OutputDataError,
-    TaskTypes,
-    WorkerType,
-)
+from debusine.tasks.models import OutputData, OutputDataError, WorkerType
 from debusine.worker.config import ConfigHandler
 from debusine.worker.debusine_async_http_client import DebusineAsyncHttpClient
 from debusine.worker.system_information import (
@@ -693,6 +688,11 @@ class Worker:
             # work request
             self._task_lock.release()
 
+    @staticmethod
+    def _exit_worker() -> NoReturn:  # pragma: no cover
+        """Exit the worker, mocked in tests."""
+        raise SystemExit(1)
+
     async def _send_task_result(
         self, work_request_id: int, task_exec_future: Future[bool]
     ) -> None:
@@ -753,8 +753,11 @@ class Worker:
                 # will retry it when this worker next manages to connect and
                 # request a new work request to run.
                 logging.exception(
-                    "Cannot reach server to report work request completed."
+                    "Cannot reach server to report work request completed. "
+                    "Exiting."
                 )
+                # Exit so that the worker will try to reconnect.
+                self._exit_worker()
         finally:
             self._reset_state()
 

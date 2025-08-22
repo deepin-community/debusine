@@ -16,6 +16,7 @@ try:
 except ImportError:
     import pydantic  # type: ignore
 
+from debusine.artifacts.models import TaskTypes
 from debusine.assets import KeyPurpose
 from debusine.client.models import LookupChildType
 from debusine.db.models import WorkRequest
@@ -37,18 +38,17 @@ from debusine.server.workflows.models import (
 )
 from debusine.tasks.models import (
     BackendType,
-    BaseDynamicTaskData,
+    DebianPipelineWorkflowDynamicData,
     LintianFailOnSeverity,
     LookupMultiple,
     LookupSingle,
     SbuildInput,
-    TaskTypes,
 )
 from debusine.tasks.server import TaskDatabaseInterface
 
 
 class DebianPipelineWorkflow(
-    Workflow[DebianPipelineWorkflowData, BaseDynamicTaskData]
+    Workflow[DebianPipelineWorkflowData, DebianPipelineWorkflowDynamicData]
 ):
     """Debian pipeline workflow."""
 
@@ -56,31 +56,52 @@ class DebianPipelineWorkflow(
 
     def validate_input(self) -> None:
         """Thorough validation of input data."""
-        if self.data.reverse_dependencies_autopkgtest_suite is not None:
+        if self.data.qa_suite is not None:
             try:
                 lookup_single(
-                    self.data.reverse_dependencies_autopkgtest_suite,
+                    self.data.qa_suite,
                     self.workspace,
                     user=self.work_request.created_by,
                     workflow_root=self.work_request.get_workflow_root(),
                     expect_type=LookupChildType.COLLECTION,
-                ).collection
+                )
             except LookupError as e:
                 raise WorkflowValidationError(str(e)) from e
 
     def build_dynamic_data(
         self, task_database: TaskDatabaseInterface  # noqa: U100
-    ) -> BaseDynamicTaskData:
+    ) -> DebianPipelineWorkflowDynamicData:
         """
         Compute dynamic data for this workflow.
 
         :subject: package name of ``source_artifact``
         """
         source_data = workflow_utils.source_package_data(self)
-        return BaseDynamicTaskData(
+
+        source_artifact_id = lookup_single(
+            self.data.source_artifact,
+            self.workspace,
+            user=self.work_request.created_by,
+            workflow_root=self.work_request.get_workflow_root(),
+            expect_type=LookupChildType.ARTIFACT,
+        ).artifact.id
+
+        return DebianPipelineWorkflowDynamicData(
             subject=source_data.name,
             parameter_summary=f"{source_data.name}_{source_data.version}",
+            input_source_artifact_id=source_artifact_id,
         )
+
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return a list with the source package (or empty list)."""
+        if (
+            self.dynamic_data is None
+            or (artifact_id := self.dynamic_data.input_source_artifact_id)
+            is None
+        ):
+            return []
+
+        return [artifact_id]
 
     def populate(self) -> None:
         """Create work requests."""
@@ -123,6 +144,15 @@ class DebianPipelineWorkflow(
             }
         )
 
+        # sbuild workflow promises the buildlog-{arch} artifacts
+        package_build_logs = LookupMultiple.parse_obj(
+            {
+                "collection": "internal@collections",
+                "child_type": LookupChildType.ARTIFACT_OR_PROMISE,
+                "name__startswith": "buildlog-",
+            }
+        )
+
         to_upload = [(self.data.source_artifact, binary_artifacts, False)]
 
         if (
@@ -130,21 +160,22 @@ class DebianPipelineWorkflow(
             or self.data.enable_reverse_dependencies_autopkgtest
             or self.data.enable_lintian
             or self.data.enable_piuparts
+            or self.data.enable_debdiff
+            or self.data.enable_blhc
         ):
             self._populate_qa(
                 source_artifact=self.data.source_artifact,
                 binary_artifacts=binary_artifacts,
+                package_build_logs=package_build_logs,
                 vendor=self.data.vendor,
                 codename=self.data.codename,
                 architectures=effective_architectures,
                 arch_all_host_architecture=self.data.arch_all_host_architecture,
+                qa_suite=self.data.qa_suite,
                 enable_autopkgtest=self.data.enable_autopkgtest,
                 autopkgtest_backend=self.data.autopkgtest_backend,
                 enable_reverse_dependencies_autopkgtest=(
                     self.data.enable_reverse_dependencies_autopkgtest
-                ),
-                reverse_dependencies_autopkgtest_suite=(
-                    self.data.reverse_dependencies_autopkgtest_suite
                 ),
                 enable_lintian=self.data.enable_lintian,
                 lintian_backend=self.data.lintian_backend,
@@ -152,6 +183,8 @@ class DebianPipelineWorkflow(
                 enable_piuparts=self.data.enable_piuparts,
                 piuparts_backend=self.data.piuparts_backend,
                 piuparts_environment=self.data.piuparts_environment,
+                enable_debdiff=self.data.enable_debdiff,
+                enable_blhc=self.data.enable_blhc,
             )
 
         if (
@@ -202,6 +235,7 @@ class DebianPipelineWorkflow(
                     merge_uploads=self.data.upload_merge_uploads,
                     since_version=self.data.upload_since_version,
                     key=self.data.upload_key,
+                    binary_key=self.data.upload_binary_key,
                     require_signature=self.data.upload_require_signature,
                     target=self.data.upload_target,
                     delayed_days=self.data.upload_delayed_days,
@@ -246,43 +280,47 @@ class DebianPipelineWorkflow(
         *,
         source_artifact: LookupSingle,
         binary_artifacts: LookupMultiple,
+        package_build_logs: LookupMultiple,
         vendor: str,
         codename: str,
         architectures: list[str],
         arch_all_host_architecture: str,
+        qa_suite: LookupSingle | None,
         enable_autopkgtest: bool,
         autopkgtest_backend: BackendType,
         enable_reverse_dependencies_autopkgtest: bool,
-        reverse_dependencies_autopkgtest_suite: LookupSingle | None,
         enable_lintian: bool,
         lintian_backend: BackendType,
         lintian_fail_on_severity: LintianFailOnSeverity,
         enable_piuparts: bool,
         piuparts_backend: BackendType,
         piuparts_environment: LookupSingle | None,
+        enable_debdiff: bool,
+        enable_blhc: bool,
     ) -> None:
         """Create work request for qa workflow."""
         data = QAWorkflowData(
             source_artifact=source_artifact,
             binary_artifacts=binary_artifacts,
+            package_build_logs=package_build_logs,
             vendor=vendor,
             codename=codename,
             architectures=architectures,
             arch_all_host_architecture=arch_all_host_architecture,
             extra_repositories=self.data.extra_repositories,
+            qa_suite=qa_suite,
             enable_autopkgtest=enable_autopkgtest,
             autopkgtest_backend=autopkgtest_backend,
             enable_reverse_dependencies_autopkgtest=(
                 enable_reverse_dependencies_autopkgtest
-            ),
-            reverse_dependencies_autopkgtest_suite=(
-                reverse_dependencies_autopkgtest_suite
             ),
             enable_lintian=enable_lintian,
             lintian_backend=lintian_backend,
             lintian_fail_on_severity=lintian_fail_on_severity,
             enable_piuparts=enable_piuparts,
             piuparts_backend=piuparts_backend,
+            enable_debdiff=enable_debdiff,
+            enable_blhc=enable_blhc,
         )
         if piuparts_environment:
             data.piuparts_environment = piuparts_environment
@@ -388,6 +426,7 @@ class DebianPipelineWorkflow(
         merge_uploads: bool,
         since_version: str | None,
         key: str | None,
+        binary_key: str | None,
         require_signature: bool,
         target: str,
         delayed_days: int | None,
@@ -411,11 +450,13 @@ class DebianPipelineWorkflow(
                 since_version=since_version,
                 target_distribution=self.data.upload_target_distribution,
                 key=key,
+                binary_key=binary_key,
                 require_signature=require_signature,
                 target=pydantic.parse_obj_as(PackageUploadTarget, target),
                 delayed_days=delayed_days,
                 vendor=vendor,
                 codename=codename,
+                arch_all_host_architecture=self.data.arch_all_host_architecture,
             ),
             workflow_data=WorkRequestWorkflowData(
                 display_name="package upload", step="package_upload"
@@ -435,7 +476,3 @@ class DebianPipelineWorkflow(
         if wr.status == WorkRequest.Statuses.PENDING:
             wr.mark_running()
             orchestrate_workflow(wr)
-
-    def get_label(self) -> str:
-        """Return the task label."""
-        return "run Debian pipeline"

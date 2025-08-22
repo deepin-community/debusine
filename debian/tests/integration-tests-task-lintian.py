@@ -14,17 +14,15 @@ Debusine integration tests.
 Test Lintian task.
 """
 
-import logging
+import subprocess
 import textwrap
 import unittest
 
 from debusine.artifacts.models import ArtifactCategory
 from utils.client import Client
-from utils.common import Configuration, launch_tests
+from utils.common import Configuration
 from utils.integration_test_helpers_mixin import IntegrationTestHelpersMixin
 from utils.server import DebusineServer
-
-logger = logging.getLogger(__name__)
 
 
 class IntegrationTaskLintianTests(
@@ -45,6 +43,7 @@ class IntegrationTaskLintianTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         # If debusine-server or nginx was launched just before the
         # integration-tests.py is launched the debusine-server might not be
         # yet available. Let's wait for the debusine-server to be
@@ -55,6 +54,10 @@ class IntegrationTaskLintianTests(
             f"{Configuration.get_base_url()}) before the integration tests "
             f"are run",
         )
+
+        self.architecture = subprocess.check_output(
+            ["dpkg", "--print-architecture"], text=True
+        ).strip()
 
     def test_lintian_input_source_artifact(self) -> None:
         """Create lintian job: input is "hello" source package."""
@@ -88,20 +91,19 @@ class IntegrationTaskLintianTests(
             "show-work-request", work_request_id
         )
 
-        debian_lintian_artifacts = 0
+        debian_lintian_artifacts: list[str] = []
 
         for artifact in show_work_request["artifacts"]:
             if artifact["category"] == ArtifactCategory.LINTIAN:
-                debian_lintian_artifacts += 1
+                debian_lintian_artifacts.append(
+                    artifact["data"]["architecture"]
+                )
 
                 # Expected analysis.json and lintian.txt
                 self.assertCountEqual(
                     artifact["files"].keys(), ["analysis.json", "lintian.txt"]
                 )
 
-        # 3 artifacts: for source, binary_any, binary_all
-        self.assertEqual(debian_lintian_artifacts, 3)
-
-
-if __name__ == '__main__':
-    launch_tests("Task lintian integration tests for debusine")
+        self.assertCountEqual(
+            debian_lintian_artifacts, ["source", self.architecture]
+        )

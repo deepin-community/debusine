@@ -9,8 +9,10 @@
 
 """Tests for the management command test."""
 
+import copy
 import os.path
 import shutil
+from typing import Any
 from unittest import mock
 
 from django.conf import settings
@@ -25,20 +27,23 @@ class TestCommandTests(TestCase):
 
     def setUp(self) -> None:
         """Save settings."""
-        self.original_settings = {
-            'DEBUSINE_DATA_PATH': '',
-            'DEBUSINE_CACHE_DIRECTORY': '',
-            'DEBUSINE_TEMPLATE_DIRECTORY': '',
-            'DEBUSINE_UPLOAD_DIRECTORY': '',
-            'DEBUSINE_STORE_DIRECTORY': '',
+        super().setUp()
+        self.original_settings: dict[str, Any] = {
+            "DEBUSINE_DATA_PATH": "",
+            "DEBUSINE_CACHE_DIRECTORY": "",
+            "DEBUSINE_TEMPLATE_DIRECTORY": "",
+            "DEBUSINE_UPLOAD_DIRECTORY": "",
+            "DEBUSINE_STORE_DIRECTORY": "",
+            "TEMPLATES": None,
         }
         for key in self.original_settings.keys():
-            self.original_settings[key] = getattr(settings, key)
+            self.original_settings[key] = copy.deepcopy(getattr(settings, key))
 
     def tearDown(self) -> None:
         """Restore settings."""
         for key in self.original_settings.keys():
             setattr(settings, key, self.original_settings[key])
+        super().tearDown()
 
     def test_data_directory_removal(self) -> None:
         """Test '--keepdata'."""
@@ -58,3 +63,9 @@ class TestCommandTests(TestCase):
             call_command("test", keepdata=True, verbosity=1)
             self.assertTrue(os.path.exists(settings.DEBUSINE_DATA_PATH))
             shutil.rmtree(settings.DEBUSINE_DATA_PATH)
+
+    def test_template_directory(self) -> None:
+        self.assertEqual(
+            settings.TEMPLATES[0]["DIRS"],
+            [settings.DEBUSINE_TEMPLATE_DIRECTORY],
+        )

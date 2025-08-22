@@ -12,10 +12,9 @@
 import contextlib
 import io
 import json
-import re
 from collections.abc import Generator, Sequence
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import ClassVar
 from unittest import mock
 
 import django.http
@@ -24,7 +23,6 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory, TestCase, override_settings
 from jwcrypto import jwk, jws, jwt
 
-from debusine.db.models import Identity
 from debusine.server.signon import providers
 from debusine.server.signon.tests.test_signon import MockSession
 
@@ -161,35 +159,6 @@ class SignonProviders(TestCase):
         if session_options is not None:
             request.session["signon_state_salsa_options"] = session_options
         return request
-
-    def _make_identity(
-        self,
-        issuer: str = "salsa",
-        claims: dict[str, Any] | None = None,
-    ) -> Identity:
-        """Create a test identity."""
-        subject = f"{issuer}@debian.org"
-        if claims is None:
-            claims = {}
-        return Identity.objects.create(
-            issuer=issuer,
-            subject=subject,
-            claims=claims,
-        )
-
-    def _make_provider(
-        self, name: str = "salsa", restrict: Sequence[str] = ()
-    ) -> providers.GitlabProvider:
-        """Create a provider for testing restrictions."""
-        return providers.GitlabProvider(
-            name=name,
-            label=name.capitalize(),
-            client_id="123client_id",
-            client_secret="123client_secret",
-            url=f"https://{name}.debian.org",
-            scope=("openid", "profile", "email"),
-            restrict=restrict,
-        )
 
     def assertSignonStateRemoved(
         self, request: django.http.HttpRequest
@@ -539,125 +508,3 @@ class SignonProviders(TestCase):
         self.assertIsNone(bound.tokens)
         self.assertIsNone(bound.id_token_claims)
         self.assertSignonStateRemoved(request)
-
-    def assertRestrictValidates(
-        self, identity: Identity, restrict: Sequence[str]
-    ) -> None:
-        """Identity passes this restrict rule."""
-        provider = self._make_provider(name=identity.issuer)
-        provider.restrict = restrict
-        self.assertEqual(provider.validate_claims(identity), [])
-
-    def assertRestrictDoesNotValidate(
-        self,
-        identity: Identity,
-        restrict: Sequence[str],
-        *regexps: str,
-    ) -> None:
-        """Identity does not pass this restrict rule."""
-        provider = self._make_provider(name=identity.issuer)
-        provider.restrict = restrict
-        errors = provider.validate_claims(identity)
-        self.assertNotEqual(errors, [])
-        for regexp in regexps:
-            for idx, error in enumerate(errors):
-                if re.search(regexp, error):  # pragma: no cover
-                    errors.pop(idx)
-                    break
-            else:
-                self.fail(
-                    f"error list {errors!r} did not match {regexp!r}"
-                )  # pragma: no cover
-        if errors:
-            self.fail(f"unexpected errors: {errors!r}")  # pragma: no cover
-
-    def test_validate_email_verified(self) -> None:
-        """email-verified validates as intended."""
-        ident = self._make_identity(
-            claims={
-                "name": "Test User",
-                "email": "test@example.org",
-                "email_verified": False,
-            }
-        )
-        self.assertRestrictValidates(ident, [])
-        self.assertRestrictDoesNotValidate(
-            ident, ["email-verified"], "does not have a verified email"
-        )
-
-        ident.claims["email_verified"] = True
-        self.assertRestrictValidates(ident, [])
-        self.assertRestrictValidates(ident, ["email-verified"])
-
-    def test_validate_group(self) -> None:
-        """group:* validates as intended."""
-        ident = self._make_identity(
-            claims={
-                "name": "Test User",
-                "email": "test@example.org",
-                "groups_direct": ["debian"],
-            }
-        )
-        self.assertRestrictValidates(ident, [])
-        self.assertRestrictDoesNotValidate(
-            ident, ["group:admin"], "not in group admin"
-        )
-        self.assertRestrictValidates(ident, ["group:debian"])
-        self.assertRestrictDoesNotValidate(
-            ident, ["group:debian", "group:admin"], "not in group admin"
-        )
-
-        ident.claims["groups_direct"] = []
-        self.assertRestrictValidates(ident, [])
-        self.assertRestrictDoesNotValidate(
-            ident, ["group:admin"], "not in group admin"
-        )
-        self.assertRestrictDoesNotValidate(
-            ident,
-            ["group:debian", "group:admin"],
-            "not in group debian",
-            "not in group admin",
-        )
-
-        ident.claims["groups_direct"] = ["debian", "admin"]
-        self.assertRestrictValidates(ident, [])
-        self.assertRestrictValidates(ident, ["group:admin"])
-        self.assertRestrictValidates(ident, ["group:debian"])
-        self.assertRestrictValidates(ident, ["group:debian", "group:admin"])
-
-    def test_validate_combine(self) -> None:
-        """group:* and email-verified can be used together."""
-        ident = self._make_identity(
-            claims={
-                "name": "Test User",
-                "email": "test@example.org",
-                "email_verified": False,
-                "groups_direct": ["debian"],
-            }
-        )
-        self.assertRestrictValidates(ident, [])
-        self.assertRestrictDoesNotValidate(
-            ident, ["email-verified"], "does not have a verified email"
-        )
-        self.assertRestrictValidates(ident, ["group:debian"])
-        self.assertRestrictDoesNotValidate(
-            ident,
-            ["email-verified", "group:debian"],
-            "does not have a verified email",
-        )
-
-        ident.claims["email_verified"] = True
-        self.assertRestrictValidates(ident, [])
-        self.assertRestrictValidates(ident, ["email-verified"])
-        self.assertRestrictValidates(ident, ["group:debian"])
-        self.assertRestrictValidates(ident, ["email-verified", "group:debian"])
-        self.assertRestrictDoesNotValidate(
-            ident, ["email-verified", "group:admin"], "not in group admin"
-        )
-
-    def test_validate_invalid_expression(self) -> None:
-        """An invalid restrict value raises ImproperlyConfigured."""
-        provider = self._make_provider(restrict=["invalid"])
-        identity = self._make_identity()
-        with self.assertRaises(ImproperlyConfigured):
-            provider.validate_claims(identity)

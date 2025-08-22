@@ -11,7 +11,8 @@
 
 import enum
 import functools
-from collections.abc import Callable, Collection
+import itertools
+from collections.abc import Callable, Collection, Iterable
 from typing import (
     Any,
     NamedTuple,
@@ -29,7 +30,7 @@ from typing import (
 
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import PermissionDenied
-from django.db.models import Model, Q, QuerySet
+from django.db.models import Model, QuerySet
 from django.utils.functional import classproperty
 
 from debusine.db.context import ContextConsistencyError, context
@@ -39,13 +40,23 @@ if TYPE_CHECKING:
 
 ImpliedByCollection: TypeAlias = Collection[Any]
 
+R = TypeVar("R", bound="RoleBase", contravariant=True)
+
+
+@runtime_checkable
+class WithImplies(Protocol[R]):
+    """Define an object with an implies operator."""
+
+    def implies(self, other: R) -> bool:
+        """Implies operator."""
+
 
 class Role(NamedTuple):
     """Annotated tuple used to define Roles."""
 
     value: str
     label: str | None = None
-    implied_by: Collection[Union["Roles", "Role", Q]] = ()
+    implied_by: ImpliedByCollection = ()
 
 
 class RoleBase(str):
@@ -92,6 +103,20 @@ class RoleBase(str):
         """Set up the role after the enum is fully built."""
         pass
 
+    @classmethod
+    def from_iterable(cls, roles: Iterable[str]) -> frozenset[Self]:
+        """Resolve a sequence of strings to a minimal set of ScopeRoles."""
+        assert issubclass(cls, WithImplies)
+        all_roles = frozenset(cls(str_role) for str_role in roles)
+        if len(all_roles) == 1:
+            return all_roles
+
+        implied_roles = set()
+        for a, b in itertools.permutations(all_roles, 2):
+            if a != b and a.implies(b):
+                implied_roles.add(b)
+        return frozenset(all_roles - implied_roles)
+
 
 # Mixin for role enums
 class Roles:
@@ -116,19 +141,6 @@ class Roles:
             role = cast("RoleBase", entry)
             res.append((str(role), role.label))
         return res
-
-
-class PartialCheckResult(enum.StrEnum):
-    """
-    Result value enum for a partial check predicate.
-
-    This is used by composable check methods, which can either report not
-    having enough information to decide, or take an allow/deny decision.
-    """
-
-    ALLOW = "allow"
-    DENY = "deny"
-    PASS = "pass"
 
 
 #: Type alias for the user variable used by permission predicates
@@ -176,14 +188,19 @@ def resolve_roles_list(
     return [resolve_role(resource, r) for r in roles]
 
 
-class AllowWorkers(enum.StrEnum):
-    """Strategies for handling workers in permission predicates."""
+class Allow(enum.StrEnum):
+    """
+    Handling strategies for permission predicates.
 
-    #: Predicate is always true for workers
+    This is used to specify how to handle workers and anonymous users.
+    """
+
+    #: The tested condition makes the predicate always succeed
     ALWAYS = "always"
-    #: Predicate is always false for workers
+    #: The tested condition makes the predicate always fail
     NEVER = "never"
-    #: Predicate ignores the worker token
+    #: The tested condition is ignored and the decision is delegated to the
+    #: body of the predicate
     PASS = "pass"
 
 
@@ -191,13 +208,22 @@ P: TypeAlias = Callable[[M, PermissionUser], bool]
 
 
 def permission_check(
-    msg: str, workers: AllowWorkers = AllowWorkers.PASS
+    msg: str,
+    *,
+    workers: Allow = Allow.NEVER,
+    anonymous: Allow = Allow.NEVER,
 ) -> Callable[[P[M]], P[M]]:
     """
     Implement common elements of permission checking predicates.
 
+    :param workers: what to do if a worker token is passed
+    :param anonymous: what to do if an anonymous user is passed
+
+    Note that a worker token currently implies that the user is anonymous. This
+    may change with #523.
+
     Predicates should normally also check permissions on any containing
-    resources, relying on query caching as needed for performance.  This
+    resources, relying on query caching as needed for performance. This
     provides some defence in depth against omitted checks.
     """
 
@@ -207,29 +233,39 @@ def permission_check(
             if context.permission_checks_disabled:
                 return True
 
-            # User has not been set in the context: context.user is passed, but
-            # it contains None
-            if user is None:
-                if context.worker_token is None:
-                    raise ContextConsistencyError("user was not set in context")
-                else:
-                    user = AnonymousUser()
-
             # TODO: see #523
-            if context.worker_token:
+            if context.worker_token and user is None:
                 match workers:
-                    case AllowWorkers.ALWAYS:
+                    case Allow.ALWAYS:
                         return True
-                    case AllowWorkers.NEVER:
+                    case Allow.NEVER:
                         return False
-                    case AllowWorkers.PASS:
+                    case Allow.PASS:
                         pass
                     case _ as unreachable:
                         assert_never(unreachable)
+            else:
+                # User has not been set in the context: context.user is passed,
+                # but it contains None
+                if user is None:
+                    raise ContextConsistencyError("user was not set in context")
+
+                if not user.is_authenticated:
+                    match anonymous:
+                        case Allow.ALWAYS:
+                            return True
+                        case Allow.NEVER:
+                            return False
+                        case Allow.PASS:
+                            pass
+                        case _ as unreachable:
+                            assert_never(unreachable)
 
             return f(self, user)
 
         setattr(wrapper, "error_template", msg)
+        setattr(wrapper, "workers", workers)
+        setattr(wrapper, "anonymous", anonymous)
         return wrapper
 
     return wrap
@@ -239,10 +275,16 @@ PF: TypeAlias = Callable[[QS, PermissionUser], QS]
 
 
 def permission_filter(
-    workers: AllowWorkers = AllowWorkers.PASS,
+    *, workers: Allow = Allow.NEVER, anonymous: Allow = Allow.NEVER
 ) -> Callable[[PF[QS]], PF[QS]]:
     """
     Implement common elements of permission filtering predicates.
+
+    :param workers: what to do if a worker token is passed
+    :param anonymous: what to do if an anonymous user is passed
+
+    Note that a worker token currently implies that the user is anonymous. This
+    may change with #523.
 
     Predicates should normally also check permissions on any containing
     resources, relying on query caching as needed for performance.  This
@@ -255,28 +297,38 @@ def permission_filter(
             if context.permission_checks_disabled:
                 return self
 
-            # User has not been set in the context: context.user is passed, but
-            # it contains None
-            if user is None:
-                if context.worker_token is None:
-                    raise ContextConsistencyError("user was not set in context")
-                else:
-                    user = AnonymousUser()
-
             # TODO: see #523
-            if context.worker_token:
+            if context.worker_token and user is None:
                 match workers:
-                    case AllowWorkers.ALWAYS:
+                    case Allow.ALWAYS:
                         return self
-                    case AllowWorkers.NEVER:
+                    case Allow.NEVER:
                         return self.none()
-                    case AllowWorkers.PASS:
+                    case Allow.PASS:
                         pass
                     case _ as unreachable:
                         assert_never(unreachable)
+            else:
+                # User has not been set in the context: context.user is passed,
+                # but it contains None
+                if user is None:
+                    raise ContextConsistencyError("user was not set in context")
+
+                if not user.is_authenticated:
+                    match anonymous:
+                        case Allow.ALWAYS:
+                            return self
+                        case Allow.NEVER:
+                            return self.none()
+                        case Allow.PASS:
+                            pass
+                        case _ as unreachable:
+                            assert_never(unreachable)
 
             return f(self, user)
 
+        setattr(wrapper, "workers", workers)
+        setattr(wrapper, "anonymous", anonymous)
         return wrapper
 
     return wrap

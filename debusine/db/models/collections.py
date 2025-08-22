@@ -31,6 +31,7 @@ from django.db import models
 from django.db.models import CheckConstraint, F, Q, QuerySet, UniqueConstraint
 from django.db.models.fields.json import KT
 from django.urls import reverse
+from django.utils import timezone
 
 from debusine.artifacts.models import (
     ArtifactCategory,
@@ -44,7 +45,7 @@ from debusine.client.models import model_to_json_serializable_dict
 from debusine.db.constraints import JsonDataUniqueConstraint
 from debusine.db.context import context
 from debusine.db.models.permissions import (
-    AllowWorkers,
+    Allow,
     PermissionUser,
     permission_check,
     permission_filter,
@@ -99,7 +100,7 @@ class CollectionQuerySet(QuerySet["Collection", A], Generic[A]):
         """Filter to collections in the current workspace."""
         return self.filter(workspace=context.require_workspace())
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS, anonymous=Allow.PASS)
     def can_display(self, user: PermissionUser) -> "CollectionQuerySet[A]":
         """Keep only Collections that can be displayed."""
         # Delegate to workspace can_display check
@@ -203,29 +204,36 @@ class Collection(models.Model):
 
     def get_absolute_url(self) -> str:
         """Return the canonical URL to display the collection."""
-        return reverse(
-            "workspaces:collections:detail",
-            kwargs={
-                "wname": self.workspace.name,
-                "ccat": self.category,
-                "cname": self.name,
-            },
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.workspace.scope.name):
+            return reverse(
+                "workspaces:collections:detail",
+                kwargs={
+                    "wname": self.workspace.name,
+                    "ccat": self.category,
+                    "cname": self.name,
+                },
+            )
 
     def get_absolute_url_search(self) -> str:
         """Return the canonical URL to search inside the collection."""
-        return reverse(
-            "workspaces:collections:search",
-            kwargs={
-                "wname": self.workspace.name,
-                "ccat": self.category,
-                "cname": self.name,
-            },
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.workspace.scope.name):
+            return reverse(
+                "workspaces:collections:search",
+                kwargs={
+                    "wname": self.workspace.name,
+                    "ccat": self.category,
+                    "cname": self.name,
+                },
+            )
 
     @permission_check(
         "{user} cannot display collection {resource}",
-        workers=AllowWorkers.ALWAYS,
+        workers=Allow.ALWAYS,
+        anonymous=Allow.PASS,
     )
     def can_display(self, user: PermissionUser) -> bool:
         """Check if the collection can be displayed."""
@@ -236,9 +244,25 @@ class Collection(models.Model):
         # Stringify using a valid lookup syntax
         return f"{self.name}@{self.category}"
 
+    def __repr__(self) -> str:
+        """Return id, name, category."""
+        # Stringify using a valid lookup syntax
+        return f"<Collection: {self.name}@{self.category} ({self.pk})>"
+
 
 class CollectionItemQuerySet(QuerySet["CollectionItem"]):
     """Custom QuerySet for CollectionItem."""
+
+    def active(self) -> "CollectionItemQuerySet":
+        """Filter to only active collection items."""
+        return super().filter(removed_at__isnull=True)
+
+    def active_at(self, at: datetime) -> "CollectionItemQuerySet":
+        """Filter to collection items that were active at a given time."""
+        return self.filter(
+            Q(created_at__lte=at),
+            Q(removed_at__isnull=True) | Q(removed_at__gt=at),
+        )
 
     def artifacts_in_collection(
         self, parent_collection: Collection, category: ArtifactCategory
@@ -268,8 +292,10 @@ class CollectionItemManager(models.Manager["CollectionItem"]):
         parent_collection: Collection,
         name: str,
         data: BaseArtifactDataModel | dict[str, Any],
+        created_at: datetime | None = None,
         created_by_user: "User",
         created_by_workflow: Optional["WorkRequest"],
+        replaced_by: Optional["CollectionItem"] = None,
     ) -> "CollectionItem":
         """Create a CollectionItem from bare data."""
         if isinstance(data, BaseArtifactDataModel):
@@ -280,6 +306,14 @@ class CollectionItemManager(models.Manager["CollectionItem"]):
                 # Raise ValueError if data is not valid
                 DebusinePromise(**data)
 
+        kwargs: dict[str, Any] = {}
+        if created_at is not None:
+            kwargs["created_at"] = created_at
+        if replaced_by is not None:
+            kwargs["removed_at"] = replaced_by.created_at
+            kwargs["removed_by_user"] = replaced_by.created_by_user
+            kwargs["removed_by_workflow"] = replaced_by.created_by_workflow
+
         return CollectionItem.objects.create(
             parent_collection=parent_collection,
             name=name,
@@ -288,6 +322,7 @@ class CollectionItemManager(models.Manager["CollectionItem"]):
             data=data,
             created_by_user=created_by_user,
             created_by_workflow=created_by_workflow,
+            **kwargs,
         )
 
     @staticmethod
@@ -297,10 +332,20 @@ class CollectionItemManager(models.Manager["CollectionItem"]):
         parent_collection: Collection,
         name: str,
         data: dict[str, Any],
+        created_at: datetime | None = None,
         created_by_user: "User",
         created_by_workflow: Optional["WorkRequest"] = None,
+        replaced_by: Optional["CollectionItem"] = None,
     ) -> "CollectionItem":
         """Create a CollectionItem from the artifact."""
+        kwargs: dict[str, Any] = {}
+        if created_at is not None:
+            kwargs["created_at"] = created_at
+        if replaced_by is not None:
+            kwargs["removed_at"] = replaced_by.created_at
+            kwargs["removed_by_user"] = replaced_by.created_by_user
+            kwargs["removed_by_workflow"] = replaced_by.created_by_workflow
+
         return CollectionItem.objects.create(
             parent_collection=parent_collection,
             name=name,
@@ -310,6 +355,7 @@ class CollectionItemManager(models.Manager["CollectionItem"]):
             data=data,
             created_by_user=created_by_user,
             created_by_workflow=created_by_workflow,
+            **kwargs,
         )
 
     @staticmethod
@@ -319,9 +365,20 @@ class CollectionItemManager(models.Manager["CollectionItem"]):
         parent_collection: Collection,
         name: str,
         data: dict[str, Any],
+        created_at: datetime | None = None,
         created_by_user: "User",
+        created_by_workflow: Optional["WorkRequest"] = None,
+        replaced_by: Optional["CollectionItem"] = None,
     ) -> "CollectionItem":
         """Create a CollectionItem from the collection."""
+        kwargs: dict[str, Any] = {}
+        if created_at is not None:
+            kwargs["created_at"] = created_at
+        if replaced_by is not None:
+            kwargs["removed_at"] = replaced_by.created_at
+            kwargs["removed_by_user"] = replaced_by.created_by_user
+            kwargs["removed_by_workflow"] = replaced_by.created_by_workflow
+
         return CollectionItem.objects.create(
             parent_collection=parent_collection,
             name=name,
@@ -330,6 +387,8 @@ class CollectionItemManager(models.Manager["CollectionItem"]):
             category=collection.category,
             data=data,
             created_by_user=created_by_user,
+            created_by_workflow=created_by_workflow,
+            **kwargs,
         )
 
     def drop_full_history(self, at: datetime) -> None:
@@ -361,14 +420,6 @@ class CollectionItemManager(models.Manager["CollectionItem"]):
         ).delete()
 
 
-class CollectionItemActiveManager(CollectionItemManager):
-    """Manager for active collection items."""
-
-    def get_queryset(self) -> QuerySet["CollectionItem"]:
-        """Return only active collection items."""
-        return super().get_queryset().filter(removed_at__isnull=True)
-
-
 class _CollectionItemTypes(models.TextChoices):
     """Choices for the CollectionItem.type."""
 
@@ -381,9 +432,6 @@ class CollectionItem(models.Model):
     """CollectionItem model."""
 
     objects = CollectionItemManager.from_queryset(CollectionItemQuerySet)()
-    active_objects = CollectionItemActiveManager.from_queryset(
-        CollectionItemQuerySet
-    )()
 
     name = models.CharField(max_length=255)
 
@@ -418,7 +466,7 @@ class CollectionItem(models.Model):
 
     data = models.JSONField(default=dict, blank=True)
 
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(default=timezone.now)
     created_by_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -426,7 +474,7 @@ class CollectionItem(models.Model):
     )
     created_by_workflow = models.ForeignKey(
         "WorkRequest",
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
         null=True,
         related_name="workflow_created_%(class)s",
     )
@@ -440,7 +488,7 @@ class CollectionItem(models.Model):
     )
     removed_by_workflow = models.ForeignKey(
         "WorkRequest",
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
         null=True,
         related_name="workflow_removed_%(class)s",
     )
@@ -495,16 +543,19 @@ class CollectionItem(models.Model):
 
     def get_absolute_url(self) -> str:
         """Return the canonical URL to display the item."""
-        return reverse(
-            "workspaces:collections:item_detail",
-            kwargs={
-                "wname": self.parent_collection.workspace.name,
-                "ccat": self.parent_collection.category,
-                "cname": self.parent_collection.name,
-                "iid": self.pk,
-                "iname": self.name,
-            },
-        )
+        from debusine.server.scopes import urlconf_scope
+
+        with urlconf_scope(self.parent_collection.workspace.scope.name):
+            return reverse(
+                "workspaces:collections:item_detail",
+                kwargs={
+                    "wname": self.parent_collection.workspace.name,
+                    "ccat": self.parent_collection.category,
+                    "cname": self.parent_collection.name,
+                    "iid": self.pk,
+                    "iname": self.name,
+                },
+            )
 
     def __str__(self) -> str:
         """Return id, name, collection_id, child_type."""
@@ -587,6 +638,7 @@ class CollectionItem(models.Model):
             ),
         ]
         indexes = [
+            models.Index("name", name="%(app_label)s_ci_name_idx"),
             models.Index(
                 F("parent_collection"),
                 KT("data__package"),
@@ -603,6 +655,52 @@ class CollectionItem(models.Model):
                 KT("data__srcpkg_name"),
                 KT("data__srcpkg_version"),
                 name="%(app_label)s_ci_suite_binary_source_idx",
+                condition=Q(
+                    parent_category=CollectionCategory.SUITE,
+                    child_type=_CollectionItemTypes.ARTIFACT,
+                    category=ArtifactCategory.BINARY_PACKAGE,
+                ),
+            ),
+            models.Index(
+                F("parent_collection"),
+                KT("data__path"),
+                name="%(app_label)s_ci_suite_index_path_idx",
+                condition=Q(
+                    parent_category=CollectionCategory.SUITE,
+                    child_type=_CollectionItemTypes.ARTIFACT,
+                    category=ArtifactCategory.REPOSITORY_INDEX,
+                ),
+            ),
+            models.Index(
+                F("parent_collection"),
+                KT("data__path"),
+                name="%(app_label)s_ci_archive_index_path_idx",
+                condition=Q(
+                    parent_category=CollectionCategory.ARCHIVE,
+                    child_type=_CollectionItemTypes.ARTIFACT,
+                    category=ArtifactCategory.REPOSITORY_INDEX,
+                ),
+            ),
+            # Optimize generating suite indexes.
+            models.Index(
+                F("parent_collection"),
+                KT("data__component"),
+                F("created_at"),
+                F("removed_at"),
+                name="%(app_label)s_ci_suite_all_sources_idx",
+                condition=Q(
+                    parent_category=CollectionCategory.SUITE,
+                    child_type=_CollectionItemTypes.ARTIFACT,
+                    category=ArtifactCategory.SOURCE_PACKAGE,
+                ),
+            ),
+            models.Index(
+                F("parent_collection"),
+                KT("data__component"),
+                KT("data__architecture"),
+                F("created_at"),
+                F("removed_at"),
+                name="%(app_label)s_ci_suite_all_binaries_idx",
                 condition=Q(
                     parent_category=CollectionCategory.SUITE,
                     child_type=_CollectionItemTypes.ARTIFACT,
@@ -638,7 +736,9 @@ class CollectionItemMatchConstraint(models.Model):
     )
     # This is deliberately a bare ID, not a foreign key: some constraints
     # take into account even items that no longer exist but were in a
-    # collection in the past.
+    # collection in the past.  Also note that the collection item's parent
+    # collection may not be the same as this model's collection field: some
+    # collections impose indirect constraints via child collections.
     collection_item_id = models.BigIntegerField()
     constraint_name = models.CharField(max_length=255)
     key = models.TextField()

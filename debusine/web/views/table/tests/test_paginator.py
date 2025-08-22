@@ -14,7 +14,7 @@ from django.template import engines
 from django.test import override_settings
 
 from debusine.db.models import User
-from debusine.web.views.table import Column, Table
+from debusine.web.views.table import Column, FilterText, Table
 from debusine.web.views.table.tests.test_table import TableTestCase
 
 
@@ -96,6 +96,62 @@ class PaginatorTests(TableTestCase):
                 ["User"],
             )
 
+    def test_render_thead_filters(self) -> None:
+        """Test rendering <thead> as a widget, with filters."""
+
+        class _Table(Table[User]):
+            user = Column("User", ordering="username")
+            default_order = "user"
+
+            filter_username = FilterText("User")
+
+        with self.template_dir() as template_dir:
+            (template_dir / "test.html").write_text(
+                "{% load debusine %}{% widget paginator.thead %}"
+            )
+            table = self._table(table_class=_Table)
+            table.template_name = "test.html"
+            p = table.get_paginator(per_page=42)
+            tree = self.assertHTMLValid(self.render_widget(p))
+            thead = self.assertHasElement(tree, "body/thead")
+            self.assertEqual(len(thead.tr), 2)
+            self.assertEqual(thead.tr[0].th.get("colspan"), "1")
+            self.assertEqual(
+                [
+                    self.get_node_text_normalized(th.div.div[0])
+                    for th in thead.tr[1].th
+                ],
+                ["User"],
+            )
+
+    def test_render_thead_preview_mode(self) -> None:
+        """Test rendering <thead> as a widget."""
+
+        class _Table(Table[User]):
+            user = Column("User", ordering="username")
+            default_order = "user"
+
+            filter_username = FilterText("User")
+
+        with self.template_dir() as template_dir:
+            (template_dir / "test.html").write_text(
+                "{% load debusine %}{% widget paginator.thead %}"
+            )
+            table = self._table(table_class=_Table, preview=True)
+            table.template_name = "test.html"
+            p = table.get_paginator(per_page=3)
+            tree = self.assertHTMLValid(self.render_widget(p))
+            thead = self.assertHasElement(tree, "body/thead")
+            # In preview mode, the filters are hidden
+            self.assertEqual(len(thead.tr), 1)
+            self.assertEqual(
+                [
+                    self.get_node_text_normalized(th.div.div[0])
+                    for th in thead.tr.th
+                ],
+                ["User"],
+            )
+
     def test_render_tfoot(self) -> None:
         """Test rendering <tfoot> as a widget."""
         with self.template_dir() as template_dir:
@@ -109,6 +165,32 @@ class PaginatorTests(TableTestCase):
             tfoot = self.assertHasElement(tree, "body/tfoot")
             tr = self.assertHasElement(tfoot, "tr")
             self.assertEqual(tr.td.get("colspan"), "1")
+
+    def test_tfoot_preview_mode(self) -> None:
+        """Table footer in preview mode shows the preview footer."""
+        with self.template_dir() as template_dir:
+            (template_dir / "test.html").write_text(
+                "{% load debusine %}{% widget paginator.tfoot %}"
+            )
+            table = self._table(preview=True)
+            table.template_name = "test.html"
+            p = table.get_paginator(per_page=3)
+            tree = self.assertHTMLValid(self.render_widget(p))
+            tfoot = self.assertHasElement(tree, "body/tfoot")
+            tr = self.assertHasElement(tfoot, "tr")
+            self.assertEqual(tr.td.get("colspan"), "1")
+            self.assertTextContentEqual(tr.td, "3 out of 11 shown")
+
+    def test_tfoot_preview_mode_no_pagination(self) -> None:
+        """Table footer in preview mode footer not shown if one page only."""
+        with self.template_dir() as template_dir:
+            (template_dir / "test.html").write_text(
+                "{% load debusine %}{% widget paginator.tfoot %}"
+            )
+            table = self._table(preview=True)
+            table.template_name = "test.html"
+            p = table.get_paginator(per_page=50)
+            self.assertEqual(self.render_widget(p).strip(), "")
 
     def test_render_without_template_name(self) -> None:
         """Test rendering as a widget."""

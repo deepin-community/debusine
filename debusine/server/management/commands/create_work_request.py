@@ -25,10 +25,10 @@ from django.contrib.auth import get_user_model
 from django.core.management import CommandError, CommandParser
 from django.db import transaction
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import SYSTEM_USER_NAME, User, WorkRequest
 from debusine.django.management.debusine_base_command import DebusineBaseCommand
 from debusine.server.management.management_utils import get_workspace
-from debusine.tasks.models import TaskTypes
 
 
 class Command(DebusineBaseCommand):

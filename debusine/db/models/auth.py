@@ -27,7 +27,6 @@ from typing import (
     TypeAlias,
     TypeVar,
     Union,
-    assert_never,
     cast,
 )
 
@@ -49,8 +48,7 @@ except ImportError:
 from debusine.db.context import ContextConsistencyError, context
 from debusine.db.models import permissions
 from debusine.db.models.permissions import (
-    AllowWorkers,
-    PartialCheckResult,
+    Allow,
     PermissionUser,
     Role,
     get_resource_scope,
@@ -87,7 +85,10 @@ class TokenManager(models.Manager["Token"]):
         )
 
     def get_tokens(
-        self, username: str | None = None, key: str | None = None
+        self,
+        username: str | None = None,
+        key: str | None = None,
+        include_expired: bool = False,
     ) -> QuerySet["Token"]:
         """
         Return all the tokens filtered by a specific owner and/or token.
@@ -102,6 +103,9 @@ class TokenManager(models.Manager["Token"]):
         if key:
             token_hash = hashlib.sha256(key.encode()).hexdigest()
             tokens = tokens.filter(hash=token_hash)
+
+        if not include_expired:
+            tokens = tokens.exclude(expire_at__lt=timezone.now())
 
         return tokens
 
@@ -224,22 +228,18 @@ def system_user() -> "User":
 class UserQuerySet(QuerySet["User", A], Generic[A]):
     """Custom QuerySet for User."""
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS)
     def can_display(
         self, user: PermissionUser  # noqa: U100
     ) -> "UserQuerySet[A]":
         """Keep only Users that can be displayed."""
         assert user is not None  # Enforced by decorator
-        if not user.is_authenticated:
-            return self.none()
         return self
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_manage(self, user: PermissionUser) -> "UserQuerySet[A]":
         """Keep only Users that the given user can manage."""
         assert user is not None  # Enforced by decorator
-        if not user.is_authenticated:
-            return self.none()
         return self.filter(pk=user.pk)
 
 
@@ -289,7 +289,7 @@ class User(AbstractUser):
         ]
 
     @permission_check(
-        "{user} cannot display user {resource}", workers=AllowWorkers.ALWAYS
+        "{user} cannot display user {resource}", workers=Allow.ALWAYS
     )
     def can_display(self, user: PermissionUser) -> bool:  # noqa: U100
         """Check if the user can be displayed."""
@@ -301,16 +301,12 @@ class User(AbstractUser):
         #
         # This could help make life a bit harder, for example, for drive-by
         # spammers trying to enumerate users and their personal information.
-        return user.is_authenticated
+        return True
 
-    @permission_check(
-        "{user} cannot manage user {resource}", workers=AllowWorkers.NEVER
-    )
+    @permission_check("{user} cannot manage user {resource}")
     def can_manage(self, user: PermissionUser) -> bool:
         """Check if the user can manage this user."""
         assert user is not None  # enforced by decorator
-        if not user.is_authenticated:
-            return False
         return self.pk == user.pk
 
     def get_absolute_url(self) -> str:
@@ -378,33 +374,28 @@ def validate_group_name(value: str) -> None:
 class GroupQuerySet(QuerySet["Group", A], Generic[A]):
     """Custom QuerySet for Group."""
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_display(self, user: PermissionUser) -> "GroupQuerySet[A]":
         """Keep only groups that can be displayed."""
         assert user is not None  # Enforced by decorator
-        # Anonymous users cannot display group details
-        if not user.is_authenticated:
-            return self.none()
-        # Otherwise all groups can be displayed
         return self.all()
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_display_audit_log(self, user: PermissionUser) -> "GroupQuerySet[A]":
         """Keep only groups whose audit log can be displayed."""
         return self.can_display(user)
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_manage(self, user: PermissionUser) -> "GroupQuerySet[A]":
         """Keep only groups that can be managed."""
         assert user is not None  # Enforced by decorator
-        # Anonymous users cannot manage groups
-        if not user.is_authenticated:
-            return self.none()
 
         # Allow to scope owners
         constraints = Q(
-            scope__roles__group__users=user,
-            scope__roles__role=Scope.Roles.OWNER,
+            scope__in=Scope.objects.filter(
+                roles__group__users=user,
+                roles__role=Scope.Roles.OWNER,
+            )
         )
         # Allow to group admins
         constraints |= Q(
@@ -477,6 +468,10 @@ class GroupRoleBase(permissions.RoleBase):
         self.implied_by_scope_roles = frozenset(implied_by_scope_roles)
         self.implied_by_group_roles = frozenset(implied_by_group_roles)
 
+    def implies(self, role: "GroupRoles") -> bool:
+        """Check if this role implies the given one."""
+        return self in role.implied_by_group_roles
+
 
 class GroupRoles(permissions.Roles, GroupRoleBase, enum.ReprEnum):
     """Available roles for a Scope."""
@@ -547,43 +542,30 @@ class Group(models.Model):
                 kwargs={"group": self.name},
             )
 
-    @permission_check(
-        "{user} cannot display {resource}", workers=AllowWorkers.NEVER
-    )
+    @permission_check("{user} cannot display {resource}")
     def can_display(self, user: PermissionUser) -> bool:
         """Check if the group can be displayed."""
         assert user is not None  # enforced by decorator
-        # Anonymous users cannot display group details
-        if not user.is_authenticated:
-            return False
-        # Otherwise any logged in user can display group details
         return True
 
-    @permission_check(
-        "{user} cannot display the audit log of {resource}",
-        workers=AllowWorkers.NEVER,
-    )
+    @permission_check("{user} cannot display the audit log of {resource}")
     def can_display_audit_log(self, user: PermissionUser) -> bool:
         """Check if the group audit log can be displayed."""
         return self.can_display(user)
 
-    @permission_check(
-        "{user} cannot manage {resource}", workers=AllowWorkers.NEVER
-    )
+    @permission_check("{user} cannot manage {resource}")
     def can_manage(self, user: PermissionUser) -> bool:
         """Check if the group can be managed."""
         assert user is not None  # enforced by decorator
-        # Anonymous users cannot manage groups
-        if not user.is_authenticated:
-            return False
         # Shortcut to avoid hitting the database for common cases
-        match self.scope.context_has_role(user, Scope.Roles.OWNER):
-            case PartialCheckResult.ALLOW:
-                return True
-            case PartialCheckResult.DENY | PartialCheckResult.PASS:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
+        if (
+            context.user == user
+            and context.scope == self.scope
+            and not context.scope_roles.isdisjoint(
+                GroupRoles.ADMIN.implied_by_scope_roles
+            )
+        ):
+            return True
         return Group.objects.can_manage(user).filter(pk=self.pk).exists()
 
     def assign_role(self, resource: models.Model, role: str) -> models.Model:

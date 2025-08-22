@@ -37,11 +37,7 @@ from debusine.artifacts.models import (
     DebianUpload,
 )
 from debusine.client.debusine import Debusine
-from debusine.client.models import (
-    ArtifactResponse,
-    FileResponse,
-    FilesResponseType,
-)
+from debusine.client.models import FileResponse, FilesResponseType
 from debusine.tasks import Autopkgtest, TaskConfigError
 from debusine.tasks.executors import UnshareExecutor
 from debusine.tasks.models import (
@@ -58,7 +54,10 @@ from debusine.tasks.tests.helper_mixin import (
     FakeTaskDatabase,
 )
 from debusine.test import TestCase
-from debusine.test.test_utils import create_system_tarball_data
+from debusine.test.test_utils import (
+    create_artifact_response,
+    create_system_tarball_data,
+)
 
 
 class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
@@ -75,6 +74,7 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.configure_task()
 
         # self.task.workspace_name and self.task.work_request_id are set by
@@ -91,6 +91,7 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
         """Delete debug log files directory if it exists."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def mock_executor(self) -> None:
         """Set up a fake unshare executor."""
@@ -517,6 +518,21 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
             )
         )
 
+    def create_binary_package_data(
+        self, srcpkg_name: str
+    ) -> DebianBinaryPackage:
+        """Create sample `debian:binary-package` artifact data."""
+        return DebianBinaryPackage(
+            srcpkg_name=srcpkg_name,
+            srcpkg_version="1.0",
+            deb_fields={
+                "Package": srcpkg_name,
+                "Version": "1.0",
+                "Architecture": "amd64",
+            },
+            deb_control_files=[],
+        )
+
     def create_binary_packages_data(
         self, srcpkg_name: str
     ) -> DebianBinaryPackages:
@@ -547,7 +563,7 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=autopkgtest",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -604,7 +620,7 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=autopkgtest",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -625,11 +641,16 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
                 (binary_artifacts_lookup, None): [
                     ArtifactInfo(
                         id=10,
+                        category=ArtifactCategory.BINARY_PACKAGE,
+                        data=self.create_binary_package_data("hello"),
+                    ),
+                    ArtifactInfo(
+                        id=11,
                         category=ArtifactCategory.BINARY_PACKAGES,
                         data=self.create_binary_packages_data("hello"),
                     ),
                     ArtifactInfo(
-                        id=11,
+                        id=12,
                         category=ArtifactCategory.UPLOAD,
                         data=self.create_upload_data("hello"),
                     ),
@@ -638,11 +659,16 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
                 (self.task.data.input.context_artifacts, None): [
                     ArtifactInfo(
                         id=2,
+                        category=ArtifactCategory.BINARY_PACKAGE,
+                        data=self.create_binary_package_data("context"),
+                    ),
+                    ArtifactInfo(
+                        id=3,
                         category=ArtifactCategory.BINARY_PACKAGES,
                         data=self.create_binary_packages_data("context"),
                     ),
                     ArtifactInfo(
-                        id=3,
+                        id=4,
                         category=ArtifactCategory.UPLOAD,
                         data=self.create_upload_data("context"),
                     ),
@@ -655,8 +681,8 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
             AutopkgtestDynamicData(
                 environment_id=1,
                 input_source_artifact_id=5,
-                input_binary_artifacts_ids=[10, 11],
-                input_context_artifacts_ids=[2, 3],
+                input_binary_artifacts_ids=[10, 11, 12],
+                input_context_artifacts_ids=[2, 3, 4],
                 subject="hello",
                 runtime_context="amd64:unshare",
                 configuration_context="sid",
@@ -678,7 +704,7 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=autopkgtest",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -734,6 +760,19 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
             r"\['debian:source-package', 'debian:upload'\]$",
         ):
             self.task.compute_dynamic_data(task_db)
+
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.task.dynamic_data = None
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
+        self.task.dynamic_data = AutopkgtestDynamicData(
+            environment_id=1,
+            input_source_artifact_id=2,
+            input_binary_artifacts_ids=[3],
+            input_context_artifacts_ids=[4, 5],
+        )
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2, 3, 4, 5])
 
     def test_cmdline_executor_not_set(self) -> None:
         """Raise AssertionError: self.executor is not set."""
@@ -1006,7 +1045,7 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
         debusine_mock = self.mock_debusine()
         self.mock_image_download(debusine_mock)
         workspace = "Testing"
-        debusine_mock.download_artifact.return_value = ArtifactResponse(
+        debusine_mock.download_artifact.return_value = create_artifact_response(
             id=10,
             workspace=workspace,
             category="Test",
@@ -1042,7 +1081,7 @@ class AutopkgtestTests(ExternalTaskHelperMixin[Autopkgtest], TestCase):
 
         data_input = self.task.data.input
 
-        debusine_mock.download_artifact.return_value = ArtifactResponse(
+        debusine_mock.download_artifact.return_value = create_artifact_response(
             id=10,
             workspace=workspace,
             category="Test",

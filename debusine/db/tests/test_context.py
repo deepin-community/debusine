@@ -18,15 +18,18 @@ from django.db import connection
 
 from debusine.db.context import ContextConsistencyError, context
 from debusine.db.models import Scope, Token, User, Workspace
+from debusine.db.playground import scenarios
 from debusine.test.django import (
-    BaseDjangoTestCase,
+    PlaygroundTestCase,
     TestCase,
     TransactionTestCase,
 )
 
 
-class TestContextBase(BaseDjangoTestCase):
+class TestContextBase(PlaygroundTestCase):
     """Common base for context tests."""
+
+    scenario = scenarios.DefaultContext()
 
     def assert_context_initial(self) -> None:
         """Check that the context has initial values."""
@@ -56,24 +59,16 @@ class TestContextBase(BaseDjangoTestCase):
             context.worker_token,
             self.worker_token,  # type: ignore[attr-defined]
         )
-        self.assertEqual(context.user, self.user)  # type: ignore[attr-defined]
-        self.assertEqual(
-            context.require_user(), self.user  # type: ignore[attr-defined]
-        )
-        self.assertEqual(
-            context.scope, self.scope  # type: ignore[attr-defined]
-        )
-        self.assertEqual(
-            context.require_scope(), self.scope  # type: ignore[attr-defined]
-        )
+        self.assertEqual(context.user, self.scenario.user)
+        self.assertEqual(context.require_user(), self.scenario.user)
+        self.assertEqual(context.scope, self.scenario.scope)
+        self.assertEqual(context.require_scope(), self.scenario.scope)
         self.assertIsNotNone(context._scope_roles.get())
-        self.assertEqual(
-            context.workspace, self.workspace  # type: ignore[attr-defined]
-        )
+        self.assertEqual(context.workspace, self.scenario.workspace)
         self.assertIsNotNone(context._workspace_roles.get())
         self.assertEqual(
             context.require_workspace(),
-            self.workspace,  # type: ignore[attr-defined]
+            self.scenario.workspace,
         )
         self.assertTrue(context.permission_checks_disabled)
 
@@ -82,17 +77,11 @@ class TestAppContext(TestContextBase, TestCase):
     """Test application context variables."""
 
     worker_token: ClassVar[Token]
-    user: ClassVar[User]
-    scope: ClassVar[Scope]
-    workspace: ClassVar[Workspace]
 
     @classmethod
     def setUpTestData(cls) -> None:
         """Set up common test data."""
         super().setUpTestData()
-        cls.scope = cls.playground.get_default_scope()
-        cls.workspace = cls.playground.get_default_workspace()
-        cls.user = cls.playground.get_default_user()
         cls.worker_token = cls.playground.create_worker_token()
 
     def setUp(self) -> None:
@@ -123,10 +112,10 @@ class TestAppContext(TestContextBase, TestCase):
     def test_local_previously_none(self) -> None:
         """Using local() restores previously unset vars."""
         with context.local():
-            context.set_scope(self.scope)
-            context.set_user(self.user)
+            context.set_scope(self.scenario.scope)
+            context.set_user(self.scenario.user)
             context.set_worker_token(self.worker_token)
-            self.workspace.set_current()
+            self.scenario.workspace.set_current()
             context._permission_checks_disabled.set(True)
             self.assert_context_all_set()
 
@@ -135,10 +124,10 @@ class TestAppContext(TestContextBase, TestCase):
     def test_local_previously_set(self) -> None:
         """Using local() restores previously set vars."""
         try:
-            context.set_scope(self.scope)
-            context.set_user(self.user)
+            context.set_scope(self.scenario.scope)
+            context.set_user(self.scenario.user)
             context.set_worker_token(self.worker_token)
-            self.workspace.set_current()
+            self.scenario.workspace.set_current()
             context._permission_checks_disabled.set(True)
 
             with context.local():
@@ -151,10 +140,10 @@ class TestAppContext(TestContextBase, TestCase):
 
     def test_reset(self) -> None:
         """Calling reset() sets context to its initial values."""
-        context.set_scope(self.scope)
-        context.set_user(self.user)
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
         context.set_worker_token(self.worker_token)
-        self.workspace.set_current()
+        self.scenario.workspace.set_current()
         context._permission_checks_disabled.set(True)
         self.assert_context_all_set()
 
@@ -163,10 +152,10 @@ class TestAppContext(TestContextBase, TestCase):
 
     def test_visibility_task(self) -> None:
         """Check visibility with asyncio tasks."""
-        context.set_scope(self.scope)
-        context.set_user(self.user)
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
         context.set_worker_token(self.worker_token)
-        self.workspace.set_current()
+        self.scenario.workspace.set_current()
         context._permission_checks_disabled.set(True)
 
         def _test() -> None:
@@ -183,8 +172,8 @@ class TestAppContext(TestContextBase, TestCase):
     def test_set_scope(self) -> None:
         """Test setting scope."""
         self.assertIsNone(context.scope)
-        context.set_scope(self.scope)
-        self.assertEqual(context.scope, self.scope)
+        context.set_scope(self.scenario.scope)
+        self.assertEqual(context.scope, self.scenario.scope)
         self.assertIsNone(context._scope_roles.get())
         self.assertIsNone(context.user)
         self.assertIsNone(context.worker_token)
@@ -194,14 +183,14 @@ class TestAppContext(TestContextBase, TestCase):
 
     def test_cannot_change_scope(self) -> None:
         """Changing scope is not allowed."""
-        context.set_scope(self.scope)
+        context.set_scope(self.scenario.scope)
 
         with self.assertRaisesRegex(
             ContextConsistencyError, "Scope was already set to debusine"
         ):
             context.set_scope(Scope(name="scope1"))
 
-        self.assertEqual(context.scope, self.scope)
+        self.assertEqual(context.scope, self.scenario.scope)
         self.assertIsNone(context._scope_roles.get())
         self.assertIsNone(context.user)
         self.assertIsNone(context.worker_token)
@@ -213,7 +202,7 @@ class TestAppContext(TestContextBase, TestCase):
         with self.assertRaisesRegex(
             ContextConsistencyError, "Cannot set user before scope"
         ):
-            context.set_user(self.user)
+            context.set_user(self.scenario.user)
         self.assertIsNone(context.scope)
         self.assertIsNone(context._scope_roles.get())
         self.assertIsNone(context.user)
@@ -225,17 +214,17 @@ class TestAppContext(TestContextBase, TestCase):
         """Changing user is not allowed."""
         user1 = User.objects.create(username="test1", email="test1@example.org")
 
-        context.set_scope(self.scope)
-        context.set_user(self.user)
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
 
         with self.assertRaisesRegex(
             ContextConsistencyError, "User was already set to playground"
         ):
             context.set_user(user1)
 
-        self.assertEqual(context.scope, self.scope)
+        self.assertEqual(context.scope, self.scenario.scope)
         self.assertIsNotNone(context._scope_roles.get())
-        self.assertEqual(context.user, self.user)
+        self.assertEqual(context.user, self.scenario.user)
         self.assertIsNone(context.worker_token)
         self.assertIsNone(context.workspace)
         self.assertIsNone(context._workspace_roles.get())
@@ -247,18 +236,18 @@ class TestAppContext(TestContextBase, TestCase):
 
     def test_scope_roles_empty(self) -> None:
         """Test scope_roles accessor with empty roleset."""
-        context.set_scope(self.scope)
-        context.set_user(self.user)
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
         self.assertEqual(context.scope_roles, frozenset())
 
     def test_scope_roles(self) -> None:
         """Test scope_roles accessor."""
         self.playground.create_group_role(
-            self.scope, Scope.Roles.OWNER, users=[self.user]
+            self.scenario.scope, Scope.Roles.OWNER, users=[self.scenario.user]
         )
 
-        context.set_scope(self.scope)
-        context.set_user(self.user)
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
         self.assertEqual(context.scope_roles, frozenset((Scope.Roles.OWNER,)))
 
     def test_workspace_roles_unset(self) -> None:
@@ -270,20 +259,24 @@ class TestAppContext(TestContextBase, TestCase):
 
     def test_workspace_roles_empty(self) -> None:
         """Test workspace_roles accessor with empty roleset."""
-        context.set_scope(self.scope)
-        context.set_user(self.user)
-        self.workspace.set_current()
-        self.assertEqual(context.workspace_roles, frozenset())
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
+        self.scenario.workspace.set_current()
+        self.assertEqual(
+            context.workspace_roles, frozenset((Workspace.Roles.VIEWER,))
+        )
 
     def test_workspace_roles(self) -> None:
         """Test workspace_roles accessor."""
         self.playground.create_group_role(
-            self.workspace, Workspace.Roles.OWNER, users=[self.user]
+            self.scenario.workspace,
+            Workspace.Roles.OWNER,
+            users=[self.scenario.user],
         )
 
-        context.set_scope(self.scope)
-        context.set_user(self.user)
-        self.workspace.set_current()
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
+        self.scenario.workspace.set_current()
         self.assertEqual(
             context.workspace_roles, frozenset((Scope.Roles.OWNER,))
         )
@@ -319,17 +312,10 @@ class TestThread(TestContextBase, TransactionTestCase):
     """Test thread isolation for application context."""
 
     worker_token: Token
-    user: User
-    scope: Scope
-    workspace: Workspace
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Set up common test data."""
         super().setUp()
-        self.scope = self.playground.get_default_scope()
-        self.workspace = self.playground.get_default_workspace()
-        self.user = self.playground.get_default_user()
         self.worker_token = self.playground.create_worker_token()
 
     def run_in_thread(
@@ -353,19 +339,18 @@ class TestThread(TestContextBase, TransactionTestCase):
 
     def test_visibility_thread(self) -> None:
         """Check visibility with subthreads."""
-        with context.disable_permission_checks():
-            scope1 = self.playground.get_or_create_scope(name="scope1")
-            workspace1 = self.playground.create_workspace(
-                scope=scope1, name="test1", public=True
-            )
-            user1 = self.playground.create_user("test1")
-            token1 = self.playground.create_worker_token()
+        scope1 = self.playground.get_or_create_scope(name="scope1")
+        workspace1 = self.playground.create_workspace(
+            scope=scope1, name="test1", public=True
+        )
+        user1 = self.playground.create_user("test1")
+        token1 = self.playground.create_worker_token()
 
         self.assert_context_initial()
-        context.set_scope(self.scope)
-        context.set_user(self.user)
+        context.set_scope(self.scenario.scope)
+        context.set_user(self.scenario.user)
         context.set_worker_token(self.worker_token)
-        self.workspace.set_current()
+        self.scenario.workspace.set_current()
         context._permission_checks_disabled.set(True)
 
         def _test() -> None:

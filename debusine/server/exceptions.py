@@ -97,6 +97,10 @@ def debusine_exception_handler(
                 formatted_traceback,
             )
 
-            return ProblemResponse(
+            result = ProblemResponse(
                 title="Error", detail=detail, status_code=status_code
             )
+            # Annotate the response with the original exception, so that
+            # BaseDjangoTestCase.format_api_response can find it and print it
+            setattr(result, "_original_exception", exc)
+            return result

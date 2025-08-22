@@ -3,22 +3,40 @@
 {% block content %}
     <h1>{{ title }}</h1>
     <h2>Details</h2>
-    <table class="table table-hover" id="workspace-details">
+    <table class="table table-hover table-striped" id="workspace-details">
         <tbody>
             <tr id="workspace-details-public">
                 <th>Public</th>
-                <td>{{ workspace.public|yesno:"yes,no" }}</td>
+                <td>{{ workspace.public|yesno:"Yes,No" }}</td>
             </tr>
-            {% if workspace.expiration_delay %}
-                <tr id="workspace-details-expiration">
-                    <th>Expires</th>
-                    <td>{{ workspace.expire_at|date:"Y-m-d" }}</td>
-                </tr>
-            {% endif %}
+            <tr id="workspace-details-expiration">
+                <th>Expires</th>
+                <td>
+                    {% if workspace.expiration_delay %}
+                        {{ workspace.expire_at|date:"Y-m-d" }}
+                    {% else %}
+                        Never
+                    {% endif %}
+                </td>
+            </tr>
             <tr id="workspace-details-default-expiration">
-                <th>Default expiration delay (days)</th>
+                <th>Default expiration delay {% help "expiration_delay" %} (days)</th>
                 <td>{{ workspace.default_expiration_delay.days|default:"Never" }}</td>
             </tr>
+            {% if parents %}
+                <tr id="workspace-details-parents">
+                    <th>Inherits from</th>
+                    <td>
+                        {% spaceless %}
+                            {# Try hard not to have djlint insert unwanted spaces #}
+                            {% for w in parents %}
+                                <a href="{{ w.get_absolute_url }}">{{ w }}</a>
+                                {% if not forloop.last %}<span>,&#x0020;</span>{% endif %}
+                            {% endfor %}
+                        {% endspaceless %}
+                    </td>
+                </tr>
+            {% endif %}
             {% if workspace|has_perm:"can_create_artifacts" %}
                 <tr id="workspace-details-configure">
                     <td colspan="2">
@@ -39,7 +57,7 @@
         white-space: nowrap; /* Prevent wrapping */
     }
             </style>
-            <table class="table table-hover" id="workflow-templates-list">
+            <table class="table table-hover table-striped" id="workflow-templates-list">
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -56,19 +74,22 @@
                     </thead>
                     <tbody>
                         {% for t in workflow_templates %}
+                            {% ui t as t_ui %}
                             <tr>
                                 <td>
                                     <a href="{{ t.get_absolute_url }}">{{ t.name }}</a>
                                 </td>
-                                <td>{{ t.task_name }}</td>
                                 <td>
-                                    <a href="{% url "workspaces:workflows:list" wname=workspace.name %}?statuses=running__any&amp;workflow_templates={{ t.name }}">{{ t.running_workflows }}</a>
+                                    <a href="{{ t_ui.get_help_url }}">{{ t.task_name }}</a>
                                 </td>
                                 <td>
-                                    <a href="{% url "workspaces:workflows:list" wname=workspace.name %}?statuses=running__needs_input&amp;workflow_templates={{ t.name }}">{{ t.needs_input_workflows }}</a>
+                                    <a href="{% url "workspaces:workflows:list" wname=workspace.name %}?filter-statuses=running__any&amp;filter-workflow_templates={{ t.name }}">{{ t.running_workflows }}</a>
                                 </td>
                                 <td>
-                                    <a href="{% url "workspaces:workflows:list" wname=workspace.name %}?statuses=completed&amp;workflow_templates={{ t.name }}">{{ t.completed_workflows }}</a>
+                                    <a href="{% url "workspaces:workflows:list" wname=workspace.name %}?filter-statuses=running__needs_input&amp;filter-workflow_templates={{ t.name }}">{{ t.needs_input_workflows }}</a>
+                                </td>
+                                <td>
+                                    <a href="{% url "workspaces:workflows:list" wname=workspace.name %}?filter-statuses=completed&amp;filter-workflow_templates={{ t.name }}">{{ t.completed_workflows }}</a>
                                 </td>
                             </tr>
                         {% endfor %}
@@ -80,7 +101,7 @@
         </div>
         {% if collection_stats %}
             <h2>Collections</h2>
-            <table class="table table-hover">
+            <table class="table table-hover table-striped">
                 <thead>
                     <tr>
                         <th>Category</th>

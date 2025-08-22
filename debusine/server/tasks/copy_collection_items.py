@@ -34,8 +34,8 @@ from debusine.server.collections.lookup import (
 )
 from debusine.server.tasks import BaseServerTask
 from debusine.server.tasks.models import CopyCollectionItemsData
+from debusine.tasks import DefaultDynamicData
 from debusine.tasks.models import BaseDynamicTaskData
-from debusine.tasks.server import TaskDatabaseInterface
 
 
 class CannotCopy(Exception):
@@ -43,7 +43,8 @@ class CannotCopy(Exception):
 
 
 class CopyCollectionItems(
-    BaseServerTask[CopyCollectionItemsData, BaseDynamicTaskData]
+    BaseServerTask[CopyCollectionItemsData, BaseDynamicTaskData],
+    DefaultDynamicData[CopyCollectionItemsData],
 ):
     """Task that copies items into target collections."""
 
@@ -96,10 +97,7 @@ class CopyCollectionItems(
                         dir=settings.DEBUSINE_UPLOAD_DIRECTORY,
                     ) as temp_file,
                 ):
-                    # https://github.com/python/mypy/issues/15031
-                    shutil.copyfileobj(
-                        source_file, temp_file
-                    )  # type: ignore[misc]
+                    shutil.copyfileobj(source_file, temp_file)
                     temp_file.flush()
                     target_file_backend.add_file(Path(temp_file.name), file)
             FileInArtifact.objects.create(
@@ -107,6 +105,7 @@ class CopyCollectionItems(
                 path=file_in_artifact.path,
                 file=file,
                 complete=True,
+                content_type=file_in_artifact.content_type,
             )
         return new_artifact
 
@@ -238,12 +237,6 @@ class CopyCollectionItems(
                 )
 
         return True
-
-    def build_dynamic_data(
-        self, task_database: TaskDatabaseInterface  # noqa: U100
-    ) -> BaseDynamicTaskData:
-        """Compute dynamic data for this workflow."""
-        return BaseDynamicTaskData()
 
     def get_label(self) -> str:
         """Return the task label."""

@@ -1,4 +1,4 @@
-.. _artifact-system-tarball:
+.. artifact:: debian:system-tarball
 
 Category ``debian:system-tarball``
 ==================================
@@ -18,6 +18,8 @@ compressed with ``xz``.
   * pkglist: a dictionary listing versions of installed packages (cf
     ``dpkg-query -W``)
   * architecture: the architecture of the Debian system
+  * components: list of the enabled components in the APT sources of the
+    system
   * with_dev: boolean value indicating whether ``/dev`` has been populated
     with the most important special files in ``/dev`` (null, zero, full,
     random, urandom, tty, console, ptmx) as well as some usual symlinks

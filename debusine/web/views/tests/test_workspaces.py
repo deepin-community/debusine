@@ -11,18 +11,27 @@
 
 from datetime import timedelta
 from typing import ClassVar
+from unittest import mock
 
+import lxml
+import lxml.objectify
 from django.template.response import SimpleTemplateResponse
+from django.urls import reverse
 from rest_framework import status
 
-from debusine.artifacts.models import CollectionCategory
-from debusine.db.context import context
+from debusine.artifacts.models import (
+    BareDataCategory,
+    CollectionCategory,
+    DebusineTaskConfiguration,
+    TaskTypes,
+)
 from debusine.db.models import Collection, Scope, WorkRequest, Workspace
 from debusine.db.playground import scenarios
 from debusine.test.django import (
     AllowAll,
     DenyAll,
     TestCase,
+    TestResponseType,
     override_permission,
 )
 from debusine.web.views.tests.utils import ViewTestMixin
@@ -42,7 +51,6 @@ class WorkspaceDetailTests(ViewTestMixin, TestCase):
     collection: ClassVar[Collection]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up a database layout for views."""
         super().setUpTestData()
@@ -84,9 +92,11 @@ class WorkspaceDetailTests(ViewTestMixin, TestCase):
         details = self.assertHasElement(
             tree, "//table[@id='workspace-details']"
         )
-        self.assertFalse(
-            details.xpath("//tr[@id='workspace-details-expiration']")
+        tr = self.assertHasElement(
+            details, "//tr[@id='workspace-details-expiration']"
         )
+        self.assertTextContentEqual(tr.th, "Expires")
+        self.assertTextContentEqual(tr.td, "Never")
 
     def test_detail_expiration(self) -> None:
         """Expiration is shown on expiring workspaces."""
@@ -109,6 +119,24 @@ class WorkspaceDetailTests(ViewTestMixin, TestCase):
                 "%Y-%m-%d"
             ),
         )
+
+    def test_detail_parents(self) -> None:
+        """Parent workspaces are shown when they exist."""
+        workspace = self.playground.create_workspace(name="base", public=True)
+        workspace.set_inheritance(
+            [self.workspace_private, self.workspace_public]
+        )
+
+        response = self.client.get(workspace.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+        details = self.assertHasElement(
+            tree, "//table[@id='workspace-details']"
+        )
+        tr = self.assertHasElement(
+            details, "*/tr[@id='workspace-details-parents']", dump_on_error=True
+        )
+        self.assertTextContentEqual(tr.th, "Inherits from")
+        self.assertTextContentEqual(tr.td, str(self.workspace_public))
 
     def test_detail_can_create_artifact(self) -> None:
         """User is logged in and can create artifacts."""
@@ -156,12 +184,9 @@ class WorkspaceDetailTests(ViewTestMixin, TestCase):
     def test_name_duplicate(self) -> None:
         """Homonymous workspace in different scope does not trigger a dup."""
         scope = Scope.objects.create(name="tests")
-        with context.disable_permission_checks():
-            self.playground.create_workspace(
-                name="Public",
-                public=True,
-                scope=scope,
-            )
+        self.playground.create_workspace(
+            name="Public", public=True, scope=scope
+        )
         response = self.client.get(self.workspace_public.get_absolute_url())
         self.assertResponseHTML(response)
 
@@ -225,7 +250,75 @@ class WorkspaceDetailTests(ViewTestMixin, TestCase):
             workflow_templates.tbody.tr[0].td[0].a.attrib["href"],
             template.get_absolute_url(),
         )
-        self.assertEqual(workflow_templates.tbody.tr[0].td[1], "noop")
+        self.assertEqual(workflow_templates.tbody.tr[0].td[1].a, "noop")
+        self.assertEqual(
+            workflow_templates.tbody.tr[0].td[1].a.attrib["href"],
+            "https://freexian-team.pages.debian.net/debusine/"
+            "reference/workflows/specs/noop.html",
+        )
+
+    def test_detail_workflowtemplate_links(self) -> None:
+        """Test links to workflow tables."""
+        workflow_list_base_url = reverse(
+            "workspaces:workflows:list",
+            kwargs={"wname": self.workspace_public.name},
+        )
+        self.playground.create_workflow_template(
+            name="noop-template",
+            task_name="noop",
+            workspace=self.workspace_public,
+        )
+
+        # 1 completed workflow
+        self.playground.create_workflow(
+            task_name="noop",
+            status=WorkRequest.Statuses.COMPLETED,
+        )
+
+        response = self.client.get(self.workspace_public.get_absolute_url())
+        tree = self.assertResponseHTML(response)
+
+        div = self.assertHasElement(tree, "//div[@id='workflow-templates']")
+        tr = div.table.tbody.tr[0]
+
+        # Running workflows
+        url = tr.td[2].a.get("href")
+        assert url is not None
+        self.assertIn(workflow_list_base_url, url)
+        response = self.client.get(url)
+        paginator = response.context["paginator"]
+        self.assertEqual(
+            paginator.table.filters["workflow_templates"].value, "noop-template"
+        )
+        self.assertEqual(
+            paginator.table.filters["statuses"].value, ["running__any"]
+        )
+
+        # Input needed workflows
+        url = tr.td[3].a.get("href")
+        assert url is not None
+        self.assertIn(workflow_list_base_url, url)
+        response = self.client.get(url)
+        paginator = response.context["paginator"]
+        self.assertEqual(
+            paginator.table.filters["workflow_templates"].value, "noop-template"
+        )
+        self.assertEqual(
+            paginator.table.filters["statuses"].value, ["running__needs_input"]
+        )
+
+        # Completed workflows
+        url = tr.td[4].a.get("href")
+        assert url is not None
+        self.assertIn(workflow_list_base_url, url)
+        response = self.client.get(url)
+        paginator = response.context["paginator"]
+        self.assertEqual(
+            paginator.table.filters["workflow_templates"].value, "noop-template"
+        )
+        self.assertEqual(
+            paginator.table.filters["statuses"].value, ["completed"]
+        )
 
 
 class WorkspaceUpdateTests(ViewTestMixin, TestCase):
@@ -285,7 +378,214 @@ class WorkspaceUpdateTests(ViewTestMixin, TestCase):
         self.assertTextContentEqual(h1, title_text)
 
         assert isinstance(response, SimpleTemplateResponse)
+        assert response.context_data is not None
         form = response.context_data["form"]
         self.assertTrue(form["public"].initial)
         self.assertIsNone(form["expiration_delay"].initial)
         self.assertEqual(form["default_expiration_delay"].initial, timedelta(0))
+
+
+class TaskConfigurationInspectorTests(ViewTestMixin, TestCase):
+    """Tests for :py:class:`TaskConfigurationInspector` view."""
+
+    scenario = scenarios.DefaultContext()
+    collection: ClassVar[Collection]
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        """Set up a database layout for views."""
+        super().setUpTestData()
+        cls.collection = cls.scenario.workspace.collections.get(
+            name="default",
+            category=CollectionCategory.TASK_CONFIGURATION,
+        )
+
+    @classmethod
+    def add_config(cls, entry: DebusineTaskConfiguration) -> None:
+        """Add a config entry to config_collection."""
+        cls.collection.manager.add_bare_data(
+            BareDataCategory.TASK_CONFIGURATION,
+            user=cls.scenario.user,
+            data=entry,
+        )
+
+    def get(
+        self,
+        collections: list[Collection] | None = None,
+        **kwargs: str,
+    ) -> TestResponseType:
+        workspace = self.scenario.workspace
+        if collections is None:
+            collections = [self.collection]
+        url = reverse(
+            "workspaces:task_configuration_inspector",
+            kwargs={"wname": workspace.name},
+        )
+
+        with mock.patch(
+            "debusine.db.models.workspaces."
+            "Workspace.list_accessible_collections",
+            return_value=collections,
+        ):
+            return self.client.get(url, kwargs)
+
+    def assertHasInputContainer(
+        self, tree: lxml.objectify.ObjectifiedElement
+    ) -> lxml.objectify.ObjectifiedElement:
+        """Return the main user input container element."""
+        return self.assertHasElement(tree, "//div[@id='user-input']")
+
+    def assertHasCollectionSelector(
+        self, tree: lxml.objectify.ObjectifiedElement
+    ) -> lxml.objectify.ObjectifiedElement:
+        """Return the collection selector root element."""
+        input_container = self.assertHasInputContainer(tree)
+        return self.assertHasElement(
+            input_container, "//div[@id='collection-selector']"
+        )
+
+    def assertCollectionSelected(
+        self,
+        tree: lxml.objectify.ObjectifiedElement,
+        collection: Collection,
+        can_reselect: bool = False,
+        is_empty: bool = False,
+    ) -> None:
+        """Ensure the given collection is currently selected."""
+        input_container = self.assertHasInputContainer(tree)
+
+        # Ensure the collection selector is not shown
+        self.assertFalse(
+            input_container.xpath("//div[@id='collection-selector']")
+        )
+
+        input_header = self.assertHasElement(
+            input_container, "div[contains(@class, 'card-header')]"
+        )
+        input_title = self.assertHasElement(input_header, "*/h2")
+        self.assertTextContentEqual(
+            input_title,
+            f"Collection {collection.name} in {collection.workspace}",
+        )
+
+        if can_reselect:
+            reselect = self.assertHasElement(input_header, "a[@href='.']")
+            self.assertEqual(reselect.get("title"), "select another collection")
+        else:
+            self.assertFalse(input_header.xpath("a[@href='.']"))
+
+        input_body = self.assertHasElement(
+            input_container, "div[contains(@class, 'card-body')]"
+        )
+        if is_empty:
+            self.assertTextContentEqual(input_body, "This collection is empty")
+        else:
+            selected_collection = self.assertHasElement(
+                input_body, "form/input[@name='collection']"
+            )
+            self.assertEqual(
+                selected_collection.get("value"), str(collection.id)
+            )
+
+    def test_title(self) -> None:
+        expected_title = (
+            "Task configuration inspector for "
+            f"{self.scenario.workspace.name} workspace"
+        )
+
+        response = self.get()
+        tree = self.assertResponseHTML(response)
+        title = self.assertHasElement(tree, "//head//title")
+        self.assertTextContentEqual(title, f"Debusine - {expected_title}")
+        h1 = self.assertHasElement(tree, "//body//h1")
+        self.assertTextContentEqual(h1, expected_title)
+
+    def test_collection_selector(self) -> None:
+        ws_other = self.playground.create_workspace(name="Other", public=True)
+        coll_other = self.playground.create_collection(
+            "default", CollectionCategory.TASK_CONFIGURATION, workspace=ws_other
+        )
+
+        response = self.get(collections=[self.collection, coll_other])
+        tree = self.assertResponseHTML(response)
+        div = self.assertHasCollectionSelector(tree)
+        self.assertEqual(
+            div.a[0].get("href"), f"?collection={self.collection.pk}"
+        )
+        self.assertTextContentEqual(
+            div.a[0], f"{self.collection.name} in {self.collection.workspace}"
+        )
+        self.assertEqual(div.a[1].get("href"), f"?collection={coll_other.pk}")
+        self.assertTextContentEqual(
+            div.a[1], f"{coll_other.name} in {self.collection.workspace}"
+        )
+
+    def test_collection_selected(self) -> None:
+        ws_other = self.playground.create_workspace(name="Other", public=True)
+        coll_other = self.playground.create_collection(
+            "default", CollectionCategory.TASK_CONFIGURATION, workspace=ws_other
+        )
+
+        response = self.get(
+            collections=[self.collection, coll_other],
+            collection=str(coll_other.id),
+        )
+        tree = self.assertResponseHTML(response)
+        self.assertCollectionSelected(
+            tree, coll_other, can_reselect=True, is_empty=True
+        )
+
+    def test_collection_autoselect(self) -> None:
+        response = self.get(collections=[self.collection])
+        tree = self.assertResponseHTML(response)
+        self.assertCollectionSelected(
+            tree, self.collection, can_reselect=False, is_empty=True
+        )
+
+    def test_collection_lookup(self) -> None:
+        item = DebusineTaskConfiguration(
+            task_type=TaskTypes.WORKER, task_name="noop"
+        )
+        self.add_config(item)
+        response = self.get(
+            collections=[self.collection], task=f"{TaskTypes.WORKER}:noop"
+        )
+        tree = self.assertResponseHTML(response)
+        self.assertCollectionSelected(
+            tree, self.collection, can_reselect=False, is_empty=False
+        )
+
+        results = self.assertHasElement(tree, "//div[@id='results']")
+
+        default_values = self.assertHasElement(
+            results, "div[@id='default-values']"
+        )
+        self.assertYAMLContentEqual(default_values.div[1], {})
+        override_values = self.assertHasElement(
+            results, "div[@id='override-values']"
+        )
+        self.assertYAMLContentEqual(override_values.div[1], {})
+        configuration_items = self.assertHasElement(
+            results, "div[@id='configuration-items']"
+        )
+        self.assertTextContentEqual(
+            configuration_items.div[0].div[0], item.name()
+        )
+        self.assertYAMLContentEqual(
+            configuration_items.div[0].div[1], item.dict()
+        )
+
+    def test_form_invalid(self) -> None:
+        item = DebusineTaskConfiguration(
+            task_type=TaskTypes.WORKER, task_name="noop"
+        )
+        self.add_config(item)
+        response = self.get(
+            collections=[self.collection], task=f"{TaskTypes.WORKER}:invalid"
+        )
+        tree = self.assertResponseHTML(response)
+        self.assertCollectionSelected(
+            tree, self.collection, can_reselect=False, is_empty=False
+        )
+
+        self.assertFalse(tree.xpath("//div[@id='results']"))

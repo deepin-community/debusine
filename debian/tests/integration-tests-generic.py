@@ -14,11 +14,8 @@ Debusine generic integration tests.
 Does not test any sbuild related code.
 """
 
-import argparse
-import logging
 import os
 import shutil
-import sys
 import textwrap
 import unittest
 from pathlib import Path
@@ -31,8 +28,6 @@ from utils.client import Client
 from utils.common import Configuration
 from utils.server import DebusineServer
 from utils.worker import Worker
-
-logger = logging.getLogger(__name__)
 
 
 class IntegrationGenericTests(unittest.TestCase):
@@ -76,11 +71,6 @@ class IntegrationGenericTests(unittest.TestCase):
         """
         self._worker.set_up()
 
-        # Debusine admin enables the worker's token
-        DebusineServer.execute_command(
-            'manage_worker', 'enable', Worker.read_token()
-        )
-
         # Worker re-connect automatically
         self.assertTrue(
             DebusineServer.wait_for_worker_connected(Worker.read_token())
@@ -100,7 +90,7 @@ class IntegrationGenericTests(unittest.TestCase):
 
     def test_worker_is_not_connected(self) -> None:
         """The worker is not connected: the token is not enabled yet."""
-        self._worker.set_up()
+        self._worker.set_up(use_activation_token=False)
 
         self.assertTrue(
             DebusineServer.verify_worker(
@@ -249,23 +239,3 @@ class IntegrationGenericTests(unittest.TestCase):
             html.xpath("""//ul[@id='navbar-right']/li/a/text()""")[0].strip(),
             "test-user",
         )
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description='Generic integration tests for debusine (no sbuild)',
-    )
-
-    parser.add_argument(
-        '--log-level',
-        help='Minimum log level. Overrides log-level (in [General] section) '
-        'from config.ini',
-        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-        default='INFO',
-    )
-
-    debusine_args, unittest_args = parser.parse_known_args()
-
-    logging.basicConfig(level=debusine_args.log_level)
-
-    unittest.main(argv=[sys.argv[0]] + unittest_args)

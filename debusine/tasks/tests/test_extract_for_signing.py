@@ -49,6 +49,7 @@ from debusine.test import TestCase
 from debusine.test.test_utils import (
     create_artifact_response,
     create_file_response,
+    create_remote_artifact,
     create_system_tarball_data,
 )
 
@@ -74,12 +75,14 @@ class ExtractForSigningTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.configure_task()
 
     def tearDown(self) -> None:
         """Delete debug log files directory if it exists."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def test_can_run_on(self) -> None:
         """can_run_on returns True if unshare is available."""
@@ -124,7 +127,7 @@ class ExtractForSigningTests(
                 # environment
                 (
                     "debian/match:codename=bookworm:format=tarball:"
-                    "backend=unshare",
+                    "backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -187,7 +190,7 @@ class ExtractForSigningTests(
                 # environment
                 (
                     "debian/match:codename=bookworm:format=tarball:"
-                    "backend=unshare",
+                    "backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -279,7 +282,7 @@ class ExtractForSigningTests(
                 # environment
                 (
                     "debian/match:codename=bookworm:format=tarball:"
-                    "backend=unshare",
+                    "backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -336,7 +339,7 @@ class ExtractForSigningTests(
                 # environment
                 (
                     "debian/match:codename=bookworm:format=tarball:"
-                    "backend=unshare",
+                    "backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -390,6 +393,17 @@ class ExtractForSigningTests(
             r"Valid categories: \['debian:binary-package', 'debian:upload'\]$",
         ):
             self.task.compute_dynamic_data(task_db)
+
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
+        self.task.dynamic_data = ExtractForSigningDynamicData(
+            environment_id=1,
+            input_template_artifact_id=2,
+            input_binary_artifacts_ids=[3, 4],
+        )
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2, 3, 4])
 
     def test_fetch_input_template_wrong_category(self) -> None:
         """fetch_input checks the category of the template artifact."""
@@ -836,7 +850,7 @@ class ExtractForSigningTests(
             )
         }
         debusine_mock = self.mock_debusine()
-        debusine_mock.upload_artifact.return_value = RemoteArtifact(
+        debusine_mock.upload_artifact.return_value = create_remote_artifact(
             id=5, workspace=self.task.workspace_name
         )
         execute_directory = self.create_temporary_directory()
@@ -959,7 +973,7 @@ class ExtractForSigningTests(
                         parents=True, exist_ok=True
                     )
                     shutil.copy(path, output_path / name)
-            return RemoteArtifact(
+            return create_remote_artifact(
                 id=uploaded_artifact_ids[local_artifact.category],
                 workspace="testing",
             )

@@ -1,3 +1,33 @@
+debusine (0.12.1) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Add `debusine workspace-inheritance` to configure a workspace's
+      inheritance.
+    - Add shell completion via argcomplete (closes: #1111282).
+    - Return more user-friendly errors if an incorrect file is specified to
+      `debusine provide-signature --local-file`.
+
+ -- Colin Watson <cjwatson@debian.org>  Thu, 21 Aug 2025 15:53:54 +0100
+
+debusine (0.12.0) unstable; urgency=medium
+
+  * New release.  Highlights:
+    - Implement archives (although currently the only way to get packages
+      into them is by mirroring).  They support snapshot views, so this can
+      be used as an equivalent of snapshot.debian.org.
+    - Require the CONTRIBUTOR role for modifications in public workspaces.
+    - Add a metrics API.
+    - Fix several crashes in expiry scripts.
+    - Many UI improvements, including restructuring the home page around
+      workflows, adding tabs to the work request detail view, and giving
+      workflow tables a mobile-friendly layout.
+    - Add commands to manage task configuration collections.
+    - Add debdiff workflow.
+    - Add split source/binary upload signing, where the developer signs the
+      source package and Debusine signs the binaries.
+
+ -- Colin Watson <cjwatson@debian.org>  Fri, 15 Aug 2025 08:57:00 +0100
+
 debusine (0.11.3) unstable; urgency=medium
 
   * client: Allow passing a local copy of the `.changes` file to `debusine

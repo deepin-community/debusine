@@ -1,4 +1,4 @@
-.. _workflow-package-publish:
+.. workflow:: package_publish
 
 Workflow ``package_publish``
 ============================
@@ -24,10 +24,9 @@ that case even if the work request itself would not ordinarily be visible.
    It may be surprising that this rule is "any of the artifacts produced by
    the work request" rather than "all of the artifacts produced by the work
    request"; but there isn't usually anywhere useful to copy
-   :ref:`debusine:work-request-debug-logs
-   <artifact-work-request-debug-logs>` artifacts to, and making only some of
-   the artifacts produced by a work request public seems unlikely to be a
-   realistic unembargoing use case.
+   :artifact:`debusine:work-request-debug-logs` artifacts to, and making
+   only some of the artifacts produced by a work request public seems
+   unlikely to be a realistic unembargoing use case.
 
 While build logs may expose additional information not in the output
 artifacts (such as build-dependencies where security updates are also being
@@ -68,13 +67,13 @@ Workflow definition
 * ``task_data``:
 
   * ``source_artifact`` (:ref:`lookup-single`, optional): a
-    ``debian:source-package`` or ``debian:upload`` artifact representing the
-    source package (the former is used when the workflow is started based on
-    a ``.dsc`` rather than a ``.changes``)
+    :artifact:`debian:source-package` or :artifact:`debian:upload` artifact
+    representing the source package (the former is used when the workflow is
+    started based on a ``.dsc`` rather than a ``.changes``)
   * ``binary_artifacts`` (:ref:`lookup-multiple`, optional): a list of
-    ``debian:upload`` artifacts representing the binary packages
-  * ``target_suite`` (:ref:`lookup-single`, required): the ``debian:suite``
-    collection to publish packages to
+    :artifact:`debian:upload` artifacts representing the binary packages
+  * ``target_suite`` (:ref:`lookup-single`, required): the
+    :collection:`debian:suite` collection to publish packages to
   * ``unembargo`` (boolean, defaults to False): if True, allow publishing
     artifacts from private workspaces to public suites
   * ``replace`` (boolean, defaults to False): if True, replace existing
@@ -83,8 +82,8 @@ Workflow definition
     adding items to the target suite collection; if a given source or binary
     artifact came from a collection, then this is merged into the per-item
     data from the corresponding collection item, with the values given here
-    taking priority in cases of conflict; see :ref:`debian:suite
-    <collection-suite>` for the available variable names
+    taking priority in cases of conflict; see :collection:`debian:suite` for
+    the available variable names
 
 At least one of ``source_artifact`` and ``binary_artifacts`` must be set.
 
@@ -97,7 +96,7 @@ The workflow computes dynamic metadata as:
 result, it must either be part of this workspace's inheritance chain, or
 else be identified by ID (``NNN`` or ``NNN@collections``).
 
-The workflow creates a :ref:`task-copy-collection-items`.  The ``copies``
+The workflow creates a :task:`CopyCollectionItems` task.  The ``copies``
 field in its task data is as follows:
 
 * ``source_items``: the union of whichever of ``{source_artifact}`` and
@@ -107,14 +106,13 @@ field in its task data is as follows:
 * ``replace``: ``{replace}``
 * ``variables``: ``{suite_variables}``
 
-Any of the lookups in ``source_items`` may result in :ref:`promises
-<bare-data-promise>`, and in that case the workflow adds corresponding
+Any of the lookups in ``source_items`` may result in :bare-data:`promises
+<debusine:promise>`, and in that case the workflow adds corresponding
 dependencies.
 
 If ``binary_artifacts`` is set and the source and target workspaces have
-different instances of the :ref:`debian:package-build-logs
-<collection-package-build-logs>` collection, then the workflow also adds an
-entry to ``copies`` as follows:
+different instances of the :collection:`debian:package-build-logs`
+collection, then the workflow also adds an entry to ``copies`` as follows:
 
 * ``source_items``:
 
@@ -128,9 +126,8 @@ entry to ``copies`` as follows:
 * ``replace``: ``{replace}``
 
 If ``binary_artifacts`` is set and the source and target workspaces have
-different instances of the :ref:`debusine:task-history
-<collection-task-history>` collection, then the workflow also adds an entry
-to ``copies`` as follows:
+different instances of the :collection:`debusine:task-history` collection,
+then the workflow also adds an entry to ``copies`` as follows:
 
 * ``source_items``:
 

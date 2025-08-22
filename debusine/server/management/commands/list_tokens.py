@@ -34,7 +34,9 @@ class Command(DebusineBaseCommand):
     def handle(self, *args: Any, **options: Any) -> None:
         """List the tokens."""
         tokens = Token.objects.get_tokens(
-            username=options['username'], key=options['token']
+            username=options["username"],
+            key=options["token"],
+            include_expired=True,
         )
         Tokens(options["yaml"]).print(tokens, self.stdout)
         raise SystemExit(0)

@@ -1,7 +1,7 @@
 {% extends base_template %}
 {% block content %}
     <h1>{{ title }}</h1>
-    <table class="table table-sm" id="task-queue">
+    <table class="table table-sm table-hover table-striped" id="task-queue">
         <thead>
             <tr>
                 <th rowspan=2>Type</th>
@@ -35,7 +35,7 @@
     </table>
     {% if arch_status %}
         <h2>External tasks by architecture</h2>
-        <table class="table table-sm" id="task-arch-queue">
+        <table class="table table-sm table-hover table-striped" id="task-arch-queue">
             <thead>
                 <tr>
                     <th rowspan=2>Architecture</th>

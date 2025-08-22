@@ -11,17 +11,7 @@
 
 import enum
 import re
-from typing import (
-    Any,
-    Generic,
-    Self,
-    TYPE_CHECKING,
-    TypeAlias,
-    TypeVar,
-    Union,
-    assert_never,
-    cast,
-)
+from typing import Any, Generic, Self, TYPE_CHECKING, TypeAlias, TypeVar, cast
 
 import pgtrigger
 from django.core.exceptions import ImproperlyConfigured, ValidationError
@@ -32,24 +22,19 @@ from debusine.db.context import context
 from debusine.db.models import permissions
 from debusine.db.models.files import File, FileStore
 from debusine.db.models.permissions import (
-    AllowWorkers,
-    PartialCheckResult,
+    Allow,
     PermissionUser,
     permission_check,
     permission_filter,
 )
 
 if TYPE_CHECKING:
-    from django.contrib.auth.models import AnonymousUser
     from django_stubs_ext.db.models import TypedModelMeta
 
     from debusine.db.models.auth import User
     from debusine.server.file_backend.interface import FileBackendInterface
 else:
     TypedModelMeta = object
-
-#: Name of the fallback scope used for transitioning to scoped models
-FALLBACK_SCOPE_NAME = "debusine"
 
 #: Scope names reserved for use in toplevel URL path components
 RESERVED_SCOPE_NAMES = frozenset(
@@ -109,6 +94,10 @@ class ScopeRoleBase(permissions.RoleBase):
             roles__role__in=self.implied_by_scope_roles,
         )
 
+    def implies(self, role: "ScopeRoles") -> bool:
+        """Check if this role implies the given one."""
+        return self in role.implied_by_scope_roles
+
 
 class ScopeRoles(permissions.Roles, ScopeRoleBase, enum.ReprEnum):
     """Available roles for a Scope."""
@@ -122,22 +111,21 @@ ScopeRoles.setup()
 class ScopeQuerySet(QuerySet["Scope", A], Generic[A]):
     """Custom QuerySet for Scope."""
 
-    def with_role(self, user: "User", role: ScopeRoles) -> Self:
+    def with_role(self, user: PermissionUser, role: ScopeRoles) -> Self:
         """Keep only resources where the user has the given role."""
+        if not user or not user.is_authenticated:
+            return self.none()
         return self.filter(role.q(user))
 
-    @permission_filter(workers=AllowWorkers.ALWAYS)
+    @permission_filter(workers=Allow.ALWAYS, anonymous=Allow.ALWAYS)
     def can_display(self, user: PermissionUser) -> Self:  # noqa: U100
         """Keep only Scopes that can be displayed."""
         assert user is not None  # Enforced by decorator
         return self
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_create_workspace(self, user: PermissionUser) -> Self:
         """Keep only Scopes where the user can create workspaces."""
-        assert user is not None  # Enforced by decorator
-        if not user.is_authenticated:
-            return self.none()
         return self.with_role(user, Scope.Roles.OWNER)
 
 
@@ -194,72 +182,41 @@ class Scope(models.Model):
 
     @permission_check(
         "{user} cannot display scope {resource}",
-        workers=AllowWorkers.ALWAYS,
+        workers=Allow.ALWAYS,
+        anonymous=Allow.ALWAYS,
     )
     def can_display(self, user: PermissionUser) -> bool:  # noqa: U100
         """Check if the scope can be displayed."""
-        assert user is not None  # enforced by decorator
         return True
 
     @permission_check(
         "{user} cannot create workspaces in {resource}",
-        workers=AllowWorkers.NEVER,
     )
     def can_create_workspace(self, user: PermissionUser) -> bool:
         """Check if the user can create workspaces in this scope."""
-        assert user is not None  # enforced by decorator
-        # Token is not taken into account here
-        if not user.is_authenticated:
+        return self.has_role(user, Scope.Roles.OWNER)
+
+    def has_role(self, user: PermissionUser, role: ScopeRoles) -> bool:
+        """Check if the user has the given role on this Scope."""
+        if not user or not user.is_authenticated:
             return False
-        # Shortcut to avoid hitting the database for common cases
-        match self.context_has_role(user, Scope.Roles.OWNER):
-            case PartialCheckResult.ALLOW:
-                return True
-            case PartialCheckResult.DENY:
-                return False
-            case PartialCheckResult.PASS:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
-        return (
-            Scope.objects.can_create_workspace(user).filter(pk=self.pk).exists()
-        )
-
-    def context_has_role(
-        self, user: "User", role: ScopeRoles
-    ) -> PartialCheckResult:
-        """
-        Check the context to see if the user has a role on this Scope.
-
-        :returns:
-          * ALLOW if the context has enough information to determine that the
-            user has at least one of the given roles
-          * DENY if the context has enough information to determine that the
-            user does not have any of the given roles
-          * PASS if the context does not have enough information to decide
-        """
-        if context.user != user or context.scope != self:
-            return PartialCheckResult.PASS
-        if role.implied_by_scope_roles.isdisjoint(context.scope_roles):
-            return PartialCheckResult.DENY
-        else:
-            return PartialCheckResult.ALLOW
+        if context.user == user and context.scope == self:
+            return any(r.implies(role) for r in context.scope_roles)
+        return Scope.objects.with_role(user, role).filter(pk=self.pk).exists()
 
     # See https://github.com/typeddjango/django-stubs/issues/1047 for the typing
-    def get_roles(
-        self, user: Union["User", "AnonymousUser"]
-    ) -> QuerySet["ScopeRole", "ScopeRoles"]:
+    def get_group_roles(
+        self, user: PermissionUser
+    ) -> QuerySet["ScopeRole", str]:
         """Get the roles of the user on this scope."""
-        if not user.is_authenticated:
-            result = ScopeRole.objects.none().values_list("role", flat=True)
+        if not user or not user.is_authenticated:
+            return ScopeRole.objects.none().values_list("role", flat=True)
         else:
-            result = (
+            return (
                 ScopeRole.objects.filter(resource=self, group__users=user)
                 .values_list("role", flat=True)
                 .distinct()
             )
-        # QuerySet sees a CharField, but we know it's a ScopeRoles enum
-        return cast(QuerySet["ScopeRole", "ScopeRoles"], result)
 
     def upload_file_stores(
         self,

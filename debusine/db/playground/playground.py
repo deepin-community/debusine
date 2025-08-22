@@ -9,8 +9,11 @@
 
 """Infrastructure to create test scenarios in the database."""
 
+import contextlib
 import tempfile
 import textwrap
+import time
+from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -76,7 +79,11 @@ from debusine.db.models import (
     WorkflowTemplate,
     Workspace,
 )
-from debusine.db.models.permissions import get_resource_scope, resolve_role
+from debusine.db.models.permissions import (
+    PermissionUser,
+    get_resource_scope,
+    resolve_role,
+)
 from debusine.db.tests.utils import _calculate_hash_from_data
 from debusine.server.collections.lookup import lookup_single
 from debusine.server.file_backend.interface import FileBackendInterface
@@ -92,6 +99,7 @@ from debusine.server.workflows.models import (
     WorkRequestWorkflowData,
 )
 from debusine.tasks.models import (
+    ActionUpdateCollectionWithArtifacts,
     BackendType,
     BaseTaskData,
     SbuildBuildComponent,
@@ -282,6 +290,28 @@ class Playground(ArtifactPlayground):
         group.assign_role(resource, role)
         return group
 
+    @contextlib.contextmanager
+    def assign_role(
+        self, resource: Model, user: PermissionUser, *roles: str
+    ) -> Generator[None, None, None]:
+        """Temporarily assign one or more roles to the user on the resource."""
+        groups: list[Group] = []
+
+        if roles:
+            assert user and user.is_authenticated
+            for role in roles:
+                name = f"test_assign_role_{role}_{time.monotonic_ns()}"
+                group = self.create_group_role(
+                    resource, role, [user], name=name
+                )
+                groups.append(group)
+
+        try:
+            yield
+        finally:
+            for group in groups:
+                group.delete()
+
     @context.disable_permission_checks()
     def add_user(
         self, group: Group, user: User, role: Group.Roles = Group.Roles.MEMBER
@@ -438,10 +468,12 @@ class Playground(ArtifactPlayground):
         self,
         task_name: str | WorkflowTemplate = "noop",
         task_data: BaseWorkflowData | dict[str, Any] | None = None,
+        *,
         parent: WorkRequest | None = None,
         status: WorkRequest.Statuses | None = None,
         created_by: User | None = None,
         validate: bool = True,
+        workspace: Workspace | None = None,
     ) -> WorkRequest:
         """Create a workflow."""
         if created_by is None:
@@ -457,7 +489,9 @@ class Playground(ArtifactPlayground):
                 )
             except WorkflowTemplate.DoesNotExist:
                 template = self.create_workflow_template(
-                    name=workflow_template_name, task_name=task_name
+                    name=workflow_template_name,
+                    task_name=task_name,
+                    workspace=workspace,
                 )
 
         if isinstance(task_data, BaseWorkflowData):
@@ -489,6 +523,7 @@ class Playground(ArtifactPlayground):
         workspace: Workspace | None = None,
         task_name: str = "noop",
         task_data: BaseTaskData | dict[str, Any] | None = None,
+        assign_contributor_role: bool = False,
         **kwargs: Any,
     ) -> WorkRequest:
         """
@@ -499,6 +534,8 @@ class Playground(ArtifactPlayground):
         :param result: if not None call mark_completed(result)
         :param expired: True to create an expired work request
           (created_at: 1 year ago, expiration_delay: 1 day)
+        :param assign_contributor_role: assign the ``CONTRIBUTOR`` role on
+          the workspace to the creator of the work request
         :param kwargs: use them when creating the WorkRequest model
         """
         # FileStore and Workspace are usually created by the migrations
@@ -515,8 +552,7 @@ class Playground(ArtifactPlayground):
             "workspace": workspace,
         }
         if "created_by" not in kwargs:
-            token = self.create_user_token()
-            defaults["created_by"] = token.user
+            defaults["created_by"] = self.get_default_user()
         if expired:
             defaults.update(
                 created_at=timezone.now() - timedelta(days=365),
@@ -540,6 +576,13 @@ class Playground(ArtifactPlayground):
         if created_at is not None:
             work_request.created_at = created_at
             work_request.save()
+
+        if assign_contributor_role:
+            self.create_group_role(
+                work_request.workspace,
+                Workspace.Roles.CONTRIBUTOR,
+                users=[work_request.created_by],
+            )
 
         if assign_new_worker:
             work_request.assign_worker(self.create_worker())
@@ -849,7 +892,7 @@ class Playground(ArtifactPlayground):
 
         return FileUpload.objects.create(
             file_in_artifact=file_in_artifact,
-            path="temp_file_aaaa",
+            path=f"temp_file_{time.monotonic_ns()}",
         )
 
     @context.disable_permission_checks()
@@ -871,9 +914,11 @@ class Playground(ArtifactPlayground):
         self,
         *,
         name: str = "hello",
+        binaries: list[str] | None = None,
         version: str = "1.0-1",
         architectures: set[str] | None = None,
         workspace: Workspace | None = None,
+        work_request: WorkRequest | None = None,
         created_by: User | None = None,
         create_files: bool = False,
     ) -> Artifact:
@@ -881,11 +926,16 @@ class Playground(ArtifactPlayground):
         with tempfile.TemporaryDirectory() as tempdir:
             workdir = Path(tempdir)
             source_package = self.create_source_package(
-                workdir, name=name, version=version, architectures=architectures
+                workdir,
+                name=name,
+                binaries=binaries,
+                version=version,
+                architectures=architectures,
             )
             return self.create_artifact_from_local(
                 source_package,
                 workspace=workspace,
+                work_request=work_request,
                 created_by=created_by,
                 create_files=create_files,
             )
@@ -943,9 +993,11 @@ class Playground(ArtifactPlayground):
         source: Literal[True] = True,
         binary: Literal[False],
         binaries: list[str] | None = ...,
+        bin_architecture: str = ...,
         workspace: Workspace | None = ...,
         work_request: WorkRequest | None = None,
         created_by: User | None = ...,
+        create_files: bool = ...,
     ) -> SourceUploadArtifacts: ...
 
     @overload
@@ -957,9 +1009,11 @@ class Playground(ArtifactPlayground):
         source: Literal[False],
         binary: Literal[True] = True,
         binaries: list[str] | None = ...,
+        bin_architecture: str = ...,
         workspace: Workspace | None = ...,
         work_request: WorkRequest | None = None,
         created_by: User | None = ...,
+        create_files: bool = ...,
     ) -> BinaryUploadArtifacts: ...
 
     @overload
@@ -971,9 +1025,11 @@ class Playground(ArtifactPlayground):
         source: Literal[True] = True,
         binary: Literal[True] = True,
         binaries: list[str] | None = ...,
+        bin_architecture: str = ...,
         workspace: Workspace | None = ...,
         work_request: WorkRequest | None = None,
         created_by: User | None = ...,
+        create_files: bool = ...,
     ) -> MixedUploadArtifacts: ...
 
     @context.disable_permission_checks()
@@ -985,6 +1041,7 @@ class Playground(ArtifactPlayground):
         source: bool = True,
         binary: bool = True,
         binaries: list[str] | None = None,
+        bin_architecture: str = "all",
         workspace: Workspace | None = None,
         work_request: WorkRequest | None = None,
         created_by: User | None = None,
@@ -1007,6 +1064,7 @@ class Playground(ArtifactPlayground):
                 source=source,
                 binary=binary,
                 binaries=binaries,
+                bin_architecture=bin_architecture,
             )
             local_artifacts["upload"] = [upload]
             if source:
@@ -1084,7 +1142,10 @@ class Playground(ArtifactPlayground):
             else:
                 created_by = self.get_default_user()
         data = DebianPackageBuildLog(
-            source=source, version=version, filename=filename
+            source=source,
+            version=version,
+            architecture=build_arch,
+            filename=filename,
         )
         artifact, _ = self.create_artifact(
             paths={filename: contents},
@@ -1288,6 +1349,7 @@ class Playground(ArtifactPlayground):
         workspace: Workspace | None = None,
         vendor: str = "Debian",
         mirror: str = "https://deb.debian.org",
+        components: list[str] | None = None,
         pkglist: list[str] | None = None,
         with_init: bool = True,
         with_dev: bool = True,
@@ -1325,6 +1387,8 @@ class Playground(ArtifactPlayground):
                 return lookup_result.collection_item
             except KeyError:
                 pass
+        if components is None:
+            components = ["main"]
         if environment is None:
             # Lookup failed: create it
             data = {
@@ -1333,6 +1397,7 @@ class Playground(ArtifactPlayground):
                 "mirror": mirror,
                 "pkglist": pkglist or [],
                 "codename": codename,
+                "components": components,
                 "architecture": architecture,
                 "variant": variant,
                 "with_init": with_init,
@@ -1348,7 +1413,7 @@ class Playground(ArtifactPlayground):
             variables = {"backend": "unshare", "variant": variant}
 
         try:
-            return CollectionItem.active_objects.get(
+            return CollectionItem.objects.active().get(
                 parent_collection=collection,
                 artifact=environment,
                 data__contains=variables,
@@ -1366,6 +1431,7 @@ class Playground(ArtifactPlayground):
         *,
         source: Artifact,
         architecture: str = "all",
+        host_architecture: str | None = None,
         environment: Artifact,
         workflow: WorkRequest | None = None,
         workspace: Workspace | None = None,
@@ -1373,7 +1439,7 @@ class Playground(ArtifactPlayground):
         """Create a sbuild work request."""
         task_data = SbuildData(
             input=SbuildInput(source_artifact=source.pk),
-            host_architecture=architecture,
+            host_architecture=host_architecture or architecture,
             environment=environment.pk,
             backend=BackendType.UNSHARE,
             build_components=[
@@ -1409,7 +1475,9 @@ class Playground(ArtifactPlayground):
         self,
         source: Artifact,
         *,
+        binary_name: str | None = None,
         architecture: str = "all",
+        host_architecture: str | None = None,
         workflow: WorkRequest | None = None,
         environment: Artifact | None = None,
         worker: Worker | None = None,
@@ -1430,10 +1498,12 @@ class Playground(ArtifactPlayground):
         work_request = self.create_sbuild_work_request(
             source=source,
             architecture=architecture,
+            host_architecture=host_architecture,
             environment=environment,
             workflow=workflow,
             workspace=workspace,
         )
+        work_request.mark_pending()
         if worker is None:
             worker = self.create_worker()
 
@@ -1441,58 +1511,60 @@ class Playground(ArtifactPlayground):
         work_request.assign_worker(worker)
         work_request.mark_running()
 
-        with tempfile.TemporaryDirectory() as tempdir:
-            workdir = Path(tempdir)
+        # Add a build log
+        buildlog_artifact = self.create_build_log_artifact(
+            source=name,
+            version=version,
+            build_arch=build_arch,
+            workspace=workspace,
+            work_request=work_request,
+        )
+        self.create_artifact_relation(
+            buildlog_artifact, source, ArtifactRelation.Relations.RELATES_TO
+        )
 
-            # Add a build log
-            buildlog_artifact = self.create_build_log_artifact(
-                source=name,
-                version=version,
-                build_arch=build_arch,
-                workspace=workspace,
-                work_request=work_request,
-            )
-            self.create_artifact_relation(
-                buildlog_artifact, source, ArtifactRelation.Relations.RELATES_TO
+        # Add the binary upload
+        upload_artifacts = self.create_upload_artifacts(
+            src_name=name,
+            version=version,
+            source=False,
+            binary=True,
+            binaries=[binary_name or name],
+            bin_architecture=architecture,
+            workspace=workspace,
+            work_request=work_request,
+            created_by=work_request.created_by,
+            create_files=True,
+        )
+        assert len(upload_artifacts.binaries) == 1
+        self.create_artifact_relation(
+            upload_artifacts.binaries[0],
+            source,
+            ArtifactRelation.Relations.BUILT_USING,
+        )
+        self.create_artifact_relation(
+            buildlog_artifact,
+            upload_artifacts.binaries[0],
+            ArtifactRelation.Relations.RELATES_TO,
+        )
+
+        if workflow is not None:
+            work_request.add_event_reaction(
+                "on_success",
+                ActionUpdateCollectionWithArtifacts(
+                    collection="internal@collections",
+                    name_template=f"build-{architecture}",
+                    variables={
+                        "binary_names": [binary_name or name],
+                        "architecture": architecture,
+                        "source_package_name": name,
+                    },
+                    artifact_filters={"category": ArtifactCategory.UPLOAD},
+                ),
             )
 
-            # Add the .deb
-            binarypackage = self.create_binary_package(
-                workdir, name=name, version=version, architecture=architecture
-            )
-            binarypackage_artifact = self.create_artifact_from_local(
-                binarypackage,
-                workspace=workspace,
-                work_request=work_request,
-                created_by=work_request.created_by,
-                create_files=True,
-            )
-            self.create_artifact_relation(
-                binarypackage_artifact,
-                source,
-                ArtifactRelation.Relations.BUILT_USING,
-            )
-            self.create_artifact_relation(
-                buildlog_artifact,
-                binarypackage_artifact,
-                ArtifactRelation.Relations.RELATES_TO,
-            )
-
-            # TODO: create the .changes file / Upload artifact
-            # TODO:     adding the .dsc, the sources, the .deb
-            # TODO: self.create_artifact_relation(
-            # TODO:     upload,
-            # TODO:     binarypackage_artifact,
-            # TODO:     ArtifactRelation.Relations.EXTENDS,
-            # TODO: )
-            # TODO: self.create_artifact_relation(
-            # TODO:     upload,
-            # TODO:     binarypackage_artifact,
-            # TODO:     ArtifactRelation.Relations.RELATES_TO,
-            # TODO: )
-
-            # Complete the task
-            work_request.mark_completed(WorkRequest.Results.SUCCESS)
+        # Complete the task
+        work_request.mark_completed(WorkRequest.Results.SUCCESS)
 
         return work_request
 

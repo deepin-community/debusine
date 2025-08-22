@@ -11,14 +11,12 @@
 import json
 import uuid
 from collections.abc import Iterable
-from functools import cached_property
 from typing import Any
 
 from debusine.artifacts import LintianArtifact
-from debusine.artifacts.models import BaseArtifactDataModel
+from debusine.artifacts.models import BaseArtifactDataModel, TaskTypes
 from debusine.db.models import Artifact, FileInArtifact
 from debusine.tasks import Lintian
-from debusine.tasks.models import TaskTypes
 from debusine.web.views.work_request import WorkRequestPlugin
 
 
@@ -42,17 +40,8 @@ class LintianAnalysisTag(BaseArtifactDataModel):
 class LintianView(WorkRequestPlugin):
     """View for Lintian work request."""
 
-    template_name = "web/lintian-work_request-detail.html"
     task_type = TaskTypes.WORKER
     task_name = "lintian"
-
-    @cached_property
-    def task(self) -> Lintian:
-        """Return the task to display."""
-        return Lintian(
-            self.work_request.used_task_data,
-            self.work_request.dynamic_task_data,
-        )
 
     @classmethod
     def _artifacts_to_tags(
@@ -268,9 +257,30 @@ class LintianView(WorkRequestPlugin):
 
         return request_data
 
+    def do_get_description_data(self) -> dict[str, Any]:
+        """Parse metadata."""
+        dynamic_data = self.task.dynamic_data
+        assert dynamic_data is not None
+
+        data = self.task.data
+
+        return {
+            "package_name": dynamic_data.subject,
+            "source_artifact_id": dynamic_data.input_source_artifact_id,
+            "binary_artifacts_ids": dynamic_data.input_binary_artifacts_ids,
+            "environment_id": dynamic_data.environment_id,
+            "fail_on_severity": data.fail_on_severity,
+            "host_architecture": data.host_architecture,
+            "target_distribution": data.target_distribution,
+            "include_tags": data.include_tags,
+            "exclude_tags": data.exclude_tags,
+        }
+
     def get_context_data(self) -> dict[str, Any]:
         """Return the context."""
         task = self.task
+        assert isinstance(task, Lintian)
+
         artifacts = self.work_request.artifact_set.filter(
             category=LintianArtifact._category
         ).order_by("id")
@@ -278,6 +288,13 @@ class LintianView(WorkRequestPlugin):
         lintian_txt_path = self._find_lintian_txt_url_path(artifacts)
 
         return {
+            "specialized_tab": {
+                "label": "Lintian",
+                "slug": "lintian",
+                "template": "web/_lintian-work_request-detail.html",
+            },
+            "description_template": "web/_lintian-description.html",
+            "description_data": self.get_description_data(),
             "request_data": self._get_request_data(task),
             "result": self.work_request.result,
             "lintian_txt_path": lintian_txt_path,

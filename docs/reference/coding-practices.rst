@@ -35,7 +35,7 @@ The suggested workflow looks like this:
 
      .. code-block:: console
 
-        $ ./manage.py test path-to-the-testing-folder
+        $ pytest path-to-the-testing-folder
 
   5. Refactor (if needed). You might have introduced some duplication in
      your code or in your tests. Clean that up now before it's too late.
@@ -387,7 +387,7 @@ in the ModelManager describing the operation, such as:
 
 .. code-block:: python3
 
-   Worker.objects.create_with_fqdn(fqdn, token)
+   Worker.objects.create_with_fqdn(fqdn, token=token)
 
 
 Naming fields

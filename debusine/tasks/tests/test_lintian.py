@@ -35,17 +35,15 @@ from debusine.artifacts.models import (
     EmptyArtifactData,
 )
 from debusine.client.models import (
-    ArtifactResponse,
     FileResponse,
     FilesResponseType,
-    RemoteArtifact,
     StrMaxLength255,
 )
 from debusine.tasks import Lintian, TaskConfigError
 from debusine.tasks.executors import InstanceInterface
 from debusine.tasks.models import (
     LintianDynamicData,
-    LintianPackageType,
+    LintianFailOnSeverity,
     LookupMultiple,
 )
 from debusine.tasks.server import ArtifactInfo
@@ -54,7 +52,11 @@ from debusine.tasks.tests.helper_mixin import (
     FakeTaskDatabase,
 )
 from debusine.test import TestCase
-from debusine.test.test_utils import create_system_tarball_data
+from debusine.test.test_utils import (
+    create_artifact_response,
+    create_remote_artifact,
+    create_system_tarball_data,
+)
 
 
 class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
@@ -69,6 +71,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
 
     def setUp(self) -> None:
         """Initialize test objects."""
+        super().setUp()
         self.task = Lintian(self.SAMPLE_TASK_DATA)
 
         # Different tests might try to get the lintian version when
@@ -82,6 +85,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
         """Delete objects."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def assert_parse_output(
         self, output: str, expected: list[dict[str, str]]
@@ -146,19 +150,52 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             W: hello source: package-uses-deprecated-debhelper-compat-version 9
             N:
             W: package-uses-deprecated-debhelper-compat-version
+            N:
+            N: The debhelper compatibility version used by this package...
+            N:
+            N: The compatibility version can be set...
+            N:
+            W: hello source: national-encoding debian/po/sv.po
+            N:
+            W: national-encoding
+            N:
+            N: A file is not valid UTF-8.
+            N:
+            N: Debian has used UTF-8 for many years...
             """
+        )
+        explanation_1 = textwrap.dedent(
+            """\
+            The debhelper compatibility version used by this package...
+
+            The compatibility version can be set..."""
+        )
+        explanation_2 = textwrap.dedent(
+            """\
+            A file is not valid UTF-8.
+
+            Debian has used UTF-8 for many years..."""
         )
 
         expected = [
             {
                 "comment": "",
-                "explanation": "",
+                "explanation": explanation_1,
                 "note": "9",
                 "package": "hello source",
                 "pointer": "",
                 "severity": "warning",
                 "tag": "package-uses-deprecated-debhelper-compat-version",
-            }
+            },
+            {
+                "comment": "",
+                "explanation": explanation_2,
+                "note": "debian/po/sv.po",
+                "package": "hello source",
+                "pointer": "",
+                "severity": "warning",
+                "tag": "national-encoding",
+            },
         ]
 
         self.assert_parse_output(output, expected)
@@ -439,7 +476,9 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
         directory = self.create_temporary_directory()
         (directory / Lintian.CAPTURE_OUTPUT_FILENAME).write_text("")
 
-        self.configure_task(override={"fail_on_severity": "warning"})
+        self.configure_task(
+            override={"fail_on_severity": LintianFailOnSeverity.WARNING}
+        )
         self.assertTrue(self.task.task_succeeded(0, directory))
 
     def test_task_succeed_severity_less_than_fail_on_return_true(self) -> None:
@@ -452,8 +491,11 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
         self.task._package_name_to_filename = {
             "cynthiune.app": "cynthiune-app.deb"
         }
+        self.task._architecture_to_packages["all"] = {"cynthiune.app"}
 
-        self.configure_task(override={"fail_on_severity": "error"})
+        self.configure_task(
+            override={"fail_on_severity": LintianFailOnSeverity.ERROR}
+        )
 
         self.assertTrue(self.task.task_succeeded(0, directory))
 
@@ -466,15 +508,14 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             "W: cynthiune.app: vcs-obsolete"
         )
 
-        self.configure_task(override={"fail_on_severity": "warning"})
+        self.configure_task(
+            override={"fail_on_severity": LintianFailOnSeverity.WARNING}
+        )
 
         self.task._package_name_to_filename = {
-            "cynthiune.app": "cynthiun-app.deb"
+            "cynthiune.app": "cynthiune-app.deb"
         }
-
-        self.task._package_type_to_packages[LintianPackageType.BINARY_ANY] = {
-            "cynthiune.app"
-        }
+        self.task._architecture_to_packages["all"] = {"cynthiune.app"}
 
         self.assertFalse(self.task.task_succeeded(0, directory))
 
@@ -485,12 +526,16 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             "E: cynthiune.app: vcs-obsolete\nW: hello: invalid-something\n"
         )
 
-        self.configure_task(override={"fail_on_severity": "none"})
+        self.configure_task(
+            override={"fail_on_severity": LintianFailOnSeverity.NONE}
+        )
 
         self.task._package_name_to_filename = {
             "cynthiune.app": "cynthiune-app.deb",
             "hello": "hello.deb",
         }
+        self.task._architecture_to_packages["all"] = {"cynthiune.app"}
+        self.task._architecture_to_packages["amd64"] = {"hello"}
 
         # Succeeded (fail_on_severity: none)
         self.assertTrue(self.task.task_succeeded(0, directory))
@@ -519,21 +564,21 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             "version": 1,
         }
 
-    def assert_package_type_to_analysis(
+    def assert_architecture_to_analysis(
         self,
         output_config: dict[str, bool],
-        expected_package_type_to_analysis: dict[
-            LintianPackageType, dict[str, Any]
-        ],
+        expected_architecture_to_analysis: dict[str, dict[str, Any]],
     ) -> None:
         """
-        _create_package_type_to_analysis return the expected output.
+        _create_architecture_to_analysis return the expected output.
 
         The real analysis test is implemented in test_create_analysis(). This
-        test is only to check that only the relevant package types are
-        returned (not the values of the package types exhaustively).
+        test is only to check that only the relevant architectures are
+        returned.
         """
         self.configure_task(override={"output": output_config})
+        for architecture in ("source", "all", "amd64"):
+            self.task._architecture_to_packages[architecture] = set()
 
         lintian_file = self.create_temporary_file()
         lintian_file.write_text(
@@ -542,8 +587,8 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
         )
 
         self.assertEqual(
-            self.task._create_package_type_to_analysis(lintian_file),
-            expected_package_type_to_analysis,
+            self.task._create_architecture_to_analysis(lintian_file),
+            expected_architecture_to_analysis,
         )
 
     def test_analyze_lintian_output_no_output_tasks(self) -> None:
@@ -553,34 +598,30 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             "binary_all_analysis": False,
             "binary_any_analysis": False,
         }
-        expected_analysis: dict[LintianPackageType, dict[str, Any]] = {}
-        self.assert_package_type_to_analysis(analysis_config, expected_analysis)
+        expected_analysis: dict[str, dict[str, Any]] = {}
+        self.assert_architecture_to_analysis(analysis_config, expected_analysis)
 
-    def test_create_package_type_to_analysis_only_source(self) -> None:
-        """test_create_package_type_to_analysis(): only source analysed."""
+    def test_create_architecture_to_analysis_only_source(self) -> None:
+        """test_create_architecture_to_analysis(): only source analysed."""
         analysis_config = {
             "source_analysis": True,
             "binary_all_analysis": False,
             "binary_any_analysis": False,
         }
-        expected_analysis = {
-            LintianPackageType.SOURCE: self.get_analysis_no_tags()
-        }
-        self.assert_package_type_to_analysis(analysis_config, expected_analysis)
+        expected_analysis = {"source": self.get_analysis_no_tags()}
+        self.assert_architecture_to_analysis(analysis_config, expected_analysis)
 
-    def test_create_package_type_to_analysis_only_binary_all(self) -> None:
-        """test_create_package_type_to_analysis(): only binary_all analysed."""
+    def test_create_architecture_to_analysis_only_binary_all(self) -> None:
+        """test_create_architecture_to_analysis(): only binary_all analysed."""
         analysis_config = {
             "source_analysis": False,
             "binary_all_analysis": True,
             "binary_any_analysis": False,
         }
-        expected_analysis = {
-            LintianPackageType.BINARY_ALL: self.get_analysis_no_tags()
-        }
-        self.assert_package_type_to_analysis(analysis_config, expected_analysis)
+        expected_analysis = {"all": self.get_analysis_no_tags()}
+        self.assert_architecture_to_analysis(analysis_config, expected_analysis)
 
-    def test_create_package_type_to_analysis_only_source_and_binary_all(
+    def test_create_architecture_to_analysis_only_source_and_binary_all(
         self,
     ) -> None:
         """analyze_lintian_output(): only source and binary all analysed."""
@@ -590,10 +631,20 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             "binary_any_analysis": False,
         }
         expected_analysis = {
-            LintianPackageType.BINARY_ALL: self.get_analysis_no_tags(),
-            LintianPackageType.SOURCE: self.get_analysis_no_tags(),
+            "all": self.get_analysis_no_tags(),
+            "source": self.get_analysis_no_tags(),
         }
-        self.assert_package_type_to_analysis(analysis_config, expected_analysis)
+        self.assert_architecture_to_analysis(analysis_config, expected_analysis)
+
+    def test_create_architecture_to_analysis_only_binary_any(self) -> None:
+        """analyze_lintian_output(): only binary any analysed."""
+        analysis_config = {
+            "source_analysis": False,
+            "binary_all_analysis": False,
+            "binary_any_analysis": True,
+        }
+        expected_analysis = {"amd64": self.get_analysis_no_tags()}
+        self.assert_architecture_to_analysis(analysis_config, expected_analysis)
 
     def test_configure(self) -> None:
         """configure() with valid data. No exception is raised."""
@@ -612,14 +663,16 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
 
     def test_configure_with_fail_on_severity(self) -> None:
         """Configuration included "fail_on_severity". Saved, no exception."""
-        severity = "warning"
+        severity = LintianFailOnSeverity.WARNING
         self.configure_task(override={"fail_on_severity": severity})
         self.assertEqual(self.task.data.fail_on_severity, severity)
 
     def test_configure_without_fail_on_severity(self) -> None:
         """Configuration does not include "fail_on_severity". Default is set."""
         self.configure_task()
-        self.assertEqual(self.task.data.fail_on_severity, "none")
+        self.assertEqual(
+            self.task.data.fail_on_severity, LintianFailOnSeverity.ERROR
+        )
         self.assertEqual(self.task.data.target_distribution, "debian:unstable")
 
     def test_configure_without_output(self) -> None:
@@ -663,7 +716,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=lintian",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -702,7 +755,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=lintian",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -736,7 +789,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=lintian",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -786,7 +839,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=lintian",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -881,7 +934,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=lintian",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -926,7 +979,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=lintian",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -970,7 +1023,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=lintian",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -1023,12 +1076,34 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
 
         with self.assertRaisesRegex(
             TaskConfigError,
-            "^input.binary_artifact: unexpected artifact category: "
-            "'debian:source-package'. Valid categories: "
+            r"^input.binary_artifacts\[0\]: unexpected artifact category: "
+            r"'debian:source-package'. Valid categories: "
             r"\['debian:binary-package', 'debian:binary-packages', "
             r"'debian:upload'\]$",
         ):
             self.task.compute_dynamic_data(task_db)
+
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
+        self.task.dynamic_data = LintianDynamicData(
+            input_binary_artifacts_ids=[1, 2],
+        )
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2])
+
+        self.task.dynamic_data = LintianDynamicData(
+            input_source_artifact_id=1,
+            input_binary_artifacts_ids=[2, 3],
+        )
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2, 3])
+
+        self.task.dynamic_data = LintianDynamicData(
+            input_source_artifact_id=1,
+            environment_id=2,
+            input_binary_artifacts_ids=[3, 4],
+        )
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2, 3, 4])
 
     def test_cmdline_minimum_options(self) -> None:
         """Test Lintian._cmdline minimum options."""
@@ -1085,7 +1160,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
         dsc = self.create_temporary_file(suffix=".dsc", directory=directory)
         self.create_temporary_file(suffix=".tar.xz", directory=directory)
 
-        self.patch_extract_package_name_type().return_value = None, None
+        self.patch_extract_package_name_arch().return_value = None, None
 
         prepare_executor_instance_mocked = (
             self.patch_prepare_executor_instance()
@@ -1140,10 +1215,10 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             f"Files: ['{ignored_file}']\n",
         )
 
-    def patch_extract_package_name_type(self) -> MagicMock:
-        """Patch self.task._extract_package_name_type, return Mock."""
+    def patch_extract_package_name_arch(self) -> MagicMock:
+        """Patch self.task._extract_package_name_arch, return Mock."""
         patcher = mock.patch.object(
-            self.task, "_extract_package_name_type", autospec=True
+            self.task, "_extract_package_name_arch", autospec=True
         )
         mocked = patcher.start()
         self.addCleanup(patcher.stop)
@@ -1157,7 +1232,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
         file1 = self.create_temporary_file(suffix=".deb", directory=directory)
         file2 = self.create_temporary_file(suffix=".udeb", directory=directory)
 
-        self.patch_extract_package_name_type().return_value = None, None
+        self.patch_extract_package_name_arch().return_value = None, None
 
         self.patch_prepare_executor_instance()
 
@@ -1171,7 +1246,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
         """
         configure_for_execution() update member variables.
 
-        Updates Lintian_package_type_to_packages,
+        Updates Lintian_architecture_to_packages,
         Lintian._package_name_to_filename.
         """
         directory = self.create_temporary_directory()
@@ -1190,26 +1265,20 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
         # Create a file that is ignored
         (ignored_file := directory / "package.tar.xz").write_text("not-used")
 
-        extract_package_name_type_patcher = mock.patch.object(
-            self.task, "_extract_package_name_type"
+        extract_package_name_arch_patcher = mock.patch.object(
+            self.task, "_extract_package_name_arch"
         )
-        extract_file_name_mocked = extract_package_name_type_patcher.start()
-        filename_to_package_name_type = {
-            source_pkg_file.name: (
-                source_pkg_name,
-                LintianPackageType.SOURCE,
-            ),
+        extract_file_name_mocked = extract_package_name_arch_patcher.start()
+        filename_to_package_name_arch = {
+            source_pkg_file.name: (source_pkg_name, "source"),
             ignored_file.name: (None, None),
-            binary_pkg_file.name: (
-                binary_pkg_name,
-                LintianPackageType.BINARY_ALL,
-            ),
+            binary_pkg_file.name: (binary_pkg_name, "amd64"),
         }
 
         extract_file_name_mocked.side_effect = (
-            lambda file: filename_to_package_name_type.get(file.name)
+            lambda file: filename_to_package_name_arch.get(file.name)
         )
-        self.addCleanup(extract_package_name_type_patcher.stop)
+        self.addCleanup(extract_package_name_arch_patcher.stop)
 
         self.patch_prepare_executor_instance()
 
@@ -1224,14 +1293,10 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             },
         )
 
-        # self.task._package_type_to_packages is updated
+        # self.task._architecture_to_packages is updated
         self.assertEqual(
-            self.task._package_type_to_packages,
-            {
-                LintianPackageType.SOURCE: {"hello source"},
-                LintianPackageType.BINARY_ALL: {"hello"},
-                LintianPackageType.BINARY_ANY: set(),
-            },
+            self.task._architecture_to_packages,
+            {"source": {"hello source"}, "amd64": {"hello"}},
         )
 
     def patch_get_lintian_version(self, version: str) -> Any:
@@ -1296,20 +1361,20 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             "lintian_version": "1.0.0",
             "distribution": "debian:unstable",
         }
-        package_type_to_analysis = {
-            LintianPackageType.SOURCE: {
+        architecture_to_analysis = {
+            "source": {
                 "summary": {
                     **summary_data,
                     "package_filename": {"hello": "hello_1.0.dsc"},
                 }
             },
-            LintianPackageType.BINARY_ALL: {
+            "all": {
                 "summary": {
                     **summary_data,
                     "package_filename": {"hello-doc": "hello-doc_1.0_all.deb"},
                 }
             },
-            LintianPackageType.BINARY_ANY: {
+            "amd64": {
                 "summary": {
                     **summary_data,
                     "package_filename": {"hello": "hello_1.0_amd64.deb"},
@@ -1317,16 +1382,16 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             },
         }
 
-        create_package_type_to_analysis_patcher = mock.patch.object(
-            self.task, "_create_package_type_to_analysis", autospec=True
+        create_architecture_to_analysis_patcher = mock.patch.object(
+            self.task, "_create_architecture_to_analysis", autospec=True
         )
-        create_package_type_to_analysis_mocked = (
-            create_package_type_to_analysis_patcher.start()
+        create_architecture_to_analysis_mocked = (
+            create_architecture_to_analysis_patcher.start()
         )
-        create_package_type_to_analysis_mocked.return_value = (
-            package_type_to_analysis
+        create_architecture_to_analysis_mocked.return_value = (
+            architecture_to_analysis
         )
-        self.addCleanup(create_package_type_to_analysis_patcher.stop)
+        self.addCleanup(create_architecture_to_analysis_patcher.stop)
 
         # Used ty verify the relations
         self.task._source_artifacts_ids = [1]
@@ -1337,9 +1402,9 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
         workspace_name = "testing"
 
         uploaded_artifacts = [
-            RemoteArtifact(id=10, workspace=workspace_name),
-            RemoteArtifact(id=11, workspace=workspace_name),
-            RemoteArtifact(id=12, workspace=workspace_name),
+            create_remote_artifact(id=10, workspace=workspace_name),
+            create_remote_artifact(id=11, workspace=workspace_name),
+            create_remote_artifact(id=12, workspace=workspace_name),
         ]
 
         debusine_mock.upload_artifact.side_effect = uploaded_artifacts
@@ -1357,16 +1422,14 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
 
         # Debusine Mock upload_artifact expected calls
         upload_artifact_calls = []
-        for (
-            package_type,
-            analysis,
-        ) in package_type_to_analysis.items():
+        for architecture, analysis in architecture_to_analysis.items():
             (
-                analysis_file := exec_dir / f"analysis-{package_type}.json"
+                analysis_file := exec_dir / f"analysis-{architecture}.json"
             ).write_text(json.dumps(analysis))
             lintian_artifact = LintianArtifact.create(
                 analysis=analysis_file,
                 lintian_output=lintian_output,
+                architecture=architecture,
                 summary=DebianLintianSummary.parse_obj(analysis["summary"]),
             )
 
@@ -1538,7 +1601,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             filename = f"pkg-{artifact_id}_amd64.deb"
 
             artifact_responses.append(
-                ArtifactResponse(
+                create_artifact_response(
                     id=artifact_id,
                     workspace=workspace,
                     category="Test",
@@ -1599,29 +1662,26 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
             expected_artifact_ids=[source_artifact_id] + binary_artifacts_ids,
         )
 
-    def test_extract_package_name_type_source_file(self) -> None:
-        """Lintian._extract_package_name_type() return pkgname + source."""
+    def test_extract_package_name_arch_source_file(self) -> None:
+        """Lintian._extract_package_name_arch() return pkgname + source."""
         file = self.create_temporary_file(suffix=".dsc")
         package_name = self.write_dsc_example_file(file)["Source"]
 
         self.assertEqual(
-            self.task._extract_package_name_type(file),
-            (package_name + " source", LintianPackageType.SOURCE),
+            self.task._extract_package_name_arch(file),
+            (package_name + " source", "source"),
         )
 
-    def test_extract_package_name_type_raise_invalid_suffix(self) -> None:
-        """Lintian._extract_package_name_type() invalid suffix: None, None."""
+    def test_extract_package_name_arch_raise_invalid_suffix(self) -> None:
+        """Lintian._extract_package_name_arch() invalid suffix: None, None."""
         self.assertEqual(
-            self.task._extract_package_name_type(Path("name.tmp")), (None, None)
+            self.task._extract_package_name_arch(Path("name.tmp")), (None, None)
         )
 
-    def test_extract_package_name_type_deb_udeb(self) -> None:
-        """Lintian._extract_package_name_type() use DebFile correctly."""
-        for package_type in [
-            (LintianPackageType.BINARY_ANY, "any"),
-            (LintianPackageType.BINARY_ALL, "all"),
-        ]:
-            with self.subTest(package_type=package_type):
+    def test_extract_package_name_arch_deb_udeb(self) -> None:
+        """Lintian._extract_package_name_arch() use DebFile correctly."""
+        for architecture in ["amd64", "all"]:
+            with self.subTest(architecture=architecture):
                 filenames = [
                     "package-name_amd64.deb",
                     "package-name_amd64.udeb",
@@ -1631,7 +1691,7 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
                 mock_control = MagicMock()
                 mock_control.debcontrol.return_value = {
                     "Package": package_name,
-                    "Architecture": package_type[1],
+                    "Architecture": architecture,
                 }
 
                 mock_deb_file_instance = MagicMock()
@@ -1648,22 +1708,22 @@ class LintianTests(ExternalTaskHelperMixin[Lintian], TestCase):
                 for filename in filenames:
                     with self.subTest(filename=filename):
                         self.assertEqual(
-                            self.task._extract_package_name_type(
+                            self.task._extract_package_name_arch(
                                 Path(filename)
                             ),
-                            (package_name, package_type[0]),
+                            (package_name, architecture),
                         )
 
                         debfile_mocked.assert_called_with(Path(filename))
 
     def test_configure_for_execution_invalid_dsc(self) -> None:
-        """Lintian._extract_package_name_type() handles an invalid .dsc file."""
+        """Lintian._extract_package_name_arch() handles an invalid .dsc file."""
         directory = self.create_temporary_directory()
         dsc = directory / "hello.dsc"
         dsc.touch()
 
         self.assertEqual(
-            self.task._extract_package_name_type(dsc), (None, None)
+            self.task._extract_package_name_arch(dsc), (None, None)
         )
 
         assert self.task._debug_log_files_directory

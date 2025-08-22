@@ -15,10 +15,12 @@ import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from textwrap import dedent
 from typing import Any
 
 import requests
 import yaml
+from debian.deb822 import Deb822
 
 from debusine.artifacts.local_artifact import BinaryPackage, SourcePackage
 from debusine.artifacts.models import ArtifactCategory
@@ -44,19 +46,50 @@ class IntegrationTestHelpersMixin(TestCase):
 
     @classmethod
     @contextmanager
-    def apt_indexes(cls, suite_name: str) -> Generator[Path, None, None]:
+    def apt_indexes(
+        cls,
+        suite_name: str,
+        url: str = "https://deb.debian.org/debian",
+        signed_by: str = "/usr/share/keyrings/debian-archive-keyring.gpg",
+        architectures: list[str] | None = None,
+    ) -> Generator[Path, None, None]:
         """Fetch APT indexes for a suite."""
+        if architectures is None:
+            architectures = [
+                subprocess.check_output(
+                    ["dpkg", "--print-architecture"], text=True
+                ).strip()
+            ]
+
         with cls._temporary_directory() as apt_path:
             (apt_path / "etc/apt/apt.conf.d").mkdir(parents=True)
             (apt_path / "etc/apt/preferences.d").mkdir(parents=True)
             (apt_path / "etc/apt/sources.list.d").mkdir(parents=True)
             (apt_path / "var/lib/apt/lists/partial").mkdir(parents=True)
-            (apt_path / "etc/apt/apt.conf").write_text(f'Dir "{apt_path}";\n')
-            keyring = "/usr/share/keyrings/debian-archive-keyring.gpg"
-            url = "https://deb.debian.org/debian"
-            (apt_path / "etc/apt/sources.list").write_text(
-                f"deb [signed-by={keyring}] {url} {suite_name} main\n"
-                f"deb-src [signed-by={keyring}] {url} {suite_name} main\n"
+            (apt_path / "etc/apt/apt.conf").write_text(
+                dedent(
+                    f"""\
+                    APT::Architecture "{architectures[0]}";
+                    APT::Architectures "{','.join(architectures)}";
+                    Dir "{apt_path}";
+                    """
+                )
+            )
+            if "\n" in signed_by:
+                # A multi-line Signed-By is an embedded public key.
+                signed_by = "\n" + "\n".join(
+                    f" {line}" if line else " ."
+                    for line in signed_by.splitlines()
+                )
+            source = {
+                "Types": "deb deb-src",
+                "URIs": url,
+                "Suites": suite_name,
+                "Components": "main",
+                "Signed-By": signed_by,
+            }
+            (apt_path / "etc/apt/sources.list.d/test.sources").write_text(
+                str(Deb822(source))
             )
             subprocess.check_call(
                 ["apt-get", "update"], env=cls.make_apt_environment(apt_path)

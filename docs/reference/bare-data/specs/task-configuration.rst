@@ -1,4 +1,4 @@
-.. _bare-data-task-configuration:
+.. bare-data:: debusine:task-configuration
 
 Category ``debusine:task-configuration``
 ========================================

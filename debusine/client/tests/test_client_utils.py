@@ -62,6 +62,7 @@ class DgetDownloadTests(TestCase):
 
     def setUp(self) -> None:
         """Configure fake http responses."""
+        super().setUp()
         self.workdir = self.create_temporary_directory()
 
         self.r_mock = responses.RequestsMock(assert_all_requests_are_fired=True)

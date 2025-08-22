@@ -28,8 +28,8 @@ class LoginTests(ViewTestMixin, TestCase):
         self.assertContains(response, "Log in")
 
         # Labels for the form
-        self.assertContains(response, "Username:")
-        self.assertContains(response, "Password:")
+        self.assertContains(response, "Username *")
+        self.assertContains(response, "Password *")
 
         # Has "next" form hidden field
         input_next = tree.xpath(

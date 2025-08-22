@@ -21,6 +21,7 @@ class DeleteNotificationChannelTests(TestCase):
 
     def setUp(self) -> None:
         """Set up test."""
+        super().setUp()
         self.email_data = {
             "from": "debusine@debusine.com",
             "to": ["user@example.com"],

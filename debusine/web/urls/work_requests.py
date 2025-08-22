@@ -32,6 +32,11 @@ urlpatterns = [
         name="retry",
     ),
     path(
+        "<int:pk>/abort/",
+        views.WorkRequestAbortView.as_view(),
+        name="abort",
+    ),
+    path(
         "<int:pk>/unblock/",
         views.WorkRequestUnblockView.as_view(),
         name="unblock",

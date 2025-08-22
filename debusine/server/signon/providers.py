@@ -43,17 +43,12 @@ All listed restrictions must be met (i.e. they are AND-ed together).
 
 import functools
 import json
-from collections.abc import Sequence
+from collections.abc import Collection
 from typing import Any, TYPE_CHECKING
-
-from django.core.exceptions import ImproperlyConfigured
-from django.utils.crypto import constant_time_compare
 
 if TYPE_CHECKING:  # pragma: no cover
     import django.http
     import jwcrypto.jwk
-
-    from debusine.db.models import Identity
 
 # Note: this module is supposed to be imported from settings.py
 #
@@ -167,14 +162,6 @@ class Provider:
         """Create a BoundProvider for this session."""
         return self.bound_class(self, request)
 
-    def validate_claims(self, identity: "Identity") -> list[str]:  # noqa: U100
-        """
-        Check if the claims in identity are acceptable by this provider.
-
-        :return: a list of error messages, or an empty list if validation passed
-        """
-        return []
-
 
 class OIDCValidationError(Exception):
     """Exception raised when OIDC authentication fails validation."""
@@ -203,7 +190,7 @@ class BoundOIDCProvider(BoundProvider):
         )
         self.tokens = None
         self.id_token_claims: dict[str, Any] | None = None
-        self.options: Sequence[str] | None = None
+        self.options: Collection[str] | None = None
 
     def get_authorization_url(self, *options: str) -> str:
         """Return an authorization URL for this provider."""
@@ -239,6 +226,7 @@ class BoundOIDCProvider(BoundProvider):
     def load_tokens(self) -> None:
         """Fetch and validate access_token and id_token from OIDC provider."""
         import jwcrypto.jwt
+        from django.utils.crypto import constant_time_compare
 
         expected_state = self.request.session.pop(
             f"signon_state_{self.provider.name}", None
@@ -341,8 +329,8 @@ class OIDCProvider(Provider):
         url_token: str,
         url_userinfo: str,
         url_jwks: str,
-        scope: str | Sequence[str],
-        restrict: Sequence[str] = ("email-verified",),
+        scope: str | Collection[str],
+        restrict: Collection[str] = ("email-verified",),
         **kwargs: Any,
     ) -> None:
         """
@@ -376,31 +364,7 @@ class OIDCProvider(Provider):
             self.scope = [scope]
         else:
             self.scope = list(scope)
-        self.restrict: Sequence[str] = tuple(restrict)
-
-    def validate_claims(self, identity: "Identity") -> list[str]:
-        """Check that the claims in identity match restrict."""
-        res = super().validate_claims(identity)
-
-        for restriction in self.restrict:
-            if restriction == "email-verified":
-                # Work only with verified emails
-                if not identity.claims.get("email_verified", False):
-                    res.append(
-                        f"identity {identity} does not have a verified email"
-                    )
-            elif restriction.startswith("group:"):
-                group_name = restriction[6:]
-                if group_name not in identity.claims.get("groups_direct", ()):
-                    res.append(
-                        f"identity {identity} is not in group {group_name}"
-                    )
-            else:
-                raise ImproperlyConfigured(
-                    f"unsupported signon restriction: {restriction!r}"
-                )
-
-        return res
+        self.restrict: Collection[str] = tuple(restrict)
 
 
 class GitlabProvider(OIDCProvider):

@@ -23,12 +23,14 @@ from debusine.server.collections.base import (
     ItemAdditionError,
     ItemRemovalError,
 )
+from debusine.server.collections.debian_archive import DebianArchiveManager
 from debusine.server.collections.debian_environments import (
     DebianEnvironmentsManager,
 )
 from debusine.server.collections.debian_package_build_logs import (
     DebianPackageBuildLogsManager,
 )
+from debusine.server.collections.debian_qa_results import DebianQAResultsManager
 from debusine.server.collections.debian_suite import DebianSuiteManager
 from debusine.server.collections.debian_suite_lintian import (
     DebianSuiteLintianManager,
@@ -40,8 +42,10 @@ from debusine.server.collections.workflow_internal import (
 
 __all__ = [
     "CollectionManagerInterface",
+    "DebianArchiveManager",
     "DebianEnvironmentsManager",
     "DebianPackageBuildLogsManager",
+    "DebianQAResultsManager",
     "DebianSuiteLintianManager",
     "DebianSuiteManager",
     "ItemAdditionError",
@@ -55,7 +59,7 @@ if getattr(settings, "TEST_MODE", False):  # pragma: no cover
     # any test.  This manager doesn't implement any specific semantics, but
     # it at least allows basic name lookups to work.
     from debusine.server.collections.tests.test_base import (  # noqa: F401
-        TestManager,
+        DebusineTestManager,
     )
 
-    __all__.append("TestManager")
+    __all__.append("DebusineTestManager")

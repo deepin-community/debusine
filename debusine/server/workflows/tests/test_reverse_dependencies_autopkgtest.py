@@ -9,7 +9,7 @@
 
 """Unit tests for the reverse_dependencies_autopkgtest workflow."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, ClassVar
 
 from debusine.artifacts.local_artifact import BinaryPackages, Upload
@@ -19,11 +19,10 @@ from debusine.artifacts.models import (
     CollectionCategory,
     DebianBinaryPackage,
     DebianSourcePackage,
+    TaskTypes,
 )
 from debusine.client.models import LookupChildType
-from debusine.db.context import context
 from debusine.db.models import Artifact, Collection, TaskDatabase, WorkRequest
-from debusine.server.collections.debian_suite import DebianSuiteManager
 from debusine.server.collections.lookup import lookup_single
 from debusine.server.workflows import (
     ReverseDependenciesAutopkgtestWorkflow,
@@ -40,7 +39,7 @@ from debusine.server.workflows.reverse_dependencies_autopkgtest import (
     _BinaryPackage,
     _SourcePackage,
 )
-from debusine.server.workflows.tests.helpers import TestWorkflow
+from debusine.server.workflows.tests.helpers import SampleWorkflow
 from debusine.tasks import TaskConfigError
 from debusine.tasks.models import (
     AutopkgtestNeedsInternet,
@@ -51,7 +50,6 @@ from debusine.tasks.models import (
     LookupSingle,
     SbuildData,
     SbuildInput,
-    TaskTypes,
 )
 from debusine.test.django import TestCase
 from debusine.test.test_utils import preserve_task_registry
@@ -80,7 +78,7 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
         task_data = {
             "source_artifact": 1,
             "binary_artifacts": ["internal@collections/name:build-amd64"],
-            "suite_collection": "sid@debian:suite",
+            "qa_suite": "sid@debian:suite",
             "vendor": "debian",
             "codename": "sid",
         }
@@ -94,7 +92,6 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
         )
         return ReverseDependenciesAutopkgtestWorkflow(wr)
 
-    @context.disable_permission_checks()
     def create_source_package(
         self,
         *,
@@ -118,16 +115,13 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
             ),
         )
         if add_to_collection is not None:
-            assert isinstance(add_to_collection.manager, DebianSuiteManager)
-            add_to_collection.manager.add_source_package(
+            add_to_collection.manager.add_artifact(
                 artifact,
                 user=self.playground.get_default_user(),
-                component="main",
-                section="devel",
+                variables={"component": "main", "section": "devel"},
             )
         return artifact
 
-    @context.disable_permission_checks()
     def create_binary_package(
         self,
         *,
@@ -160,13 +154,14 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
             ),
         )
         if add_to_collection is not None:
-            assert isinstance(add_to_collection.manager, DebianSuiteManager)
-            add_to_collection.manager.add_binary_package(
+            add_to_collection.manager.add_artifact(
                 artifact,
                 user=self.playground.get_default_user(),
-                component="main",
-                section="devel",
-                priority="optional",
+                variables={
+                    "component": "main",
+                    "section": "devel",
+                    "priority": "optional",
+                },
             )
         return artifact
 
@@ -177,14 +172,14 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
         )
         source_artifact = 2
         binary_artifacts = ["internal@collections/name:build-arm64"]
-        suite_collection = "trixie@debian:suite"
+        qa_suite = "trixie@debian:suite"
         vendor = "debian"
         codename = "trixie"
         workflow = self.create_rdep_autopkgtest_workflow(
             extra_task_data={
                 "source_artifact": source_artifact,
                 "binary_artifacts": binary_artifacts,
-                "suite_collection": suite_collection,
+                "qa_suite": qa_suite,
                 "vendor": vendor,
                 "codename": codename,
             }
@@ -195,7 +190,7 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
             workflow.data.binary_artifacts,
             LookupMultiple.parse_obj(binary_artifacts),
         )
-        self.assertEqual(workflow.data.suite_collection, suite_collection)
+        self.assertEqual(workflow.data.qa_suite, qa_suite)
         self.assertEqual(workflow.data.vendor, vendor)
         self.assertEqual(workflow.data.codename, codename)
         self.assertEqual(workflow.data.backend, BackendType.UNSHARE)
@@ -214,10 +209,10 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
 
         workflow.validate_input()
 
-    def test_validate_input_bad_suite_collection(self) -> None:
-        """validate_input raises errors in looking up suite_collection."""
+    def test_validate_input_bad_qa_suite(self) -> None:
+        """validate_input raises errors in looking up qa_suite."""
         workflow = self.create_rdep_autopkgtest_workflow(
-            extra_task_data={"suite_collection": "nonexistent@debian:suite"},
+            extra_task_data={"qa_suite": "nonexistent@debian:suite"},
             validate=False,
         )
 
@@ -248,10 +243,9 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
     def test_get_binary_names_binary_package(self) -> None:
         """Get binary names from a `debian:binary-package` artifact."""
         temp_dir = self.create_temporary_directory()
-        with context.disable_permission_checks():
-            binary_package = self.playground.create_artifact_from_local(
-                self.playground.create_binary_package(temp_dir, name="single")
-            )
+        binary_package = self.playground.create_artifact_from_local(
+            self.playground.create_binary_package(temp_dir, name="single")
+        )
         workflow = self.create_rdep_autopkgtest_workflow(
             extra_task_data={"binary_artifacts": [binary_package.id]}
         )
@@ -269,16 +263,15 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
             self.playground.write_deb_file(
                 path, source_name="hello", source_version="1.0"
             )
-        with context.disable_permission_checks():
-            binary_packages = self.playground.create_artifact_from_local(
-                BinaryPackages.create(
-                    srcpkg_name="hello",
-                    srcpkg_version="1.0",
-                    version="1.0",
-                    architecture="amd64",
-                    files=paths,
-                )
+        binary_packages = self.playground.create_artifact_from_local(
+            BinaryPackages.create(
+                srcpkg_name="hello",
+                srcpkg_version="1.0",
+                version="1.0",
+                architecture="amd64",
+                files=paths,
             )
+        )
         workflow = self.create_rdep_autopkgtest_workflow(
             extra_task_data={"binary_artifacts": [binary_packages.id]}
         )
@@ -292,10 +285,9 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
         self.write_changes_file(
             changes_path, [], binaries=["hello", "hello-dev"]
         )
-        with context.disable_permission_checks():
-            upload = self.playground.create_artifact_from_local(
-                Upload.create(changes_file=changes_path)
-            )
+        upload = self.playground.create_artifact_from_local(
+            Upload.create(changes_file=changes_path)
+        )
         workflow = self.create_rdep_autopkgtest_workflow(
             extra_task_data={"binary_artifacts": [upload.id]}
         )
@@ -305,10 +297,9 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
     def test_get_binary_names_bad_artifact_category(self) -> None:
         """Cannot get binary names from a non-binary artifact category."""
         temp_dir = self.create_temporary_directory()
-        with context.disable_permission_checks():
-            source_package = self.playground.create_artifact_from_local(
-                self.playground.create_source_package(temp_dir)
-            )
+        source_package = self.playground.create_artifact_from_local(
+            self.playground.create_source_package(temp_dir)
+        )
         workflow = self.create_rdep_autopkgtest_workflow(
             extra_task_data={"binary_artifacts": [source_package.id]}
         )
@@ -324,10 +315,9 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
         self,
     ) -> None:
         """The source artifact must be a `debian:source-package`."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.TEST
-            )
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.TEST
+        )
         workflow = self.create_rdep_autopkgtest_workflow(
             extra_task_data={"source_artifact": artifact.id}
         )
@@ -345,7 +335,7 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
         lookups: Mapping[LookupSingle, Iterable[LookupSingle]],
     ) -> None:
         """Assert that reverse-dependencies of a workflow are correct."""
-        expected = set()
+        expected = []
         for source_lookup, binary_lookups in lookups.items():
             source = lookup_single(
                 source_lookup,
@@ -358,11 +348,11 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
             source_data = source.create_data()
             assert isinstance(source_data, DebianSourcePackage)
             expected_source = _SourcePackage(
-                suite_collection=workflow.data.suite_collection,
+                qa_suite=workflow.data.qa_suite,
                 name=source_data.name,
                 version=source_data.version,
             )
-            expected_binaries = set()
+            expected_binaries = []
             for binary_lookup in binary_lookups:
                 binary = lookup_single(
                     binary_lookup,
@@ -374,17 +364,30 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
                 ).artifact
                 binary_data = binary.create_data()
                 assert isinstance(binary_data, DebianBinaryPackage)
-                expected_binaries.add(
+                expected_binaries.append(
                     _BinaryPackage(
-                        suite_collection=workflow.data.suite_collection,
+                        qa_suite=workflow.data.qa_suite,
                         name=binary_data.deb_fields["Package"],
                         version=binary_data.deb_fields["Version"],
                         architecture=binary_data.deb_fields["Architecture"],
                     )
                 )
-            expected.add((expected_source, frozenset(expected_binaries)))
+            expected.append(
+                (
+                    expected_source,
+                    sorted(
+                        expected_binaries,
+                        key=lambda binary: (
+                            binary.name,
+                            binary.version,
+                            binary.architecture,
+                        ),
+                    ),
+                )
+            )
         self.assertEqual(
-            workflow.get_reverse_dependencies(), frozenset(expected)
+            workflow.get_reverse_dependencies(),
+            sorted(expected, key=lambda rdep: (rdep[0].name, rdep[0].version)),
         )
 
     def test_get_reverse_dependencies(self) -> None:
@@ -510,7 +513,7 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
             extra_task_data={
                 "source_artifact": source_package.id,
                 "binary_artifacts": [binary_package.id],
-                "suite_collection": self.sid.id,
+                "qa_suite": self.sid.id,
             }
         )
 
@@ -564,7 +567,7 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
             extra_task_data={
                 "source_artifact": upload_artifacts.upload.id,
                 "binary_artifacts": [upload_artifacts.binaries[0].id],
-                "suite_collection": self.sid.id,
+                "qa_suite": self.sid.id,
             }
         )
         self.assert_reverse_dependencies(
@@ -583,48 +586,24 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
             },
         )
 
-    def test_populate(self) -> None:
-        """The workflow populates child work requests."""
-        depends = self.create_source_package(
-            name="depends",
-            version="1.0",
-            dsc_fields={"Testsuite": "autopkgtest"},
-            add_to_collection=self.sid,
-        )
-        self.create_binary_package(
-            source_package=depends,
-            deb_fields={"Depends": "hello"},
-            add_to_collection=self.sid,
-        )
-        trigger = self.create_source_package(
-            name="trigger",
-            version="1.0",
-            dsc_fields={
-                "Testsuite": "autopkgtest",
-                "Testsuite-Triggers": "hello",
-            },
-            add_to_collection=self.sid,
-        )
-        self.create_binary_package(
-            source_package=trigger, add_to_collection=self.sid
-        )
-        source_artifact = self.create_source_package(
-            name="hello", version="1.0", dsc_fields={"Binary": "hello"}
-        )
-        architectures = ("amd64", "i386")
-
+    def orchestrate(
+        self,
+        source_artifact: Artifact,
+        architectures: Sequence[str],
+        *,
+        extra_data: dict[str, Any] | None = None,
+        priority_base: int = 0,
+    ) -> WorkRequest:
+        """Create a workflow and call ``orchestrate_workflow``."""
         with preserve_task_registry():
 
             class ExamplePipeline(
-                TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+                SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
             ):
                 """Pipeline workflow that runs sbuild and rdep-autopkgtest."""
 
                 def populate(self) -> None:
                     """Populate the pipeline."""
-                    sid = Collection.objects.get(
-                        name="sid", category=CollectionCategory.SUITE
-                    )
                     sbuild = self.work_request.create_child(
                         task_type=TaskTypes.WORKFLOW,
                         task_name="sbuild",
@@ -669,18 +648,10 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
                                     for architecture in ("all", *architectures)
                                 ]
                             ),
-                            suite_collection=sid.id,
+                            qa_suite=f"sid@{CollectionCategory.SUITE}",
                             vendor="debian",
                             codename="sid",
-                            extra_repositories=[
-                                ExtraRepository.parse_obj(
-                                    {
-                                        "url": "http://example.com/",
-                                        "suite": "bookworm",
-                                        "components": ["main"],
-                                    }
-                                )
-                            ],
+                            **(extra_data or {}),
                         ),
                     )
                     ReverseDependenciesAutopkgtestWorkflow(
@@ -688,139 +659,353 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
                     ).populate()
 
             root = self.playground.create_workflow(task_name="examplepipeline")
+            root.priority_base = priority_base
+            root.save()
 
             root.mark_running()
             orchestrate_workflow(root)
 
-            rdep_autopkgtest = WorkRequest.objects.get(
+            return root.children.get(
                 task_type=TaskTypes.WORKFLOW,
                 task_name="reverse_dependencies_autopkgtest",
-                parent=root,
             )
-            children = list(
-                WorkRequest.objects.filter(parent=rdep_autopkgtest).order_by(
-                    "task_data__prefix"
-                )
+
+    def test_populate(self) -> None:
+        """The workflow populates child work requests."""
+        depends = self.create_source_package(
+            name="depends",
+            version="1.0",
+            dsc_fields={"Testsuite": "autopkgtest"},
+            add_to_collection=self.sid,
+        )
+        self.create_binary_package(
+            source_package=depends,
+            deb_fields={"Depends": "hello"},
+            add_to_collection=self.sid,
+        )
+        trigger = self.create_source_package(
+            name="trigger",
+            version="1.0",
+            dsc_fields={
+                "Testsuite": "autopkgtest",
+                "Testsuite-Triggers": "hello",
+            },
+            add_to_collection=self.sid,
+        )
+        self.create_binary_package(
+            source_package=trigger, add_to_collection=self.sid
+        )
+        source_artifact = self.create_source_package(
+            name="hello", version="1.0", dsc_fields={"Binary": "hello"}
+        )
+        architectures = ("amd64", "i386")
+
+        rdep_autopkgtest = self.orchestrate(
+            source_artifact,
+            architectures,
+            extra_data={
+                "extra_repositories": [
+                    ExtraRepository.parse_obj(
+                        {
+                            "url": "http://example.com/",
+                            "suite": "bookworm",
+                            "components": ["main"],
+                        }
+                    )
+                ]
+            },
+        )
+
+        children = list(
+            WorkRequest.objects.filter(parent=rdep_autopkgtest).order_by(
+                "task_data__prefix"
             )
-            self.maxDiff = None
-            for child, source in zip(children, ("depends_1.0", "trigger_1.0")):
-                self.assertEqual(child.status, WorkRequest.Statuses.RUNNING)
-                self.assertEqual(child.task_type, TaskTypes.WORKFLOW)
-                self.assertEqual(child.task_name, "autopkgtest")
-                self.assertEqual(
-                    child.task_data,
-                    {
-                        "prefix": f"{source}|",
+        )
+        for child, source in zip(children, ("depends_1.0", "trigger_1.0")):
+            self.assertEqual(child.status, WorkRequest.Statuses.RUNNING)
+            self.assertEqual(child.task_type, TaskTypes.WORKFLOW)
+            self.assertEqual(child.task_name, "autopkgtest")
+            self.assertEqual(
+                child.task_data,
+                {
+                    "prefix": f"{source}|",
+                    "source_artifact": (
+                        f"sid@{CollectionCategory.SUITE}/"
+                        f"source-version:{source}"
+                    ),
+                    "binary_artifacts": [
+                        f"sid@{CollectionCategory.SUITE}/"
+                        f"binary-version:{source}_all"
+                    ],
+                    "context_artifacts": [
+                        f"internal@collections/name:build-{architecture}"
+                        for architecture in ("all", *architectures)
+                    ],
+                    "qa_suite": f"sid@{CollectionCategory.SUITE}",
+                    "reference_qa_results": None,
+                    "update_qa_results": False,
+                    "vendor": "debian",
+                    "codename": "sid",
+                    "backend": BackendType.UNSHARE,
+                    "architectures": [],
+                    "arch_all_host_architecture": "amd64",
+                    "debug_level": 0,
+                    "extra_repositories": [
+                        {
+                            "url": "http://example.com/",
+                            "suite": "bookworm",
+                            "components": ["main"],
+                        }
+                    ],
+                },
+            )
+            self.assertEqual(child.priority_base, -5)
+
+            grandchild = WorkRequest.objects.get(parent=child)
+            self.assertEqual(grandchild.status, WorkRequest.Statuses.BLOCKED)
+            self.assertEqual(grandchild.task_type, TaskTypes.WORKER)
+            self.assertEqual(grandchild.task_name, "autopkgtest")
+            self.assertEqual(
+                grandchild.task_data,
+                {
+                    "input": {
                         "source_artifact": (
-                            f"{self.sid.id}@collections/source-version:{source}"
+                            f"sid@{CollectionCategory.SUITE}/"
+                            f"source-version:{source}"
                         ),
                         "binary_artifacts": [
-                            f"{self.sid.id}@collections/"
-                            f"binary-version:{source}_all"
+                            f"sid@{CollectionCategory.SUITE}/name:{source}_all"
                         ],
                         "context_artifacts": [
-                            f"internal@collections/name:build-{architecture}"
-                            for architecture in ("all", *architectures)
-                        ],
-                        "vendor": "debian",
-                        "codename": "sid",
-                        "backend": BackendType.UNSHARE,
-                        "architectures": [],
-                        "arch_all_host_architecture": "amd64",
-                        "debug_level": 0,
-                        "extra_repositories": [
-                            {
-                                "url": "http://example.com/",
-                                "suite": "bookworm",
-                                "components": ["main"],
-                            }
+                            f"internal@collections/"
+                            f"name:build-{architecture}"
+                            for architecture in ("all", "amd64")
                         ],
                     },
-                )
-
-                grandchild = WorkRequest.objects.get(parent=child)
-                self.assertEqual(
-                    grandchild.status, WorkRequest.Statuses.BLOCKED
-                )
-                self.assertEqual(grandchild.task_type, TaskTypes.WORKER)
-                self.assertEqual(grandchild.task_name, "autopkgtest")
-                self.assertEqual(
-                    grandchild.task_data,
+                    "host_architecture": "amd64",
+                    "environment": "debian/match:codename=sid",
+                    "backend": BackendType.UNSHARE,
+                    "include_tests": [],
+                    "exclude_tests": [],
+                    "debug_level": 0,
+                    "extra_environment": {},
+                    "extra_repositories": [
+                        {
+                            "url": "http://example.com/",
+                            "suite": "bookworm",
+                            "components": ["main"],
+                        }
+                    ],
+                    "needs_internet": AutopkgtestNeedsInternet.RUN,
+                    "fail_on": {},
+                    "timeout": None,
+                },
+            )
+            self.assertEqual(grandchild.priority_base, -5)
+            self.assert_work_request_event_reactions(
+                grandchild,
+                on_success=[
                     {
-                        "input": {
-                            "source_artifact": (
-                                f"{self.sid.id}@collections/"
-                                f"source-version:{source}"
-                            ),
-                            "binary_artifacts": [
-                                f"{self.sid.id}@collections/name:{source}_all"
-                            ],
-                            "context_artifacts": [
-                                f"internal@collections/"
-                                f"name:build-{architecture}"
-                                for architecture in ("all", "amd64")
-                            ],
+                        "action": "update-collection-with-artifacts",
+                        "collection": "internal@collections",
+                        "name_template": f"{source}|autopkgtest-amd64",
+                        "variables": None,
+                        "artifact_filters": {
+                            "category": ArtifactCategory.AUTOPKGTEST
                         },
-                        "host_architecture": "amd64",
-                        "environment": "debian/match:codename=sid",
-                        "backend": BackendType.UNSHARE,
-                        "include_tests": [],
-                        "exclude_tests": [],
-                        "debug_level": 0,
-                        "extra_environment": {},
-                        "extra_repositories": [
-                            {
-                                "url": "http://example.com/",
-                                "suite": "bookworm",
-                                "components": ["main"],
-                            }
-                        ],
-                        "needs_internet": AutopkgtestNeedsInternet.RUN,
-                        "fail_on": {},
-                        "timeout": None,
-                    },
-                )
-                self.assertEqual(
-                    grandchild.event_reactions_json,
-                    {
-                        "on_creation": [],
-                        "on_failure": [],
-                        "on_success": [
-                            {
-                                "action": "update-collection-with-artifacts",
-                                "collection": "internal@collections",
-                                "name_template": f"{source}|autopkgtest-amd64",
-                                "variables": None,
-                                "artifact_filters": {
-                                    "category": ArtifactCategory.AUTOPKGTEST
-                                },
-                            }
-                        ],
-                        "on_unblock": [],
-                    },
-                )
-                self.assertQuerySetEqual(
-                    grandchild.dependencies.all(),
-                    list(
-                        WorkRequest.objects.filter(
-                            task_type=TaskTypes.WORKER,
-                            task_name="sbuild",
-                            task_data__host_architecture__in={"all", "amd64"},
-                        )
-                    ),
-                )
-                self.assertEqual(
-                    grandchild.workflow_data_json,
-                    {
-                        "display_name": "autopkgtest amd64",
-                        "step": "autopkgtest-amd64",
-                    },
-                )
+                        "created_at": None,
+                    }
+                ],
+            )
+            self.assertQuerySetEqual(
+                grandchild.dependencies.all(),
+                list(
+                    WorkRequest.objects.filter(
+                        task_type=TaskTypes.WORKER,
+                        task_name="sbuild",
+                        task_data__host_architecture__in={"all", "amd64"},
+                    )
+                ),
+            )
+            self.assertEqual(
+                grandchild.workflow_data_json,
+                {
+                    "display_name": "autopkgtest amd64",
+                    "step": "autopkgtest-amd64",
+                },
+            )
 
-            # Population is idempotent.
-            ReverseDependenciesAutopkgtestWorkflow(rdep_autopkgtest).populate()
-            children = list(WorkRequest.objects.filter(parent=rdep_autopkgtest))
-            self.assertEqual(len(children), 2)
+        # Population is idempotent.
+        ReverseDependenciesAutopkgtestWorkflow(rdep_autopkgtest).populate()
+        children = list(WorkRequest.objects.filter(parent=rdep_autopkgtest))
+        self.assertEqual(len(children), 2)
+
+    def test_populate_passes_qa_results_parameters(self) -> None:
+        """The workflow passes on parameters related to QA results."""
+        self.playground.create_collection(
+            name="sid", category=CollectionCategory.QA_RESULTS
+        )
+        depends = self.create_source_package(
+            name="depends",
+            version="1.0",
+            dsc_fields={"Testsuite": "autopkgtest"},
+            add_to_collection=self.sid,
+        )
+        binary_artifact = self.create_binary_package(
+            source_package=depends,
+            deb_fields={"Depends": "hello"},
+            add_to_collection=self.sid,
+        )
+        binary_item = self.sid.child_items.get(artifact=binary_artifact)
+        source_artifact = self.create_source_package(
+            name="hello", version="1.0", dsc_fields={"Binary": "hello"}
+        )
+        architectures = ("amd64", "i386")
+
+        rdep_autopkgtest = self.orchestrate(
+            source_artifact,
+            architectures,
+            extra_data={
+                "prefix": "reference-qa-result|",
+                "reference_qa_results": f"sid@{CollectionCategory.QA_RESULTS}",
+                "update_qa_results": True,
+            },
+        )
+
+        child = WorkRequest.objects.get(parent=rdep_autopkgtest)
+        self.assertEqual(child.status, WorkRequest.Statuses.RUNNING)
+        self.assertEqual(child.task_type, TaskTypes.WORKFLOW)
+        self.assertEqual(child.task_name, "autopkgtest")
+        self.assertEqual(
+            child.task_data,
+            {
+                "prefix": "reference-qa-result|depends_1.0|",
+                "source_artifact": (
+                    f"sid@{CollectionCategory.SUITE}/source-version:depends_1.0"
+                ),
+                "binary_artifacts": [
+                    f"sid@{CollectionCategory.SUITE}/"
+                    f"binary-version:depends_1.0_all"
+                ],
+                "context_artifacts": [
+                    f"internal@collections/name:build-{architecture}"
+                    for architecture in ("all", *architectures)
+                ],
+                "qa_suite": f"sid@{CollectionCategory.SUITE}",
+                "reference_qa_results": f"sid@{CollectionCategory.QA_RESULTS}",
+                "update_qa_results": True,
+                "vendor": "debian",
+                "codename": "sid",
+                "backend": BackendType.UNSHARE,
+                "architectures": [],
+                "arch_all_host_architecture": "amd64",
+                "debug_level": 0,
+                "extra_repositories": None,
+            },
+        )
+
+        grandchild = WorkRequest.objects.get(parent=child)
+        self.assertEqual(grandchild.status, WorkRequest.Statuses.BLOCKED)
+        self.assertEqual(grandchild.task_type, TaskTypes.WORKER)
+        self.assertEqual(grandchild.task_name, "autopkgtest")
+        self.assertEqual(
+            grandchild.task_data,
+            {
+                "input": {
+                    "source_artifact": (
+                        f"sid@{CollectionCategory.SUITE}/"
+                        f"source-version:depends_1.0"
+                    ),
+                    "binary_artifacts": [
+                        f"sid@{CollectionCategory.SUITE}/name:depends_1.0_all"
+                    ],
+                    "context_artifacts": [
+                        f"internal@collections/name:build-{architecture}"
+                        for architecture in ("all", "amd64")
+                    ],
+                },
+                "host_architecture": "amd64",
+                "environment": "debian/match:codename=sid",
+                "backend": BackendType.UNSHARE,
+                "include_tests": [],
+                "exclude_tests": [],
+                "debug_level": 0,
+                "extra_environment": {},
+                "extra_repositories": None,
+                "needs_internet": AutopkgtestNeedsInternet.RUN,
+                "fail_on": {},
+                "timeout": None,
+            },
+        )
+        qa_result_action = {
+            "action": "update-collection-with-artifacts",
+            "collection": f"sid@{CollectionCategory.QA_RESULTS}",
+            "name_template": None,
+            "variables": {
+                "package": "depends",
+                "version": "1.0",
+                "architecture": "amd64",
+                "timestamp": int(binary_item.created_at.timestamp()),
+                "work_request_id": grandchild.id,
+            },
+            "artifact_filters": {"category": ArtifactCategory.AUTOPKGTEST},
+            "created_at": None,
+        }
+        self.assert_work_request_event_reactions(
+            grandchild,
+            on_assignment=[
+                {
+                    "action": "skip-if-lookup-result-changed",
+                    "lookup": (
+                        f"sid@{CollectionCategory.QA_RESULTS}/"
+                        f"latest:autopkgtest_depends_amd64"
+                    ),
+                    "collection_item_id": None,
+                    "promise_name": (
+                        "reference-qa-result|depends_1.0|autopkgtest-amd64"
+                    ),
+                }
+            ],
+            on_failure=[qa_result_action],
+            on_success=[
+                {
+                    "action": "update-collection-with-artifacts",
+                    "collection": "internal@collections",
+                    "name_template": (
+                        "reference-qa-result|depends_1.0|autopkgtest-amd64"
+                    ),
+                    "variables": None,
+                    "artifact_filters": {
+                        "category": ArtifactCategory.AUTOPKGTEST
+                    },
+                    "created_at": None,
+                },
+                qa_result_action,
+            ],
+        )
+        self.assertQuerySetEqual(
+            grandchild.dependencies.all(),
+            list(
+                WorkRequest.objects.filter(
+                    task_type=TaskTypes.WORKER,
+                    task_name="sbuild",
+                    task_data__host_architecture__in={"all", "amd64"},
+                )
+            ),
+        )
+        self.assertEqual(
+            grandchild.workflow_data_json,
+            {
+                "allow_failure": True,
+                "display_name": "autopkgtest amd64",
+                "step": "autopkgtest-amd64",
+            },
+        )
+
+        # Population is idempotent.
+        ReverseDependenciesAutopkgtestWorkflow(rdep_autopkgtest).populate()
+        children = list(WorkRequest.objects.filter(parent=rdep_autopkgtest))
+        self.assertEqual(len(children), 1)
 
     def test_compute_dynamic_data(self) -> None:
         source_artifact = self.playground.create_source_artifact(
@@ -836,7 +1021,7 @@ class ReverseDependenciesAutopkgtestWorkflowTests(TestCase):
                 binary_artifacts=LookupMultiple.parse_obj([binary_artifact.id]),
                 vendor="debian",
                 codename="trixie",
-                suite_collection="sid@debian:suite",
+                qa_suite="sid@debian:suite",
             ),
         )
         workflow = ReverseDependenciesAutopkgtestWorkflow(wr)

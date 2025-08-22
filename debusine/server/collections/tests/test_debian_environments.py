@@ -13,12 +13,10 @@ import datetime
 from django.utils import timezone
 
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
-from debusine.db.context import context
 from debusine.db.models import Collection, CollectionItem
 from debusine.server.collections import (
     DebianEnvironmentsManager,
     ItemAdditionError,
-    ItemRemovalError,
 )
 from debusine.test.django import TestCase
 
@@ -28,6 +26,7 @@ class DebianEnvironmentsManagerTests(TestCase):
 
     def setUp(self) -> None:
         """Set up tests."""
+        super().setUp()
         self.user = self.playground.get_default_user()
 
         self.workspace = self.playground.get_default_workspace()
@@ -54,7 +53,6 @@ class DebianEnvironmentsManagerTests(TestCase):
         with self.assertRaisesRegex(ValueError, msg):
             DebianEnvironmentsManager(collection)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact(self) -> None:
         """Test do_add_artifact adds the artifact."""
         data = {"codename": "bookworm", "architecture": "amd64"}
@@ -72,7 +70,6 @@ class DebianEnvironmentsManagerTests(TestCase):
             collection_item.data, {**data, "variant": None, "backend": None}
         )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_raise_item_addition_error(self) -> None:
         """Test do_add_artifact raise error: duplicated CollectionItem data."""
         data = {"codename": "bookworm", "architecture": "amd64"}
@@ -92,7 +89,6 @@ class DebianEnvironmentsManagerTests(TestCase):
         ):
             self.manager.add_artifact(artifact_2, user=self.user)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_override_codename(self) -> None:
         """`do_add_artifact` can be told to override the codename."""
         artifact, _ = self.playground.create_artifact(
@@ -117,7 +113,6 @@ class DebianEnvironmentsManagerTests(TestCase):
             },
         )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_variant(self) -> None:
         """`do_add_artifact` can be told to set a variant name."""
         artifact, _ = self.playground.create_artifact(
@@ -144,7 +139,6 @@ class DebianEnvironmentsManagerTests(TestCase):
             },
         )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_backend(self) -> None:
         """`do_add_artifact` can be told to set a backend name."""
         artifact, _ = self.playground.create_artifact(
@@ -169,7 +163,6 @@ class DebianEnvironmentsManagerTests(TestCase):
             },
         )
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace(self) -> None:
         """do_add_artifact can replace an existing artifact."""
         workflow = self.playground.create_workflow()
@@ -198,7 +191,6 @@ class DebianEnvironmentsManagerTests(TestCase):
         self.assertEqual(collection_item2.artifact, artifact2)
         self.assertIsNone(collection_item2.removed_at)
 
-    @context.disable_permission_checks()
     def test_do_add_artifact_replace_nonexistent(self) -> None:
         """Replacing a nonexistent artifact is allowed."""
         data = {"codename": "bookworm", "architecture": "amd64"}
@@ -213,50 +205,6 @@ class DebianEnvironmentsManagerTests(TestCase):
 
         self.assertEqual(collection_item.name, "tarball:bookworm:amd64")
         self.assertEqual(collection_item.artifact, artifact)
-
-    @context.disable_permission_checks()
-    def test_do_remove_artifact(self) -> None:
-        """Test do_remove_artifact removes the artifact."""
-        data = {"codename": "bookworm", "architecture": "amd64"}
-
-        artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.SYSTEM_TARBALL,
-            data={**data, "with_dev": True},
-        )
-
-        collection_item = self.manager.add_artifact(artifact, user=self.user)
-
-        # Test removing the artifact from the collection
-        self.manager.remove_artifact(artifact, user=self.user)
-
-        collection_item.refresh_from_db()
-
-        # The artifact is not removed yet (retention period applies)
-        self.assertEqual(collection_item.artifact, artifact)
-
-        self.assertEqual(collection_item.removed_by_user, self.user)
-        self.assertIsInstance(collection_item.removed_at, datetime.datetime)
-
-    @context.disable_permission_checks()
-    def test_do_remove_collection_raise_item_removal_error(self) -> None:
-        """
-        Test do_remove_collection raise ItemRemovalError.
-
-        No Collections can be added or removed in
-        debian:environments collection.
-        """
-        msg = (
-            f'^Cannot remove collections from '
-            f'"{self.manager.COLLECTION_CATEGORY}"$'
-        )
-        collection = Collection.objects.create(
-            name="Some-collection",
-            category="Some category",
-            workspace=self.workspace,
-        )
-
-        with self.assertRaisesRegex(ItemRemovalError, msg):
-            self.manager.do_remove_collection(collection, user=self.user)
 
     def test_do_add_collection_raise_item_addition_error(self) -> None:
         """
@@ -277,6 +225,26 @@ class DebianEnvironmentsManagerTests(TestCase):
 
         with self.assertRaisesRegex(ItemAdditionError, msg):
             self.manager.do_add_collection(collection, user=self.user)
+
+    def test_do_remove_item_artifact(self) -> None:
+        """``do_remove_item`` removes an artifact item."""
+        data = {"codename": "bookworm", "architecture": "amd64"}
+
+        artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data={**data, "with_dev": True},
+        )
+
+        collection_item = self.manager.add_artifact(artifact, user=self.user)
+
+        # Test removing the artifact from the collection
+        self.manager.remove_item(collection_item, user=self.user)
+
+        # The artifact is not removed yet (retention period applies)
+        self.assertEqual(collection_item.artifact, artifact)
+
+        self.assertEqual(collection_item.removed_by_user, self.user)
+        self.assertIsInstance(collection_item.removed_at, datetime.datetime)
 
     def test_lookup_not_enough_colons_raise_lookup_error(self) -> None:
         """Test lookup raise LookupError: unexpected number of colons."""
@@ -299,7 +267,6 @@ class DebianEnvironmentsManagerTests(TestCase):
         )
         self.assertIsNone(self.manager.lookup("name:nonexistent"))
 
-    @context.disable_permission_checks()
     def test_lookup_return_matching_collection_item(self) -> None:
         """Test lookup return artifacts."""
         artifact_1, _ = self.playground.create_artifact(

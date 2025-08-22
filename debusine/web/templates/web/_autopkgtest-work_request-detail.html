@@ -1,0 +1,78 @@
+{% load debusine %}
+<ul>
+    <li>
+        Result:
+        {% include "web/_work_request-result.html" %}
+    </li>
+</ul>
+<h2>Request</h2>
+<ul>
+    {% include "web/_summary_artifact.html" with description="Source artifact" artifact=request_data.source_artifact only %}
+    {% if request_data.binary_artifacts.lookup %}
+        {% include "web/_summary_artifacts.html" with description="Binary artifacts" artifacts=request_data.binary_artifacts only %}
+    {% endif %}
+    {% if request_data.context_artifacts.lookup %}
+        {% include "web/_summary_artifacts.html" with description="Context artifacts" artifacts=request_data.context_artifacts only %}
+    {% endif %}
+    <li>Host architecture: {{ request_data.host_architecture }}</li>
+    {% if request_data.vendor and request_data.codename %}
+        <li>Distribution: {{ request_data.vendor }}:{{ request_data.codename }}</li>
+    {% endif %}
+    <li>Backend: {{ request_data.backend }}</li>
+    {% if request_data.include_tests %}<li>Include tests: {{ request_data.include_tests|join:", " }}</li>{% endif %}
+    {% if request_data.exclude_tests %}<li>Exclude tests: {{ request_data.exclude_tests|join:", " }}</li>{% endif %}
+    <li>Debug level: {{ request_data.debug_level }}</li>
+    {% if request_data.extra_repositories %}
+        <li>
+            Extra APT sources:
+            <ul>
+                {% for source in request_data.extra_repositories %}
+                    <li>
+                        <pre><code>{{ source.as_deb822_source }}</code></pre>
+                    </li>
+                {% endfor %}
+            </ul>
+        </li>
+    {% endif %}
+    <li>Use packages from base repository: {{ request_data.use_packages_from_base_repository }}</li>
+    {% if request_data.extra_environment %}
+        <li>
+            Environment variables:
+            <ul>
+                {% for key, value in request_data.extra_environment.items %}
+                    <li>
+                        <code>{{ key }}</code>: <code>{{ value }}</code>
+                    </li>
+                {% endfor %}
+            </ul>
+        </li>
+    {% endif %}
+    <li>
+        Needs internet: {{ request_data.needs_internet }}
+        {% if request_data.fail_on_scenarios %}<li>Fail on: {{ request_data.fail_on_scenarios|join:", " }}</li>{% endif %}
+        {% if request_data.timeout %}
+            <li>
+                Timeouts:
+                <ul>
+                    {% for key, value in request_data.timeouts.items %}<li>{{ key|title }}: {{ value }}</li>{% endfor %}
+                </ul>
+            </li>
+        {% endif %}
+    </li>
+</ul>
+{% if result_artifact %}
+    <h2>Results</h2>
+    <ul>
+        {% for name, status, details in result_data %}
+            <li>
+                <code>{{ name }}</code>:
+                {% include "web/_autopkgtest-status.html" with status=status only %}
+                {% if details %}({{ details }}){% endif %}
+            </li>
+        {% endfor %}
+        <li>
+            Output: <a href="{{ result_artifact.get_absolute_url }}">{{ result_artifact.id }}</a>
+            (<a href="{{ result_artifact.get_absolute_url_download }}?archive=tar.gz">download</a>)
+        </li>
+    </ul>
+{% endif %}

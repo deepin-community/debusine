@@ -16,11 +16,12 @@
     {% include "web/user_token-config_snippet.html" %}
     <h2>Your existing tokens</h2>
     {% if token_list %}
-        <table class="table table-sm">
+        <table class="table table-sm table-hover table-striped">
             <thead>
                 <tr>
                     <th>Enabled</th>
                     <th>Created at</th>
+                    <th>Last seen at</th>
                     <th>Comment</th>
                     <th>Actions</th>
                 </tr>
@@ -30,6 +31,7 @@
                     <tr>
                         <td>{% include "web/_check_icon.html" with value=token.enabled only %}</td>
                         <td>{{ token.created_at }}</td>
+                        <td>{{ token.last_seen_at|default:"Never" }}</td>
                         <td>{{ token.comment }}</td>
                         <td>
                             <a href="{% url "user:token-delete" pk=token.pk username=person.username %}">Delete</a>&nbsp;|&nbsp;<a href="{% url "user:token-edit" pk=token.pk username=person.username %}">Edit</a>

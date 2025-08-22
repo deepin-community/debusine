@@ -13,7 +13,6 @@ from typing import ClassVar
 
 from django.utils import timezone
 
-from debusine.db.context import context
 from debusine.db.models import Token, User
 from debusine.django.management.tests import call_command
 from debusine.server.management.commands.tests.utils import TabularOutputTests
@@ -27,7 +26,6 @@ class ListTokensCommandTests(TabularOutputTests, TestCase):
     token: ClassVar[Token]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()

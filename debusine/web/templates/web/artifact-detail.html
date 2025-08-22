@@ -4,48 +4,7 @@
 {% load static %}
 {% block tail_js %}
     {{ block.super }}
-    <script type="module">
-    const selectTab = () => {
-        {# If a user opens the page with a URL#files or URL#debdiff: it opens #}
-        {# the correct tab. #}
-        {##}
-        {# Also, if the user passes "#LNN-files" or "#LNN-debdiff": it selects #}
-        {# the tab as well based on the suffix of the line (in order to show #}
-        {# the correct file) #}
-        let hash = window.location.hash;
-
-        if (!hash) return;
-
-        hash = hash.slice(1);
-
-        let dataBsTarget;
-        if (/^L\d+-/.test(hash)) {
-            {# Hash is #LNN-tab_name: the Line NN of the tab "tab_name") #}
-            dataBsTarget = `#nav-${hash.split("-", 2)[1]}`;
-        } else {
-            dataBsTarget = `#nav-${hash}`;
-        }
-        const trigger = document.querySelector(`button[data-bs-target="${dataBsTarget}"]`);
-
-        if (trigger) {
-            const tab = new bootstrap.Tab(trigger);
-            tab.show()
-        }
-    };
-
-    const updateUrlHash = (event) => {
-        const tab_name = event.target.dataset.bsTarget;
-        const hash = "#" + tab_name.split("-", 2)[1];
-        history.replaceState(null, "", hash);
-    };
-
-    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tabButton => {
-        tabButton.addEventListener('shown.bs.tab', updateUrlHash);
-    });
-
-    selectTab();
-
-    </script>
+    {% include "web/_tab_selector.html" %}
 {% endblock %}
 {% block content %}
     <h1 class="mb-4" title="{{ artifact.category }}">
@@ -53,7 +12,7 @@
         {{ title }}
     </h1>
     <nav>
-        <div class="nav nav-tabs" id="nav-tab" role="tablist">
+        <div class="nav nav-tabs mb-3" id="nav-tab" role="tablist">
             {% if specialized_tab %}
                 <button class="nav-link active"
                         id="nav-{{ specialized_tab.slug }}-tab"
@@ -100,17 +59,25 @@
                     Relations ({{ relation_count }})
                 {% endif %}
             </button>
+            <button class="nav-link"
+                    id="nav-origin-tab"
+                    data-bs-toggle="tab"
+                    data-bs-target="#nav-origin"
+                    type="button"
+                    role="tab"
+                    aria-controls="nav-origin"
+                    aria-selected="false">Origin</button>
         </div>
     </nav>
     <div class="tab-content" id="nav-content">
         {% if specialized_tab %}
-            <div class="tab-pane fade show active"
+            <div class="tab-pane show active"
                  id="nav-{{ specialized_tab.slug }}"
                  role="tabpanel"
                  aria-labelledby="nav-{{ specialized_tab.slug }}-tab"
                  tabindex="0">{% include specialized_tab.template %}</div>
         {% endif %}
-        <div class="tab-pane fade {% if not specialized_tab %}show active{% endif %}"
+        <div class="tab-pane{% if not specialized_tab %} show active{% endif %}"
              id="nav-files"
              role="tabpanel"
              aria-labelledby="nav-files-tab"
@@ -118,7 +85,7 @@
             {% if file_count == 1 %}
                 {% widget file %}
             {% elif file_count > 1 %}
-                <table id="file-list" class="table table-sm">
+                <table id="file-list" class="table table-sm table-hover table-striped">
                     <thead>
                         <tr>
                             <th>Name</th>
@@ -153,22 +120,73 @@
                 No files.
             {% endif %}
         </div>
-        <div class="tab-pane fade"
+        <div class="tab-pane"
              id="nav-metadata"
              role="tabpanel"
              aria-labelledby="nav-metadata-tab"
              tabindex="0">
-            <div id="metadata" class="card">
-                <div class="card-body text-white bg-dark">{{ artifact_data }}</div>
+            <div class="col-9">
+                <table class="table table-hover table-striped" id="metadata-table">
+                    <colgroup>
+                        <col style="width: 1%">
+                        <col>
+                    </colgroup>
+                    <tr>
+                        <th class="text-nowrap">
+                            <span class="bi bi-postcard"></span> Category
+                        </th>
+                        <td>{{ artifact.category }}</td>
+                    </tr>
+                    <tr>
+                        <th class="text-nowrap">
+                            <span class="bi bi-person-workspace"></span> Workspace
+                        </th>
+                        <td>
+                            <a href="{{ artifact.workspace.get_absolute_url }}">{{ artifact.workspace }}</a>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th class="text-nowrap">
+                            <span class="bi bi-clock"></span> Created
+                        </th>
+                        <td title="{{ artifact.created_at }}">{{ artifact.created_at|timesince }} ago</td>
+                    </tr>
+                    {% if not artifact.created_by_work_request %}
+                        <tr>
+                            <th class="text-nowrap">
+                                <span class="bi bi-person-circle"></span> User
+                            </th>
+                            <td title="{{ artifact.created_by }}">{{ artifact.created_by }}</td>
+                        </tr>
+                    {% endif %}
+                    <tr>
+                        <th class="text-nowrap">
+                            <span class="bi bi-hourglass-split"></span> Expiration date
+                        </th>
+                        <td>{{ artifact.expire_at|default:"Never" }}</td>
+                    </tr>
+                    <tr>
+                        <th colspan="2" class="text-nowrap" style="border-bottom: none;">
+                            <span class="bi bi-braces"></span> Data
+                        </th>
+                    </tr>
+                    <tr>
+                        <td colspan="2">
+                            <div id="metadata" class="card">
+                                <div class="card-body text-white bg-dark">{{ artifact_data }}</div>
+                            </div>
+                        </td>
+                    </tr>
+                </table>
             </div>
         </div>
-        <div class="tab-pane fade"
+        <div class="tab-pane"
              id="nav-relations"
              role="tabpanel"
              aria-labelledby="nav-relations-tab"
              tabindex="0">
             {% if relation_count > 0 %}
-                <table id="relation-list" class="table table-sm">
+                <table id="relation-list" class="table table-sm table-hover table-striped">
                     <thead>
                         <tr>
                             <th>Relation</th>
@@ -202,6 +220,119 @@
             {% else %}
                 <p>No relations.</p>
             {% endif %}
+        </div>
+        <div class="tab-pane"
+             id="nav-origin"
+             role="tabpanel"
+             aria-labelledby="nav-origin-tab"
+             tabindex="0">
+            {% if not artifact.created_by_work_request %}
+                <p id="artifact-created-by-user">
+                    Artifact created by <a href="{{ artifact.created_by.get_absolute_url }}">{{ artifact.created_by }}.</a>
+                </p>
+            {% else %}
+                {% with work_request=artifact.created_by_work_request %}
+                    <h2>Work request</h2>
+                    <div class="col-9">
+                        <table class="table table-hover table-striped" id="work_request-table">
+                            <colgroup>
+                                <col style="width: 1%">
+                                <col>
+                            </colgroup>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-hammer"></span> Work request
+                                </th>
+                                <td>
+                                    <a href="{{ work_request.get_absolute_url }}">{{ work_request.id }} ({{ work_request.task_name }})</a>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-heart-pulse"></span> Status and result
+                                </th>
+                                <td>
+                                    {% include "web/_work_request-status.html" with status=work_request.status only %}
+                                    {% include "web/_work_request-result.html" with result=work_request.result only %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-person-workspace"></span> Workspace
+                                </th>
+                                <td>
+                                    <a href="{{ work_request.workspace.get_absolute_url }}">{{ work_request.workspace }}</a>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-person-circle"></span> User
+                                </th>
+                                <td>{{ work_request.created_by|default:"-" }}</td>
+                            </tr>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-clock"></span> Created
+                                </th>
+                                <td title="{{ work_request.created_at }}">{{ work_request.created_at|timesince }} ago</td>
+                            </tr>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-pc-horizontal"></span> Worker
+                                </th>
+                                <td>{{ work_request.worker.name }}</td>
+                            </tr>
+                        </table>
+                    </div>
+                {% endwith %}
+                <p>&nbsp;</p>
+            {% endif %}
+            {% with workflow=artifact.created_by_work_request.get_workflow_root %}
+                {% if workflow %}
+                    <h2>Root workflow</h2>
+                    <div class="col-9">
+                        <table class="table table-hover table-striped" id="workflow-table">
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-hammer"></span> Workflow
+                                </th>
+                                <td>
+                                    <a href="{{ workflow.get_absolute_url }}">{{ workflow.id }} ({{ workflow.task_name }})</a>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-heart-pulse"></span> Status and result
+                                </th>
+                                <td>
+                                    {% include "web/_work_request-status.html" with status=workflow.status only %}
+                                    {% include "web/_work_request-result.html" with result=workflow.result only %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-person-workspace"></span> Workspace
+                                </th>
+                                <td>
+                                    <a href="{{ workflow.workspace.get_absolute_url }}">{{ workflow.workspace }}</a>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-person-circle"></span> User
+                                </th>
+                                <td>{{ workflow.created_by|default:"-" }}</td>
+                            </tr>
+                            <tr>
+                                <th class="text-nowrap">
+                                    <span class="bi bi-clock"></span> Created
+                                </th>
+                                <td title="{{ workflow.created_at }}">{{ workflow.created_at|timesince }} ago</td>
+                            </tr>
+                        </table>
+                    </div>
+                {% endif %}
+            {% endwith %}
         </div>
     </div>
 {% endblock %}

@@ -19,6 +19,7 @@ from typing import Any, Generic, TYPE_CHECKING, TypeVar, cast
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.forms import (
     BaseForm,
     BooleanField,
@@ -36,8 +37,6 @@ from django.forms import (
     Textarea,
 )
 
-from debusine.db.context import context
-
 try:
     import pydantic.v1 as pydantic
 except ImportError:
@@ -47,6 +46,7 @@ import yaml
 
 # from debusine.client import LocalArtifact
 from debusine.artifacts import LocalArtifact
+from debusine.artifacts.models import BareDataCategory, TaskTypes
 from debusine.db.models import (
     Artifact,
     Collection,
@@ -57,11 +57,9 @@ from debusine.db.models import (
     Token,
     User,
     WorkRequest,
-    WorkflowTemplate,
     Workspace,
 )
 from debusine.tasks import BaseTask
-from debusine.tasks.models import TaskTypes
 
 if TYPE_CHECKING:
     ModelFormBase = ModelForm
@@ -144,7 +142,9 @@ class BootstrapMixin:
 
         if isinstance(field, ChoiceField):
             bootstrap_class = "form-select"
-        elif isinstance(field, (CharField, FileField, DateTimeField)):
+        elif isinstance(
+            field, (CharField, DateTimeField, DaysField, FileField)
+        ):
             bootstrap_class = "form-control"
         elif isinstance(field, BooleanField):
             bootstrap_class = "form-check-input"
@@ -214,7 +214,7 @@ class WorkspaceChoiceField(ModelChoiceFieldBase[Workspace]):
 
 class YamlMixin:
     """
-    Mixin that that handles fields and validate/convert from YAML to a dict.
+    Mixin that handles fields and validate/convert from YAML to a dict.
 
     Usage:
     In the class inheriting from YamlMixin:
@@ -478,19 +478,6 @@ class WorkflowFilterForm(Form):
         """Initialize form."""
         super().__init__(*args, **kwargs)
 
-        workflow_templates_choices = [
-            (template_name, template_name)
-            for template_name in WorkflowTemplate.objects.in_current_workspace()
-            .can_display(context.user)
-            .order_by("name")
-            .values_list("name", flat=True)
-        ]
-
-        self.fields["workflow_templates"] = MultipleChoiceField(
-            choices=workflow_templates_choices,
-            required=False,
-        )
-
         statuses: list[tuple[str, str | list[tuple[str, str]]]] = []
         for status_value, status_label in WorkRequest.Statuses.choices:
             if status_value == WorkRequest.Statuses.RUNNING:
@@ -531,20 +518,6 @@ class WorkflowFilterForm(Form):
             required=False,
         )
 
-        usernames = [
-            (username, username)
-            for username in WorkRequest.objects.in_current_workspace()
-            .filter(task_type=TaskTypes.WORKFLOW, parent__isnull=True)
-            .order_by("created_by__username")
-            .distinct("created_by__username")
-            .values_list("created_by__username", flat=True)
-        ]
-
-        self.fields["started_by"] = MultipleChoiceField(
-            choices=usernames,
-            required=False,
-        )
-
         self.fields["with_failed_work_requests"] = BooleanField(
             required=False,
         )
@@ -569,6 +542,20 @@ class DaysField(IntegerField):
 
 class WorkspaceForm(BootstrapMixin, ModelFormBase[Workspace]):
     """Form for configuring a workspace."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Set help texts for the fields."""
+        super().__init__(*args, **kwargs)
+
+        self.fields["expiration_delay"].help_text = (
+            "If unset, workspace is permanent. Otherwise, the workspace gets "
+            "removed after the given period of inactivity (expressed as a "
+            "number of days after the completion of the last work request)"
+        )
+        self.fields["default_expiration_delay"].help_text = (
+            "Number of days that new artifacts and work requests are kept "
+            "in the workspace before being expired (0 means no expiration)"
+        )
 
     class Meta:
         model = Workspace
@@ -615,3 +602,50 @@ class GroupAddUserForm(BootstrapMixin, Form):
             )
 
         return cleaned_data
+
+
+class TaskConfigurationInspectorForm(BootstrapMixin, Form):
+    """Form for looking up task configurations."""
+
+    task = ChoiceField()
+    subject = ChoiceField(required=False)
+    context = ChoiceField(required=False)
+
+    def __init__(
+        self, *args: Any, collection: Collection, **kwargs: Any
+    ) -> None:
+        """Initialize choices from the database."""
+        super().__init__(*args, **kwargs)
+        children = collection.child_items.filter(
+            Q(data__template=None) | ~Q(data__has_key="template"),
+            category=BareDataCategory.TASK_CONFIGURATION,
+        )
+
+        task_choices = []
+        for ttype, tname in (
+            children.order_by("data__task_type", "data__task_name")
+            .values_list("data__task_type", "data__task_name")
+            .distinct()
+        ):
+            task_choices.append((f"{ttype}:{tname}", f"{ttype}:{tname}"))
+        cast(ChoiceField, self.fields["task"]).choices = task_choices
+
+        subject_choices = [("", "(unspecified)")]
+        for subject in (
+            children.order_by("data__subject")
+            .values_list("data__subject", flat=True)
+            .distinct()
+        ):
+            if subject is not None:
+                subject_choices.append((subject, subject))
+        cast(ChoiceField, self.fields["subject"]).choices = subject_choices
+
+        context_choices = [("", "(unspecified)")]
+        for context in (
+            children.order_by("data__context")
+            .values_list("data__context", flat=True)
+            .distinct()
+        ):
+            if context is not None:
+                context_choices.append((context, context))
+        cast(ChoiceField, self.fields["context"]).choices = context_choices

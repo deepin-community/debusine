@@ -17,11 +17,10 @@ values from :py:mod:`debusine.signing.settings.local` (or from
 has not been created by the administrator).
 """
 
-import sys
-
+from debusine.django.django_utils import in_test_suite
 from debusine.signing.settings.defaults import *  # noqa: F403
 
-if sys.argv[1:2] == ['test']:
+if in_test_suite():
     from debusine.signing.settings.test import *  # noqa: F403
 else:
     try:

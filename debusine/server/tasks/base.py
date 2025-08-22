@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from debusine.artifacts import WorkRequestDebugLogs
+from debusine.artifacts.models import TaskTypes
 from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
@@ -27,7 +28,7 @@ from debusine.db.models.permissions import (
     format_permission_check_error,
 )
 from debusine.tasks import BaseTask
-from debusine.tasks.models import BaseDynamicTaskData, BaseTaskData, TaskTypes
+from debusine.tasks.models import BaseDynamicTaskData, BaseTaskData
 from debusine.worker.system_information import host_architecture
 
 TD = TypeVar("TD", bound=BaseTaskData)

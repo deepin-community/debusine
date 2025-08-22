@@ -19,8 +19,10 @@ import django
 from django.core.management import CommandParser
 from django.db import connection, transaction
 from django.db.backends.utils import CursorWrapper
-from django.db.models import ProtectedError, Q, QuerySet
+from django.db.models import F, ProtectedError, Q, QuerySet
+from django.template.defaultfilters import pluralize
 from django.utils import timezone
+from django_cte import CTEQuerySet, With
 
 from debusine.db.models import (
     Artifact,
@@ -206,66 +208,66 @@ class DeleteExpiredArtifacts:
                 CollectionItem.objects.drop_metadata(
                     self.operation.initial_time
                 )
-                artifact_ids = self._mark_to_keep()
-
-                delete_files_from_stores = self._sweep(artifact_ids)
+                self._sweep(self._mark_to_keep())
 
                 if self.operation.dry_run:
                     transaction.set_rollback(True)
             with self.lock_tables(self._tables_to_lock()):
-                # delete_files_from_stores is empty for --dry-run because
-                # self._delete_artifact() does not return any files to delete
-                # if self._dry_run is True
-
-                self._delete_files_from_stores(delete_files_from_stores)
+                self._delete_files_from_stores()
         except LockTableFailed as exc:
             self.operation.error(f"{exc}. Try again.\n")  # noqa: G004
 
-    def _mark_to_keep(self) -> set[int]:
+    def _mark_to_keep(self) -> QuerySet[Artifact]:
         """
-        Return artifact ids that must be kept.
+        Return a queryset of artifacts that must be kept.
 
         These artifacts cannot be deleted: are not expired or are expired
         but there is an ArtifactRelation such as
         target=non_expired_artifact, artifact=expired_artifact.
         """
-        marked_to_keep: set[int] = set()
-        visited: set[int] = set()
 
-        not_expired = Artifact.objects.not_expired(self.operation.initial_time)
-        part_of_collection = (
-            Artifact.objects.part_of_collection_with_retains_artifacts()
-        )
-
-        for artifact in not_expired | part_of_collection:
-            self._traverse_and_mark_from_artifact(
-                artifact.id, marked_to_keep, visited
+        def keep_cte(cte: With) -> QuerySet[Artifact, Any]:
+            not_expired = Artifact.objects.not_expired(
+                self.operation.initial_time
             )
+            part_of_collection = (
+                Artifact.objects.part_of_collection_with_retains_artifacts()
+            )
+            recursive = (
+                (not_expired | part_of_collection)
+                .values(keep_id=F("id"))
+                .union(
+                    cte.join(ArtifactRelation, artifact=cte.col.keep_id).values(
+                        keep_id=F("target_id")
+                    )
+                )
+            )
+            assert isinstance(recursive, QuerySet)
+            return recursive
 
-        return marked_to_keep
+        cte = With.recursive(keep_cte)
+        keep = cte.join(
+            CTEQuerySet(Artifact, using=Artifact.objects._db),
+            id=cte.col.keep_id,
+        ).with_cte(cte)
+        assert isinstance(keep, QuerySet)
+        return keep
 
-    def _delete_artifact(self, artifact: Artifact) -> set[File]:
+    def _delete_artifact(self, artifact: Artifact) -> None:
         """
         Delete the specified Artifact and related models.
 
         Delete ArtifactRelation with target or artifact referencing artifact and
         the associated FileInArtifact files for this artifact.
-
-        If the files were associated only to this artifact, it also deletes
-        the database entries for the files and adds the removal of the file
-        in the store for when the transaction is committed.
-
-        :return: files that might be able to be deleted (if they don't exist
-          in another artifact besides the ones that is being deleted).
         """
         if self.operation.dry_run:
-            return set()
+            return
 
         for collection_item in artifact.collection_items.all():
-            collection_item.parent_collection.manager.remove_artifact(artifact)
-            artifact.collection_items.update(artifact=None)
-
-        delete_filesobjs = set()
+            collection_item.parent_collection.manager.remove_item(
+                collection_item
+            )
+        artifact.collection_items.update(artifact=None)
 
         ArtifactRelation.objects.filter(
             Q(target=artifact) | Q(artifact=artifact)
@@ -274,20 +276,13 @@ class DeleteExpiredArtifacts:
         for file_in_artifact in FileInArtifact.objects.filter(
             artifact=artifact
         ):
-            fileobj = file_in_artifact.file
+            if hasattr(file_in_artifact, "fileupload"):
+                file_in_artifact.fileupload.delete()
             file_in_artifact.delete()
-
-            # Maybe this artifact was the only one to have this file.
-            # The file needs to be deleted from the store later on,
-            # after the deletion of Artifacts have been committed.
-
-            delete_filesobjs.add(fileobj)
 
         artifact.delete()
 
-        return delete_filesobjs
-
-    def _delete_files_from_stores(self, file_objs: set[File]) -> None:
+    def _delete_files_from_stores(self) -> None:
         """
         Delete the files from stores.
 
@@ -295,67 +290,64 @@ class DeleteExpiredArtifacts:
         to be deleted after the transaction and only if no other FileInArtifact
         has the file.
         """
-        if len(file_objs) > 0:
-            self.operation.verbose("Deleting files from the store\n")
+        orphaned_files = list(
+            File.objects.filter(
+                id__in=(
+                    FileInStore.objects.values("file").difference(
+                        FileInArtifact.objects.values("file")
+                    )
+                )
+                # A SELECT ... FOR UPDATE lock prevents new references to
+                # this file from being created while the lock is held.
+            ).select_for_update()
+        )
+        total = len(orphaned_files)
+        if total:
+            self.operation.verbose(
+                f"Deleting {total} file{pluralize(total)} from the store\n"
+            )
 
-        for fileobj in file_objs:
-            if not FileInArtifact.objects.filter(file=fileobj).exists():
-                with transaction.atomic():
-                    # This is an orphaned file. Delete the file and
-                    # its dependencies
-                    for file_in_store in FileInStore.objects.filter(
-                        file=fileobj
-                    ):
-                        store = file_in_store.store.get_backend_object()
-                        store.remove_file(fileobj)
+        for fileobj in orphaned_files:
+            with transaction.atomic():
+                # This is an orphaned file. Delete the file and
+                # its dependencies
+                for file_in_store in FileInStore.objects.filter(file=fileobj):
+                    store = file_in_store.store.get_backend_object()
+                    store.remove_file(fileobj)
 
-                        try:
-                            fileobj.delete()
-                        except ProtectedError:
-                            # Perhaps it's not possible to delete the file yet:
-                            # it might be in another store
-                            pass
+                    try:
+                        fileobj.delete()
+                    except ProtectedError:
+                        # Perhaps it's not possible to delete the file yet:
+                        # it might be in another store
+                        pass
 
-    def _sweep(self, artifact_ids: set[int]) -> set[File]:
-        """
-        Delete artifacts that are not in artifact_ids and its relations.
-
-        :return: File objects that can potentially be deleted (if not used
-          by any other artifact).
-        """
-        delete_files_from_stores = set()
+    def _sweep(self, keep: QuerySet[Artifact]) -> None:
+        """Delete artifacts that are not in ``keep``."""
         number_of_artifacts_deleted = 0
         with transaction.atomic():
-            for artifact_expired in Artifact.objects.expired(
-                self.operation.initial_time
-            ).order_by("id"):
-                if (artifact_id := artifact_expired.id) not in artifact_ids:
-                    number_of_artifacts_deleted += 1
-                    files_to_delete = self._delete_artifact(artifact_expired)
-                    delete_files_from_stores.update(files_to_delete)
+            for artifact_expired in (
+                Artifact.objects.expired(self.operation.initial_time)
+                # Conceptually this should just be .exclude(id__in=keep),
+                # but that seems to cause PostgreSQL 15 to use a terrible
+                # plan that takes a very long time.  Pulling all the IDs
+                # into Python is less elegant, but it only takes a few
+                # seconds.
+                # TODO: Retest after upgrading to PostgreSQL 17, since its
+                # release notes suggest that the optimizer may do a better
+                # job here.
+                .exclude(
+                    id__in=set(keep.values_list("id", flat=True))
+                ).order_by("id")
+            ):
+                artifact_id = artifact_expired.id
+                number_of_artifacts_deleted += 1
+                self._delete_artifact(artifact_expired)
 
-                    self.operation.verbose(f"Deleted artifact {artifact_id}\n")
+                self.operation.verbose(f"Deleted artifact {artifact_id}\n")
 
         if number_of_artifacts_deleted == 0:
             self.operation.verbose("There were no expired artifacts\n")
-
-        return delete_files_from_stores
-
-    def _traverse_and_mark_from_artifact(
-        self, artifact_id: int, marked_to_keep: set[int], visited: set[int]
-    ) -> None:
-        if artifact_id in visited:
-            return
-
-        visited.add(artifact_id)
-        marked_to_keep.add(artifact_id)
-
-        for artifact_targeting in Artifact.objects.filter(
-            targeted_by__artifact_id=artifact_id
-        ):
-            self._traverse_and_mark_from_artifact(
-                artifact_targeting.id, marked_to_keep, visited
-            )
 
 
 class DeleteExpiredWorkRequests:

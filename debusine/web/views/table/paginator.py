@@ -18,7 +18,11 @@ from django.db.models import Model
 from django.template.context import Context
 
 from debusine.web.views.base import Widget
-from debusine.web.views.table.page_navigation import PageNavigation
+from debusine.web.views.table.page_navigation import (
+    PageNavigation,
+    PageNavigationPreview,
+    PageNavigationWidget,
+)
 
 if TYPE_CHECKING:
     from django.core.paginator import _SupportsPagination
@@ -127,9 +131,12 @@ class Paginator(Widget, PaginatorBase[M], Generic[M]):
         )
 
     @cached_property
-    def page_navigation(self) -> PageNavigation:
+    def page_navigation(self) -> PageNavigationWidget:
         """Return the PageNavigation widget."""
-        return PageNavigation(self)
+        if self.table.is_preview:
+            return PageNavigationPreview(self)
+        else:
+            return PageNavigation(self)
 
     @cached_property
     def has_page_navigation(self) -> bool:

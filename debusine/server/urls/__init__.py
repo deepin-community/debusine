@@ -18,10 +18,13 @@ from debusine.server.views.artifacts import (
 )
 from debusine.server.views.assets import AssetPermissionCheckView, AssetView
 from debusine.server.views.base import Whoami
+from debusine.server.views.collections import TaskConfigurationCollectionView
 from debusine.server.views.enroll import EnrollView
 from debusine.server.views.lookups import LookupMultipleView, LookupSingleView
+from debusine.server.views.open_metrics import OpenMetricsView
 from debusine.server.views.service_status import ServiceStatusView
 from debusine.server.views.work_requests import (
+    WorkRequestAbortView,
     WorkRequestExternalDebsignView,
     WorkRequestRetryView,
     WorkRequestUnblockView,
@@ -34,6 +37,7 @@ from debusine.server.views.workers import (
     UpdateWorkerDynamicMetadataView,
 )
 from debusine.server.views.workflows import WorkflowTemplateView, WorkflowView
+from debusine.server.views.workspaces import WorkspaceInheritanceView
 
 app_name = 'server'
 
@@ -73,6 +77,11 @@ urlpatterns = [
         '1.0/work-request/<int:work_request_id>/retry/',
         WorkRequestRetryView.as_view(),
         name='work-requests-retry',
+    ),
+    path(
+        '1.0/work-request/<int:work_request_id>/abort/',
+        WorkRequestAbortView.as_view(),
+        name='work-request-abort',
     ),
     path(
         '1.0/work-request/<int:work_request_id>/unblock/',
@@ -151,5 +160,20 @@ urlpatterns = [
         "1.0/service-status/",
         ServiceStatusView.as_view(),
         name="service-status",
+    ),
+    path(
+        "1.0/task-configuration/<str:workspace>/<str:name>/",
+        TaskConfigurationCollectionView.as_view(),
+        name="task-configuration-collection",
+    ),
+    path(
+        "1.0/workspace/<str:workspace>/inheritance/",
+        WorkspaceInheritanceView.as_view(),
+        name="workspace-inheritance",
+    ),
+    path(
+        "1.0/open-metrics/",
+        OpenMetricsView.as_view(),
+        name="open-metrics",
     ),
 ]

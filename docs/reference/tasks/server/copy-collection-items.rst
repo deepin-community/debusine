@@ -1,4 +1,4 @@
-.. _task-copy-collection-items:
+.. task:: CopyCollectionItems
 
 CopyCollectionItems task
 ------------------------

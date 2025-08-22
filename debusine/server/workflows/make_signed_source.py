@@ -11,7 +11,7 @@
 
 from functools import cached_property
 
-from debusine.artifacts.models import ArtifactCategory
+from debusine.artifacts.models import ArtifactCategory, TaskTypes
 from debusine.assets import KeyPurpose
 from debusine.client.models import LookupChildType
 from debusine.db.models import WorkRequest
@@ -38,7 +38,6 @@ from debusine.tasks.models import (
     LookupMultiple,
     LookupSingle,
     SbuildInput,
-    TaskTypes,
 )
 from debusine.tasks.server import TaskDatabaseInterface
 

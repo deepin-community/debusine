@@ -15,18 +15,18 @@ from typing import Any
 from unittest import mock
 
 from debusine.client.dataentry import DataEntry
-from debusine.client.tests.utils import TestConsole
+from debusine.client.tests.utils import BufferConsole
 from debusine.test import TestCase
 
 
 class MockDataEntry(DataEntry):
     """Concrete DataEntry implementation tweaked for tests."""
 
-    console: TestConsole
+    console: BufferConsole
 
     def __init__(self) -> None:
         """Set up the rich console to output plaing text to self.output."""
-        super().__init__(console=TestConsole())
+        super().__init__(console=BufferConsole())
 
     def menu(self) -> None:
         """Mock menu implementation."""

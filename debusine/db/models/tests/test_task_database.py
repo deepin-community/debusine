@@ -22,7 +22,7 @@ from debusine.db.models import (
     Workspace,
 )
 from debusine.tasks.models import LookupMultiple
-from debusine.tasks.server import ArtifactInfo
+from debusine.tasks.server import ArtifactInfo, CollectionInfo
 from debusine.test.django import TestCase
 from debusine.test.test_utils import create_system_tarball_data
 
@@ -34,7 +34,6 @@ class TaskDatabaseTests(TestCase):
     work_request: ClassVar[WorkRequest]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()
@@ -86,7 +85,6 @@ class TaskDatabaseTests(TestCase):
         ):
             task_db.lookup_single_artifact("debian/match:codename=bookworm")
 
-    @context.disable_permission_checks()
     def test_lookup_multiple_artifacts(self) -> None:
         """Look up multiple artifacts."""
         collection = self.playground.create_collection(
@@ -144,7 +142,6 @@ class TaskDatabaseTests(TestCase):
                 LookupMultiple.parse_obj({"collection": "debian"})
             )
 
-    @context.disable_permission_checks()
     def test_find_related_artifacts(self) -> None:
         """Find artifacts via relations."""
         upload_artifacts = self.playground.create_upload_artifacts(
@@ -221,14 +218,22 @@ class TaskDatabaseTests(TestCase):
 
         self.assertEqual(
             task_db.lookup_single_collection("debian@debian:environments"),
-            collection.id,
+            CollectionInfo(
+                id=collection.id,
+                category=collection.category,
+                data=collection.data,
+            ),
         )
         self.assertEqual(
             task_db.lookup_single_collection(
                 "debian",
                 default_category=CollectionCategory.ENVIRONMENTS,
             ),
-            collection.id,
+            CollectionInfo(
+                id=collection.id,
+                category=collection.category,
+                data=collection.data,
+            ),
         )
         with self.assertRaisesRegex(
             LookupError,
@@ -248,8 +253,15 @@ class TaskDatabaseTests(TestCase):
             task_db.lookup_singleton_collection(
                 CollectionCategory.PACKAGE_BUILD_LOGS
             ),
-            collection.id,
+            CollectionInfo(
+                id=collection.id,
+                category=collection.category,
+                data=collection.data,
+            ),
         )
         self.assertIsNone(
             task_db.lookup_singleton_collection(CollectionCategory.TASK_HISTORY)
+        )
+        self.assertIsNone(
+            task_db.lookup_singleton_collection(CollectionCategory.ARCHIVE)
         )

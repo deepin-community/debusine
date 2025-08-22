@@ -5,8 +5,8 @@ Available workflows
 ===================
 
 Most workflows are mainly useful as sub-workflows of a more complex
-workflow. The workflows that you are most likely to use directly
-is the :ref:`debian_pipeline workflow <workflow-debian-pipeline>`.
+workflow. The workflow that you are most likely to use directly is the
+:workflow:`debian_pipeline` workflow.
 
 You will launch a :ref:`workflow template <workflow-template>`, which
 provides some default settings, rather than directly launching the bare

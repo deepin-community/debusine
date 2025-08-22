@@ -101,7 +101,7 @@ navigate deeper structures embedded in per-item data, or using ``__``
 suffixes on keys other than ``name`` or ``data__KEY``.
 
 For example, the following lookup returns all the active
-``debian:binary-package`` artifacts in the collection looked up by
+:artifact:`debian:binary-package` artifacts in the collection looked up by
 ``debian/trixie`` that have ``package: "libc6"`` and ``version: "2.37-15"``
 in their per-item data:
 

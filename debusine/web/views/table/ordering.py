@@ -327,7 +327,7 @@ class TableOrdering(Generic[M]):
             query_string=self.query_string,
             active=" active" if self.active else "",
             aria_current=(
-                SafeString("aria-current='true'") if self.active else ""
+                SafeString(" aria-current='true'") if self.active else ""
             ),
         )
 
@@ -342,7 +342,7 @@ class TableOrdering(Generic[M]):
             query_string=self.query_string,
             active=" active" if self.active else "",
             aria_current=(
-                SafeString("aria-current='true'") if self.active else ""
+                SafeString(" aria-current='true'") if self.active else ""
             ),
         )
 
@@ -355,6 +355,8 @@ class TableOrderings(Generic[M]):
         self.table = table
         #: Query string field name used to choose the table ordering
         self.field_name = self.table.prefix + "order"
+        #: ID for this element in the DOM
+        self.dom_id = self.table.dom_id + "orderings"
         #: Available sort options
         self.options: list[TableOrdering[M]] = []
         #: Active sort option
@@ -444,7 +446,7 @@ class TableOrderings(Generic[M]):
                     query_string=o.query_string,
                     active=" active" if active else "",
                     aria_current=(
-                        SafeString("aria-current='true'") if active else ""
+                        SafeString(" aria-current='true'") if active else ""
                     ),
                 )
             )
@@ -465,7 +467,7 @@ class TableOrderings(Generic[M]):
                     query_string=o.query_string,
                     active=" active" if active else "",
                     aria_current=(
-                        SafeString("aria-current='true'") if active else ""
+                        SafeString(" aria-current='true'") if active else ""
                     ),
                 )
             )

@@ -1,4 +1,4 @@
-.. _task-generate-key:
+.. task:: GenerateKey
 
 GenerateKey task
 ----------------
@@ -13,8 +13,7 @@ The ``task_data`` for this task may contain the following keys:
 * ``description`` (required): A text string with a human-readable
   description of the new key's intended purpose.
 
-The output will be provided as a :ref:`debusine:signing-key
-<asset-signing-key>` asset.
+The output will be provided as a :asset:`debusine:signing-key` asset.
 You can find the output asset with the debusine client:
 
 .. code-block:: console

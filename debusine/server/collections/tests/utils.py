@@ -46,11 +46,10 @@ class CollectionTestMixin(TestCase):
     ) -> CollectionItem:
         """Create a minimal source package collection item."""
         user = self.playground.get_default_user()
-        return manager.add_source_package(
+        return manager.add_artifact(
             self.create_source_package(name, version),
             user=user,
-            component="main",
-            section="devel",
+            variables={"component": "main", "section": "devel"},
         )
 
     def create_binary_package(
@@ -91,18 +90,24 @@ class CollectionTestMixin(TestCase):
     ) -> CollectionItem:
         """Create a minimal source package collection item."""
         user = self.playground.get_default_user()
-        return manager.add_binary_package(
+        return manager.add_artifact(
             self.create_binary_package(
                 srcpkg_name, srcpkg_version, name, version, architecture
             ),
             user=user,
-            component="main",
-            section="devel",
-            priority="optional",
+            variables={
+                "component": "main",
+                "section": "devel",
+                "priority": "optional",
+            },
         )
 
     def create_lintian_artifact(self, related_artifact: Artifact) -> Artifact:
         """Create a minimal `debian:lintian` artifact."""
+        # BINARY_PACKAGE would also be possible, in which case we'd need to
+        # extract the architecture from its data, but we don't need that
+        # right now.
+        assert related_artifact.category == ArtifactCategory.SOURCE_PACKAGE
         summary = {
             "tags_count_by_severity": {},
             "tags_found": [],
@@ -115,7 +120,8 @@ class CollectionTestMixin(TestCase):
             },
         }
         lintian_artifact, _ = self.playground.create_artifact(
-            category=ArtifactCategory.LINTIAN, data={"summary": summary}
+            category=ArtifactCategory.LINTIAN,
+            data={"architecture": "source", "summary": summary},
         )
         self.playground.create_artifact_relation(
             lintian_artifact, related_artifact

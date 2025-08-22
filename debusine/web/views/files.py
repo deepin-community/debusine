@@ -26,6 +26,7 @@ from django.http import FileResponse
 from django.http.response import HttpResponseBase
 from django.shortcuts import redirect
 from django.template import Context
+from django.utils.http import parse_header_parameters
 from django.utils.safestring import SafeString
 from django.views.generic.base import View
 from rest_framework import status
@@ -66,40 +67,69 @@ class FileUI(NamedTuple):
     @classmethod
     def from_file_in_artifact(cls, file: FileInArtifact) -> Self:
         """Get a FileUI for a file."""
-        # TODO: this is currently rather simple minded.
-        # If it will need more complexity in the future,
-        # debusine.artifacts.models.ArtifactData can be extended with a
-        # get_content_type or get_file_ui method.
-        # Another thing we may want to consider is adding a content_type
-        # argument to File.
         content_type: str
         widget_class: type["FileWidget"]
+        if file.content_type is not None:
+            content_type = file.content_type
+            main_type, _ = parse_header_parameters(content_type)
+            if main_type.startswith("text/") or main_type == "application/json":
+                if main_type not in {
+                    "text/plain",
+                    "text/markdown",
+                    "application/json",
+                }:
+                    # Serve other text types as text/plain; clients should
+                    # not be allowed to tell Debusine to serve arbitrary
+                    # JavaScript or similar.
+                    content_type = "text/plain"
+                widget_class = TextFileWidget
+            else:
+                if main_type not in {
+                    "application/gzip",
+                    "application/octet-stream",
+                    "application/vnd.debian.binary-package",
+                    "application/x-bzip2",
+                    "application/x-tar",
+                    "application/x-xz",
+                    "application/zstd",
+                }:
+                    # Serve other binary types as application/octet-stream,
+                    # to avoid attacks where clients try to tell Debusine to
+                    # serve something like malicious images that browsers
+                    # may try to interpret.
+                    content_type = "application/octet-stream"
+
+                widget_class = BinaryFileWidget
+        else:
+            match os.path.splitext(file.path)[1]:
+                case ".buildinfo" | ".dsc" | ".changes":
+                    content_type = "text/plain; charset=utf-8"
+                    widget_class = TextFileWidget
+                case ".txt" | ".log" | ".build" | ".buildlog" | ".sources":
+                    content_type = "text/plain; charset=utf-8"
+                    widget_class = TextFileWidget
+                case '.md':
+                    content_type = "text/markdown; charset=utf-8"
+                    widget_class = TextFileWidget
+                case _:
+                    # Logic taken from django FileResponse.set_headers
+                    encoding_map = {
+                        'bzip2': 'application/x-bzip',
+                        'gzip': 'application/gzip',
+                        'xz': 'application/x-xz',
+                    }
+                    _content_type, encoding = mimetypes.guess_type(file.path)
+                    content_type = _content_type or 'application/octet-stream'
+                    # Encoding isn't set to prevent browsers from automatically
+                    # uncompressing files.
+                    if encoding:
+                        content_type = encoding_map.get(encoding, content_type)
+                    widget_class = BinaryFileWidget
+
         pygments_lexer: str | None = None
         match os.path.splitext(file.path)[1]:
             case ".buildinfo" | ".dsc" | ".changes":
-                content_type = "text/plain; charset=utf-8"
-                widget_class = TextFileWidget
                 pygments_lexer = "debcontrol"
-            case ".txt" | ".log" | ".build" | ".buildlog" | ".sources":
-                content_type = "text/plain; charset=utf-8"
-                widget_class = TextFileWidget
-            case '.md':
-                content_type = "text/markdown; charset=utf-8"
-                widget_class = TextFileWidget
-            case _:
-                # Logic taken from django FileResponse.set_headers
-                encoding_map = {
-                    'bzip2': 'application/x-bzip',
-                    'gzip': 'application/gzip',
-                    'xz': 'application/x-xz',
-                }
-                _content_type, encoding = mimetypes.guess_type(file.path)
-                content_type = _content_type or 'application/octet-stream'
-                # Encoding isn't set to prevent browsers from automatically
-                # uncompressing files.
-                if encoding:
-                    content_type = encoding_map.get(encoding, content_type)
-                widget_class = BinaryFileWidget
 
         if file.file.size > MAX_FILE_SIZE:
             widget_class = TooBigFileWidget
@@ -232,11 +262,24 @@ class TextFileWidget(FileWidget):
                     self.file_ui.pygments_lexer
                 )
             else:
+                lexer = None
                 try:
                     lexer = pygments.lexers.get_lexer_for_mimetype(
                         self.file_ui.content_type
                     )
                 except pygments.util.ClassNotFound:
+                    # Try using the main_type only
+                    main_type, _ = parse_header_parameters(
+                        self.file_ui.content_type
+                    )
+                    try:
+                        lexer = pygments.lexers.get_lexer_for_mimetype(
+                            main_type
+                        )
+                    except pygments.util.ClassNotFound:
+                        pass
+
+                if lexer is None:
                     lexer = pygments.lexers.get_lexer_for_mimetype("text/plain")
 
             formatter = LinenoHtmlFormatter(
@@ -289,13 +332,6 @@ class FileDownloadMixin(View):
                 status_code=status.HTTP_404_NOT_FOUND,
             )
 
-        try:
-            content_range = parse_range_header(self.request.headers)
-        except ValueError as exc:
-            # It returns ProblemResponse because ranges are not used
-            # by end users directly
-            return ProblemResponse(str(exc))
-
         scope = file_in_artifact.artifact.workspace.scope
         file_backend = scope.download_file_backend(file_in_artifact.file)
         entry = file_backend.get_entry(file_in_artifact.file)
@@ -310,7 +346,18 @@ class FileDownloadMixin(View):
 
         with entry.get_stream() as file:
             file_size = file_in_artifact.file.size
+            try:
+                content_range = parse_range_header(
+                    self.request.headers, file_size
+                )
+            except ValueError as exc:
+                # It returns ProblemResponse because ranges are not used
+                # by end users directly
+                return ProblemResponse(str(exc))
+
             status_code: int
+            start: int | None
+            end: int | None
             if content_range is None:
                 # Whole file
                 status_code = status.HTTP_200_OK
