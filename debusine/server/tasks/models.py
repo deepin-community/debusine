@@ -10,6 +10,7 @@
 """Models used by debusine server-side tasks."""
 
 import re
+from datetime import datetime
 from typing import Any
 
 try:
@@ -148,3 +149,16 @@ class CreateExperimentWorkspaceData(BaseTaskData):
         if not re.match(r"^[A-Za-z][A-Za-z0-9+._]*$", data):
             raise ValueError("experiment name contains invalid characters")
         return data
+
+
+class GenerateSuiteIndexesData(BaseTaskData):
+    """In-memory task data for GenerateSuiteIndexes."""
+
+    suite_collection: LookupSingle
+    generate_at: datetime
+
+
+class GenerateSuiteIndexesDynamicData(BaseDynamicTaskData):
+    """Dynamic data for the GenerateSuiteIndexes task."""
+
+    suite_collection_id: int

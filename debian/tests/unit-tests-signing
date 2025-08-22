@@ -6,6 +6,7 @@ service postgresql start
 
 runuser -u postgres -- createuser --createdb debusine-signing
 
+cp -a pyproject.toml "$AUTOPKGTEST_TMP/"
 cd "$AUTOPKGTEST_TMP"
 
 cat << EOF >> /etc/debusine/signing/test.py
@@ -14,5 +15,4 @@ cat << EOF >> /etc/debusine/signing/test.py
 from .pkg_paths import *  # noqa
 EOF
 
-export DJANGO_SETTINGS_MODULE=debusine.signing.settings
-runuser -u debusine-signing -- django-admin test -v 2 debusine.signing
+runuser -u debusine-signing -- pytest --rootdir=/usr/lib/python3/dist-packages -c pyproject.toml --ds=debusine.signing.settings -v --pyargs debusine.signing

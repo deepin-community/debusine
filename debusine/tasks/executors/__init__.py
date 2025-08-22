@@ -19,6 +19,7 @@ from debusine.tasks.executors.base import (
     ExecutorStatistics,
     InstanceInterface,
     analyze_worker_all_executors,
+    executor_backends,
     executor_class,
 )
 from debusine.tasks.executors.incus import (
@@ -41,5 +42,6 @@ __all__ = [
     "UnshareExecutor",
     "UnshareInstance",
     "analyze_worker_all_executors",
+    "executor_backends",
     "executor_class",
 ]

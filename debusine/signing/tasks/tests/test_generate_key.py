@@ -182,6 +182,11 @@ class GenerateKeyTests(TestCase, TransactionTestCase):
                         Path(debug_log_files_directory.name) / "execution.log"
                     ),
                 },
+                content_types={
+                    "stages.log": "text/plain; charset=utf-8",
+                    "cmd-output.log": "text/plain; charset=utf-8",
+                    "execution.log": "text/plain; charset=utf-8",
+                },
             ),
             workspace="System",
             work_request=1,

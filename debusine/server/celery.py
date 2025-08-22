@@ -15,6 +15,7 @@ from contextlib import ExitStack
 from celery import shared_task
 from django.db import transaction
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.context import context
 from debusine.db.models import WorkRequest
 from debusine.db.models.work_requests import (
@@ -24,7 +25,7 @@ from debusine.db.models.work_requests import (
 )
 from debusine.server.tasks import BaseServerTask
 from debusine.tasks import TaskConfigError
-from debusine.tasks.models import OutputData, OutputDataError, TaskTypes
+from debusine.tasks.models import OutputData, OutputDataError
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ def _run_server_task_or_error(work_request: WorkRequest) -> bool:
 # can't fix that here.
 @shared_task  # type: ignore[misc]
 def run_server_task(work_request_id: int) -> bool:
-    """Run a :class:`BaseTask` via Celery."""
+    """Run a :py:class:`BaseTask` via Celery."""
     try:
         work_request = WorkRequest.objects.get(pk=work_request_id)
     except WorkRequest.DoesNotExist:

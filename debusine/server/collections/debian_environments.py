@@ -10,6 +10,7 @@
 """The collection manager for debian:environments collections."""
 
 import re
+from datetime import datetime
 from typing import Any
 
 from django.db import IntegrityError
@@ -44,6 +45,8 @@ class DebianEnvironmentsManager(CollectionManagerInterface):
         variables: dict[str, Any] | None = None,
         name: str | None = None,  # noqa: U100
         replace: bool = False,
+        created_at: datetime | None = None,
+        replaced_by: CollectionItem | None = None,
     ) -> CollectionItem:
         """
         Add the artifact into the managed collection.
@@ -93,21 +96,12 @@ class DebianEnvironmentsManager(CollectionManagerInterface):
         name = ":".join(name_elements)
 
         if replace:
-            try:
-                old_artifact = (
-                    CollectionItem.active_objects.filter(
-                        parent_collection=self.collection,
-                        child_type=CollectionItem.Types.ARTIFACT,
-                        name=name,
-                    )
-                    .latest("created_at")
-                    .artifact
-                )
-            except CollectionItem.DoesNotExist:
-                pass
-            else:
-                assert old_artifact is not None
-                self.remove_artifact(old_artifact, user=user, workflow=workflow)
+            self.remove_items_by_name(
+                name=name,
+                child_types=[CollectionItem.Types.ARTIFACT],
+                user=user,
+                workflow=workflow,
+            )
 
         try:
             return CollectionItem.objects.create_from_artifact(
@@ -115,29 +109,27 @@ class DebianEnvironmentsManager(CollectionManagerInterface):
                 parent_collection=self.collection,
                 name=name,
                 data=data,
+                created_at=created_at,
                 created_by_user=user,
                 created_by_workflow=workflow,
+                replaced_by=replaced_by,
             )
         except IntegrityError as exc:
             raise ItemAdditionError(str(exc))
 
-    def do_remove_artifact(
+    def do_remove_item(
         self,
-        artifact: Artifact,
+        item: CollectionItem,
         *,
         user: User | None = None,
         workflow: WorkRequest | None = None,
     ) -> None:
-        """Remove the artifact from the collection."""
-        # Retention logic will remove the artifact, now only marked as
-        # removed
-        CollectionItem.objects.filter(
-            artifact=artifact, parent_collection=self.collection
-        ).update(
-            removed_by_user=user,
-            removed_by_workflow=workflow,
-            removed_at=timezone.now(),
-        )
+        """Remove an item from the collection."""
+        # Retention logic will remove the item, now only marked as removed.
+        item.removed_by_user = user
+        item.removed_by_workflow = workflow
+        item.removed_at = timezone.now()
+        item.save()
 
     def do_lookup(self, query: str) -> CollectionItem | None:
         """
@@ -173,8 +165,10 @@ class DebianEnvironmentsManager(CollectionManagerInterface):
             query_filter &= Q(data__backend=filters["backend"])
 
         try:
-            return CollectionItem.active_objects.filter(query_filter).latest(
-                "created_at"
+            return (
+                CollectionItem.objects.active()
+                .filter(query_filter)
+                .latest("created_at")
             )
         except CollectionItem.DoesNotExist:
             return None

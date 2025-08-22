@@ -11,12 +11,10 @@
 import datetime
 from typing import ClassVar
 
-from django.core.management import CommandError
 from django.utils import timezone
 
 from debusine.db.models import Token, WorkRequest, Worker
 from debusine.django.management.tests import call_command
-from debusine.tasks.models import WorkerType
 from debusine.test.django import TestCase
 
 
@@ -35,17 +33,22 @@ class ManageWorkerCommandTests(TestCase):
             name='worker-a', token=cls.token, registered_at=timezone.now()
         )
 
-    def test_enable_worker(self) -> None:
-        """'manage_worker enable <worker> enables the worker."""
+    def test_enable_forwards_with_deprecation_warning(self) -> None:
+        """`manage_worker enable` forwards to `worker enable` and warns."""
         self.assertFalse(self.token.enabled)
 
-        call_command('manage_worker', 'enable', self.worker.name)
+        with self.assertWarnsMessage(
+            DeprecationWarning,
+            "The `debusine-admin manage_worker enable` command has been "
+            "deprecated in favour of `debusine-admin worker enable`",
+        ):
+            call_command("manage_worker", "enable", self.worker.name)
 
         self.token.refresh_from_db()
         self.assertTrue(self.token.enabled)
 
-    def test_disable_worker(self) -> None:
-        """manage_worker disable <worker> disables the worker."""
+    def test_disable_forwards_with_deprecation_warning(self) -> None:
+        """`manage_worker disable` forwards to `worker disable` and warns."""
         self.token.enable()
         self.token.refresh_from_db()
 
@@ -67,7 +70,12 @@ class ManageWorkerCommandTests(TestCase):
 
         self.assertTrue(self.token.enabled)
 
-        call_command('manage_worker', 'disable', self.worker.name)
+        with self.assertWarnsMessage(
+            DeprecationWarning,
+            "The `debusine-admin manage_worker disable` command has been "
+            "deprecated in favour of `debusine-admin worker disable`",
+        ):
+            call_command("manage_worker", "disable", self.worker.name)
 
         # Worker is disabled
         self.token.refresh_from_db()
@@ -92,34 +100,3 @@ class ManageWorkerCommandTests(TestCase):
         self.assertIsInstance(
             work_request_finished.started_at, datetime.datetime
         )
-
-    def test_enable_worker_not_found(self) -> None:
-        """Worker not found raise CommandError."""
-        with self.assertRaisesRegex(CommandError, "^Worker not found$"):
-            call_command('manage_worker', 'enable', 'worker-does-not-exist')
-
-    def test_enable_worker_wrong_type(self) -> None:
-        """Trying to enable a worker of the wrong type raises CommandError."""
-        worker = Worker.objects.get_or_create_celery()
-        with self.assertRaisesRegex(
-            CommandError,
-            f'^Worker "{worker.name}" is of type "celery", not "external"$',
-        ):
-            call_command("manage_worker", "enable", worker.name)
-
-    def test_enable_worker_signing(self) -> None:
-        """Signing workers can be enabled with an option."""
-        self.worker.worker_type = WorkerType.SIGNING
-        self.worker.save()
-        self.assertFalse(self.token.enabled)
-
-        call_command(
-            "manage_worker",
-            "--worker-type",
-            "signing",
-            "enable",
-            self.worker.name,
-        )
-
-        self.token.refresh_from_db()
-        self.assertTrue(self.token.enabled)

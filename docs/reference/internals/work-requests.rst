@@ -93,9 +93,8 @@ Work Requests have the following important properties:
 * event_reactions: JSON dict describing actions to perform in response to
   specific events.
 * internal_collection: (only for workflow work requests): reference to a
-  ``debusine:workflow-internal`` collection (see
-  :ref:`collection-workflow-internal`) that holds artifacts produced during
-  this workflow
+  :collection:`debusine:workflow-internal` collection that holds artifacts
+  produced during this workflow
 * expiration_delay: retention time for this work request in the database
 * supersedes: optional work request that has been superseded by this one: this
   is used to track previous attempts when retrying tasks.

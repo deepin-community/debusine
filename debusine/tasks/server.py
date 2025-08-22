@@ -19,7 +19,7 @@ interface that is implemented by server code.
 from abc import ABC, abstractmethod
 from collections.abc import Collection as AbcCollection
 from dataclasses import dataclass
-from typing import overload
+from typing import Any, overload
 
 from debusine.artifacts.models import (
     ArtifactCategory,
@@ -45,6 +45,15 @@ class MultipleArtifactInfo(tuple[ArtifactInfo, ...]):
     def get_ids(self) -> list[int]:
         """Return the ID of each artifact."""
         return [item.id for item in self]
+
+
+@dataclass
+class CollectionInfo:
+    """Information about a collection."""
+
+    id: int
+    category: str
+    data: dict[str, Any]
 
 
 class TaskDatabaseInterface(ABC):
@@ -97,7 +106,7 @@ class TaskDatabaseInterface(ABC):
         self,
         lookup: LookupSingle,
         default_category: CollectionCategory | None = None,
-    ) -> int: ...
+    ) -> CollectionInfo: ...
 
     @overload
     @abstractmethod
@@ -112,12 +121,12 @@ class TaskDatabaseInterface(ABC):
         self,
         lookup: LookupSingle | None,
         default_category: CollectionCategory | None = None,
-    ) -> int | None:
+    ) -> CollectionInfo | None:
         """Look up a single collection using :ref:`lookup-single`."""
 
     def lookup_singleton_collection(
         self, category: CollectionCategory
-    ) -> int | None:
+    ) -> CollectionInfo | None:
         """Look up a singleton collection for `category`, if it exists."""
         try:
             return self.lookup_single_collection(f"_@{category}")

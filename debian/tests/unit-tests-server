@@ -7,6 +7,7 @@ service redis-server start
 
 runuser -u postgres -- createuser --createdb debusine-server
 
+cp -a pyproject.toml "$AUTOPKGTEST_TMP/"
 cd "$AUTOPKGTEST_TMP"
 
 cat << EOF >> /etc/debusine/server/test.py
@@ -15,5 +16,4 @@ cat << EOF >> /etc/debusine/server/test.py
 from .pkg_paths import *  # noqa
 EOF
 
-export DJANGO_SETTINGS_MODULE=debusine.project.settings
-runuser -u debusine-server -- django-admin test -v 2 debusine.db debusine.server debusine.web debusine.test debusine.project
+runuser -u debusine-server -- pytest --rootdir=/usr/lib/python3/dist-packages -c pyproject.toml -v --pyargs debusine.db debusine.django debusine.project debusine.server debusine.test debusine.web

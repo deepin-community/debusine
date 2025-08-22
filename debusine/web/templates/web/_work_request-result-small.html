@@ -4,6 +4,8 @@
     <span title="Failure" class="badge text-bg-warning">F</span>
 {% elif result == "error" %}
     <span title="Error" class="badge text-bg-danger">E</span>
+{% elif result == "skipped" %}
+    <span title="Skipped" class="badge text-bg-light">s</span>
 {% else %}
     {{ result }}
 {% endif %}

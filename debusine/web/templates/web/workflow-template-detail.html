@@ -1,10 +1,11 @@
 {% extends base_template %}
 {% load debusine %}
 {% block content %}
+    {% ui workflow_template as workflow_template_ui %}
     <h1>{{ title }}</h1>
     <div class="card mb-2" id="workflow-information">
         <div class="card-header">
-            <b>{{ workflow_template.name }}</b> (type <b>{{ workflow_template.task_name }}</b>, priority {{ workflow_template.priority }})
+            <b>{{ workflow_template.name }}</b> (type <a href="{{ workflow_template_ui.get_help_url }}">{{ workflow_template.task_name }}</a>, priority {{ workflow_template.priority }})
         </div>
         <div class="card-body text-white bg-dark">{{ workflow_template.task_data|format_yaml }}</div>
     </div>

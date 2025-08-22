@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 from debusine.test import TestCase
+from debusine.utils import atomic_writer
 from debusine.worker.config import ConfigHandler
 
 
@@ -169,9 +170,8 @@ class ConfigHandlerTests(TestCase):
     ) -> Generator[str, None, None]:
         with cls._temporary_config_directory() as temp_directory:
             token_path = os.path.join(temp_directory, token_filename)
-            fd = os.open(token_path, os.O_WRONLY | os.O_CREAT, mode=0o600)
-            os.write(fd, token.encode('utf-8'))
-            os.close(fd)
+            with atomic_writer(token_path, mode="w", chmod=0o600) as fd:
+                fd.write(token)
 
             yield temp_directory
 
@@ -350,18 +350,17 @@ class ConfigHandlerTests(TestCase):
         with self._temporary_config_directory() as temp_directory:
             config = ConfigHandler(directories=[temp_directory])
 
-        token_file = os.path.join(temp_directory, 'token')
+        token_file = os.path.join(temp_directory, "token")
 
-        log_message = (
-            f"Cannot open token file: [Errno 2] "
-            f"No such file or directory: '{token_file}'"
-        )
-        with (
-            self.assertLogsContains(log_message),
-            self.assertRaisesSystemExit(3),
-        ):
+        with self.assertLogs() as logs, self.assertRaisesSystemExit(3):
             # it fails because temp_directory has already been deleted
             config.write_token('some-random-token')
+
+        self.assertRegex(
+            "\n".join(logs.output),
+            fr"Cannot open token file: \[Errno 2\] "
+            fr"No such file or directory: '{token_file}.*\.new'",
+        )
 
     def _mock_config_handle_property(
         self, property_to_mock: str

@@ -1,0 +1,5 @@
+{% extends "web/_table_filter_form_dropdown_menu.html" %}
+{% block form %}
+    <label class="form-label me-2" for="{{ filter.form_field.id_for_label }}">{{ filter.label }}</label>
+    {{ filter.form_field }}
+{% endblock %}

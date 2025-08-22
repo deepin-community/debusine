@@ -9,7 +9,11 @@
 
 """Package publishing workflow."""
 
-from debusine.artifacts.models import ArtifactCategory, CollectionCategory
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    CollectionCategory,
+    TaskTypes,
+)
 from debusine.client.models import LookupChildType
 from debusine.server.collections.lookup import lookup_multiple, lookup_single
 from debusine.server.tasks.models import (
@@ -21,7 +25,7 @@ from debusine.server.workflows.models import (
     PackagePublishWorkflowData,
     WorkRequestWorkflowData,
 )
-from debusine.tasks.models import BaseDynamicTaskData, LookupMultiple, TaskTypes
+from debusine.tasks.models import BaseDynamicTaskData, LookupMultiple
 from debusine.tasks.server import TaskDatabaseInterface
 
 

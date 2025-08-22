@@ -40,19 +40,17 @@ output source package.  To avoid risk from vulnerabilities such as those
 listed above, unpacking binary packages and building source packages must
 always be run on an external worker within some kind of container.
 
-There are three tasks for this (:ref:`ExtractForSigning
-<task-extract-for-signing>`, :ref:`Sign <task-sign>`, and
-:ref:`AssembleSignedSource <task-assemble-signed-source>`), an asset
-(:ref:`debusine:signing-key <asset-signing-key>`), two artifact
-categories to mediate these tasks (:ref:`debusine:signing-input
-<artifact-signing-input>`, and :ref:`debusine:signing-output
-<artifact-signing-output>`), and a :ref:`make_signed_source workflow
-<workflow-make-signed-source>` to tie everything together.
+There are three tasks for this (:task:`ExtractForSigning`, :task:`Sign`, and
+:task:`AssembleSignedSource`), an asset (:asset:`debusine:signing-key`), two
+artifact categories to mediate these tasks
+(:artifact:`debusine:signing-input` and
+:artifact:`debusine:signing-output`), and a :workflow:`make_signed_source`
+workflow to tie everything together.
 
 The signing service may be used for purposes other than UEFI Secure Boot.
-For example, the :ref:`task-debsign` allows signing a package upload using
-an OpenPGP key, which is used by the :ref:`package_upload workflow
-<workflow-package-upload>`.  This allows Debusine to act as a build daemon.
+For example, the :task:`Debsign` task allows signing a package upload using
+an OpenPGP key, which is used by the :workflow:`package_upload` workflow.
+This allows Debusine to act as a build daemon.
 
 Signing key management
 ======================

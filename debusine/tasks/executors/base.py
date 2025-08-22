@@ -522,8 +522,21 @@ class InstanceInterface(ABC):
         try:
             return self._get_uid(username)
         except KeyError:
-            self._run_check_output(["useradd", username])
-            return self._get_uid(username)
+            pass
+
+        self._run_check_output(
+            [
+                "sh",
+                "-c",
+                (
+                    "if [ ! -x /usr/sbin/useradd ]; then "
+                    "apt-get update && apt-get -y install passwd; "
+                    "fi"
+                ),
+            ]
+        )
+        self._run_check_output(["useradd", username])
+        return self._get_uid(username)
 
 
 def executor_class(
@@ -541,6 +554,11 @@ def executor_class(
         )
 
     return _backends[backend]
+
+
+def executor_backends() -> list[str]:
+    """List all registered executor backends."""
+    return list(_backends.keys())
 
 
 def analyze_worker_all_executors() -> dict[str, Any]:

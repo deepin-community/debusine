@@ -114,7 +114,14 @@ class SimpleSystemImageBuildTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.configure_task()
+
+    def tearDown(self) -> None:
+        """Delete objects."""
+        if self.task._debug_log_files_directory:
+            self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def test_configure_task(self) -> None:
         """self.configure_task() does not raise any exception."""
@@ -130,7 +137,6 @@ class SimpleSystemImageBuildTests(
 
         self.configure_task(override={"bootstrap_options": bootstrap_options})
 
-        self.maxDiff = None
         self.assertEqual(
             self.task.data.dict(exclude_unset=True),
             {
@@ -294,15 +300,14 @@ class SimpleSystemImageBuildTests(
     def test_cmdline(self) -> None:
         """Command line has minimum options."""
         expected = [
-            "/usr/share/debusine-worker/debefivm-create",
+            "debefivm-create",
             "--architecture=amd64",
-            "--mirror=https://deb.debian.org/debian",
             "--release=stable",
             "--rootsize=2G",
-            "system.img",
+            "--output=system.img",
             "--",
+            "https://deb.debian.org/debian",
             "--verbose",
-            "--hook-dir=/usr/share/mmdebstrap/hooks/maybe-jessie-or-older",
             (
                 '--customize-hook=cd "$1" && '
                 "find etc/apt/sources.list.d -type f -delete"
@@ -330,15 +335,14 @@ class SimpleSystemImageBuildTests(
         var_lib_dpkg = shlex.quote(self.task._VAR_LIB_DPKG)
 
         expected = [
-            '/usr/share/debusine-worker/debefivm-create',
+            'debefivm-create',
             '--architecture=amd64',
-            '--mirror=https://deb.debian.org/debian',
             '--release=stable',
             '--rootsize=2G',
-            'system.img',
+            '--output=system.img',
             '--',
+            'https://deb.debian.org/debian',
             '--verbose',
-            '--hook-dir=/usr/share/mmdebstrap/hooks/maybe-jessie-or-older',
             '--customize-hook=cd "$1" && '
             "find etc/apt/sources.list.d -type f -delete",
             (
@@ -503,6 +507,7 @@ class SimpleSystemImageBuildTests(
                 "architecture": bootstrap_options["architecture"],
                 "vendor": "debian",
                 "codename": "bookworm",
+                "components": ["main", "contrib"],
                 "pkglist": {},
                 "with_dev": True,
                 "with_init": True,
@@ -567,6 +572,7 @@ class SimpleSystemImageBuildTests(
                 "architecture": bootstrap_options["architecture"],
                 "vendor": "debian",
                 "codename": "sid",
+                "components": ["main", "contrib"],
                 "pkglist": {},
                 "with_dev": True,
                 "with_init": True,
@@ -588,10 +594,89 @@ class SimpleSystemImageBuildTests(
 
         debusine_mock.upload_artifact.assert_has_calls(calls)
 
+    def test_upload_no_components_specified(self) -> None:
+        """Test upload_artifacts() when there's no component."""
+        directory = self.create_temporary_directory()
+
+        self.write_os_release(directory / self.task._OS_RELEASE_FILE)
+
+        mirror = "http://deb.debian.org/debian"
+        self.configure_task(
+            override={
+                "bootstrap_repositories": [
+                    {"mirror": mirror, "suite": "unstable"}
+                ]
+            }
+        )
+        components = ["main", "contrib"]
+        with patch(
+            "debusine.tasks.systembootstrap.SystemBootstrap."
+            "_list_components_for_suite",
+            return_value=components,
+            autospec=True,
+        ):
+            self.task.configure_for_execution(directory)
+
+        # Debusine.upload_artifact is mocked to verify the call only
+        debusine_mock = self.mock_debusine()
+
+        system_image = Path()
+
+        def mock_tar(cmd: list[str]) -> int:
+            # var_lib_dpkg.tar
+            if cmd[-2] == "-xf":
+                return 0
+            nonlocal system_image
+            system_image = Path(cmd[-2])
+            system_image.write_bytes(b"Generated image")
+            return 0
+
+        with patch('subprocess.check_call', mock_tar):
+            self.task.upload_artifacts(directory, execution_success=True)
+
+        calls = []
+
+        bootstrap_options = cast(
+            dict[str, Any], self.SAMPLE_TASK_DATA["bootstrap_options"]
+        )
+
+        expected_system_artifact = DebianSystemImageArtifact.create(
+            system_image,
+            data={
+                "variant": None,
+                "architecture": bootstrap_options["architecture"],
+                "vendor": "debian",
+                "codename": "sid",
+                "components": components,
+                "pkglist": {},
+                "with_dev": True,
+                "with_init": True,
+                "mirror": mirror,
+                "image_format": "raw",
+                "filesystem": "ext4",
+                "size": 2e9,
+                "boot_mechanism": "efi",
+            },
+        )
+
+        calls.append(
+            call(
+                expected_system_artifact,
+                workspace=self.task.workspace_name,
+                work_request=self.task.work_request_id,
+            )
+        )
+
+        debusine_mock.upload_artifact.assert_has_calls(calls)
+
     def test_upload_artifacts_do_nothing(self) -> None:
         """Test upload_artifacts() doing nothing: execution_success=False."""
         self.mock_debusine()
         self.task.upload_artifacts(Path(), execution_success=False)
+
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
 
     def test_label(self) -> None:
         """Test get_label."""

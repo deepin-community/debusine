@@ -19,11 +19,10 @@ is special cased and doesn't use any of those, instead it uses
 :py:mod:`debusine.project.settings.test`.
 """
 
-import sys
-
+from debusine.django.django_utils import in_test_suite
 from debusine.project.settings.defaults import *  # noqa: F403
 
-if sys.argv[1:2] == ['test']:
+if in_test_suite():
     from debusine.project.settings.test import *  # noqa: F403
 else:
     try:

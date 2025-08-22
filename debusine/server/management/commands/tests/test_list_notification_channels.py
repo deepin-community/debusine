@@ -22,6 +22,7 @@ class ListNotificationChannelsTests(TabularOutputTests, TestCase):
 
     def setUp(self) -> None:
         """Set up new notification channel for the test."""
+        super().setUp()
         data = {
             "from": "sender@debusine.example.org",
             "to": ["recipient@example.com"],

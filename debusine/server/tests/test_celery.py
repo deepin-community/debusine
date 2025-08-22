@@ -15,7 +15,7 @@ from unittest import mock
 
 from django.db import connections, transaction
 
-from debusine.db.context import context
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import WorkRequest, Worker
 from debusine.server.celery import (
     ServerTaskRunError,
@@ -24,19 +24,18 @@ from debusine.server.celery import (
     update_workflows,
 )
 from debusine.server.tasks.models import ServerNoopData
-from debusine.server.tasks.tests.helpers import TestBaseServerTask
+from debusine.server.tasks.tests.helpers import SampleBaseServerTask
 from debusine.tasks.models import (
     BaseDynamicTaskData,
     BaseTaskData,
     OutputData,
     OutputDataError,
-    TaskTypes,
 )
 from debusine.test.django import TestCase, TransactionTestCase
 
 
-class TestTaskNotManagingTransactions(
-    TestBaseServerTask[BaseTaskData, BaseDynamicTaskData]
+class SampleTaskNotManagingTransactions(
+    SampleBaseServerTask[BaseTaskData, BaseDynamicTaskData]
 ):
     """A sample server task that does not manage its own transactions."""
 
@@ -46,8 +45,8 @@ class TestTaskNotManagingTransactions(
         return connections["default"].in_atomic_block
 
 
-class TestTaskManagingTransactions(
-    TestBaseServerTask[BaseTaskData, BaseDynamicTaskData]
+class SampleTaskManagingTransactions(
+    SampleBaseServerTask[BaseTaskData, BaseDynamicTaskData]
 ):
     """A sample server task that manages its own transactions."""
 
@@ -63,6 +62,7 @@ class RunServerTaskTests(TestCase):
 
     def setUp(self) -> None:
         """Create common objects."""
+        super().setUp()
         self.worker = Worker.objects.get_or_create_celery()
 
     def create_assigned_work_request(self, **kwargs: Any) -> WorkRequest:
@@ -141,6 +141,7 @@ class RunServerTaskTests(TestCase):
             task_type=TaskTypes.SERVER, task_name="servernoop"
         )
         work_request.task_data = {"nonexistent": True}
+        work_request.configured_task_data = {"nonexistent": True}
         work_request.save()
         expected_message = (
             "Failed to configure: 1 validation error for ServerNoopData"
@@ -323,14 +324,13 @@ class RunServerTaskTransactionTests(TransactionTestCase):
 
     def test_task_not_managing_transactions(self) -> None:
         """An atomic block is used for tasks that do not manage transactions."""
-        with context.disable_permission_checks():
-            worker = Worker.objects.get_or_create_celery()
-            work_request = self.playground.create_work_request(
-                task_type=TaskTypes.SERVER,
-                task_name="testtasknotmanagingtransactions",
-                task_data={},
-            )
-            work_request.assign_worker(worker)
+        worker = Worker.objects.get_or_create_celery()
+        work_request = self.playground.create_work_request(
+            task_type=TaskTypes.SERVER,
+            task_name="sampletasknotmanagingtransactions",
+            task_data={},
+        )
+        work_request.assign_worker(worker)
         result = run_server_task.apply(args=(work_request.id,))
         self.assertFalse(result.failed())
         self.assertTrue(result.result)
@@ -338,12 +338,11 @@ class RunServerTaskTransactionTests(TransactionTestCase):
     def test_task_managing_transactions(self) -> None:
         """An atomic block is not used for tasks that manage transactions."""
         worker = Worker.objects.get_or_create_celery()
-        with context.disable_permission_checks():
-            work_request = self.playground.create_work_request(
-                task_type=TaskTypes.SERVER,
-                task_name="testtaskmanagingtransactions",
-                task_data={},
-            )
+        work_request = self.playground.create_work_request(
+            task_type=TaskTypes.SERVER,
+            task_name="sampletaskmanagingtransactions",
+            task_data={},
+        )
         work_request.assign_worker(worker)
         result = run_server_task.apply(args=(work_request.id,))
         self.assertFalse(result.failed())

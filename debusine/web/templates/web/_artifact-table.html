@@ -1,0 +1,36 @@
+{% load artifacts %}
+{% load debusine %}
+<table id="{{ table_id }}"
+       class="table table-sm table-hover table-striped table-tds-vertical-align-middle">
+    <thead>
+        <tr>
+            <th>Type</th>
+            <th>Name</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for artifact in artifacts %}
+            <tr>
+                <td>
+                    <span class="bi bi-{{ artifact|artifact_icon_name }}"></span>
+                    {{ artifact|artifact_category_label|capfirst }}
+                </td>
+                <td>
+                    <a class="text-decoration-none" href="{{ artifact.get_absolute_url }}">{{ artifact.get_label }}</a>
+                    {% if not artifact.complete %}(incomplete){% endif %}
+                </td>
+                <td>
+                    <div class="btn-group btn-group-sm"
+                         role="group"
+                         aria-label="Artifact shortcuts">
+                        {% ui_shortcuts artifact as shortcuts %}
+                        {% for shortcut in shortcuts %}
+                            {% widget shortcut %}
+                        {% endfor %}
+                    </div>
+                </td>
+            </tr>
+        {% endfor %}
+    </tbody>
+</table>

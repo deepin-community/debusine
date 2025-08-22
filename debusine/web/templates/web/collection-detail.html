@@ -7,15 +7,27 @@
 {% block content %}
     <h1>{{ collection.name }}@{{ collection.category }} collection</h1>
     <h2>Details</h2>
-    <table class="table table-hover" id="collection-details-table">
+    <table class="table table-hover table-striped" id="collection-details-table">
         <tbody>
             <tr>
                 <th>Full history retention period (days)</th>
-                <td>{{ collection.full_history_retention_period.days|default:"Always" }}</td>
+                <td>
+                    {% if collection.full_history_retention_period is None %}
+                        Always
+                    {% else %}
+                        {{ collection.full_history_retention_period.days }}
+                    {% endif %}
+                </td>
             </tr>
             <tr>
                 <th>Metadata only retention period (days)</th>
-                <td>{{ collection.full_history_retention_period.days|default:"Always" }}</td>
+                <td>
+                    {% if collection.metadata_only_retention_period is None %}
+                        Always
+                    {% else %}
+                        {{ collection.metadata_only_retention_period.days }}
+                    {% endif %}
+                </td>
             </tr>
             <tr>
                 <th>Retains artifacts</th>
@@ -41,12 +53,14 @@
     {% if not collections and not artifacts and not bare %}
         <p>The collection is empty</p>
     {% else %}
-        <a class="btn btn-primary"
-           href="{% url 'workspaces:collections:search' wname=collection.workspace.name cname=collection.name ccat=collection.category %}">Browse collection</a>
+        <p>
+            <a class="btn btn-primary"
+               href="{% url 'workspaces:collections:search' wname=collection.workspace.name cname=collection.name ccat=collection.category %}">Browse collection</a>
+        </p>
     {% endif %}
     {% if collections %}
         <h3>Collections</h3>
-        <table class="table table-sm table-hover">
+        <table class="table table-sm table-hover table-striped">
             <thead>
                 <tr>
                     <th>Name</th>
@@ -71,7 +85,7 @@
     {% endif %}
     {% if artifacts %}
         <h3>Artifacts</h3>
-        <table class="table table-sm table-hover">
+        <table class="table table-sm table-hover table-striped">
             <thead>
                 <tr>
                     <th>Category</th>
@@ -94,7 +108,7 @@
     {% endif %}
     {% if bare %}
         <h3>Bare data</h3>
-        <table class="table table-sm table-hover">
+        <table class="table table-sm table-hover table-striped">
             <thead>
                 <tr>
                     <th>Name</th>
@@ -104,10 +118,10 @@
             <tbody>
                 {% for i in bare %}
                     <tr>
-                        <th>
+                        <td>
                             <a href="{{ i.get_absolute_url }}">{{ i.name }}</a>
-                        </th>
-                        <th>{{ i.category }}</th>
+                        </td>
+                        <td>{{ i.category }}</td>
                     </tr>
                 {% endfor %}
             </tbody>

@@ -11,13 +11,42 @@
 
 from typing import Any
 
+from django.utils.safestring import SafeString
 from django.views.generic import TemplateView
 
 from debusine.db.context import context
-from debusine.db.models import Scope, WorkRequest
-from debusine.tasks.models import TaskTypes
+from debusine.db.models import WorkRequest, Workspace
 from debusine.web.views.base import BaseUIView
-from debusine.web.views.tables import WorkRequestTable
+from debusine.web.views.table import NumberColumn, StringColumn, Table
+from debusine.web.views.tables import WorkflowTable
+
+
+class ScopeWorkspaceTable(Table[Workspace]):
+    """Table showing scopes and workspaces."""
+
+    scope = StringColumn("Scope")
+    workspace = StringColumn("Workspace")
+    role = StringColumn("Role")
+    running = NumberColumn(
+        SafeString(
+            '<span title="Running workflows"'
+            ' class="badge text-bg-secondary">R</span>'
+        )
+    )
+    input_needed = NumberColumn(
+        SafeString(
+            '<span title="Input needed workflows"'
+            ' class="badge text-bg-secondary">I</span>'
+        )
+    )
+    completed = NumberColumn(
+        SafeString(
+            '<span title="Completed and aborted workflows"'
+            ' class="badge text-bg-primary">C</span>'
+        )
+    )
+
+    template_name = "web/_scope_workspace-list.html"
 
 
 class HomepageView(BaseUIView, TemplateView):
@@ -34,11 +63,40 @@ class HomepageView(BaseUIView, TemplateView):
         ctx["debusine_homepage"] = True
 
         if self.request.user.is_authenticated:
-            ctx["work_requests"] = WorkRequestTable(
+            workflows = (
+                WorkRequest.objects.select_related("workspace__scope")
+                .can_display(context.user)
+                .filter(created_by=self.request.user)
+                .workflows()
+                .filter(parent__isnull=True)
+            )
+            ctx["workflows_current"] = WorkflowTable(
                 self.request,
-                WorkRequest.objects.filter(
-                    created_by=self.request.user
-                ).exclude(task_type=TaskTypes.INTERNAL),
-            ).get_paginator(per_page=7)
-        ctx["scopes"] = Scope.objects.can_display(context.user).order_by("name")
+                workflows.running(),
+                prefix="current",
+                preview=True,
+            ).get_paginator(per_page=5)
+
+            ctx["workflows_completed"] = WorkflowTable(
+                self.request,
+                workflows.filter(
+                    status__in=(
+                        WorkRequest.Statuses.COMPLETED,
+                        WorkRequest.Statuses.ABORTED,
+                    )
+                ),
+                prefix="completed",
+                preview=True,
+            ).get_paginator(per_page=5)
+
+        ctx["workspaces"] = ScopeWorkspaceTable(
+            self.request,
+            Workspace.objects.can_display(context.user)
+            .select_related("scope")
+            .order_by("scope", "name")
+            .annotate_with_workflow_stats()
+            .with_role_annotations(context.user),
+            prefix="workspaces",
+        ).get_paginator(per_page=10)
+
         return ctx

@@ -12,8 +12,11 @@
 from collections.abc import Sequence
 from typing import Any, ClassVar
 
-from debusine.artifacts.models import ArtifactCategory, CollectionCategory
-from debusine.db.context import context
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    CollectionCategory,
+    TaskTypes,
+)
 from debusine.db.models import (
     Collection,
     TaskDatabase,
@@ -28,13 +31,12 @@ from debusine.server.workflows.models import (
     PackagePublishWorkflowData,
     SbuildWorkflowData,
 )
-from debusine.server.workflows.tests.helpers import TestWorkflow
+from debusine.server.workflows.tests.helpers import SampleWorkflow
 from debusine.tasks.models import (
     BaseDynamicTaskData,
     LookupMultiple,
     SbuildData,
     SbuildInput,
-    TaskTypes,
 )
 from debusine.test.django import TestCase
 from debusine.test.test_utils import preserve_task_registry
@@ -99,7 +101,7 @@ class PackagePublishWorkflowTests(TestCase):
         """Create and orchestrate a PackagePublishWorkflow."""
 
         class ExamplePipeline(
-            TestWorkflow[BaseWorkflowData, BaseDynamicTaskData]
+            SampleWorkflow[BaseWorkflowData, BaseDynamicTaskData]
         ):
             """Example pipeline for package publishing."""
 
@@ -155,10 +157,7 @@ class PackagePublishWorkflowTests(TestCase):
     @preserve_task_registry()
     def test_populate_source_and_binary(self) -> None:
         """Test population with both source and binary artifacts."""
-        with context.disable_permission_checks():
-            source_artifact = self.playground.create_source_artifact(
-                name="hello"
-            )
+        source_artifact = self.playground.create_source_artifact(name="hello")
         target_suite = self.create_suite_collection("bookworm")
         architectures = ("amd64", "i386", "all")
 
@@ -208,10 +207,7 @@ class PackagePublishWorkflowTests(TestCase):
     @preserve_task_registry()
     def test_populate_source_only(self) -> None:
         """Test population with only a source artifact."""
-        with context.disable_permission_checks():
-            source_artifact = self.playground.create_source_artifact(
-                name="hello"
-            )
+        source_artifact = self.playground.create_source_artifact(name="hello")
         target_suite = self.create_suite_collection("bookworm")
 
         root = self.orchestrate(
@@ -248,15 +244,14 @@ class PackagePublishWorkflowTests(TestCase):
     @preserve_task_registry()
     def test_populate_package_build_logs(self) -> None:
         """Test population with binary artifacts and copying build logs."""
-        with context.disable_permission_checks():
-            source_workspace = self.playground.create_workspace(name="source")
-            self.playground.create_group_role(
-                source_workspace, Workspace.Roles.OWNER, users=[self.user]
-            )
-            target_workspace = self.playground.create_workspace(name="target")
-            self.playground.create_group_role(
-                target_workspace, Workspace.Roles.OWNER, users=[self.user]
-            )
+        source_workspace = self.playground.create_workspace(name="source")
+        self.playground.create_group_role(
+            source_workspace, Workspace.Roles.OWNER, users=[self.user]
+        )
+        target_workspace = self.playground.create_workspace(name="target")
+        self.playground.create_group_role(
+            target_workspace, Workspace.Roles.OWNER, users=[self.user]
+        )
         source_workspace.set_inheritance([target_workspace])
         target_suite = self.create_suite_collection(
             "bookworm", workspace=target_workspace
@@ -332,15 +327,14 @@ class PackagePublishWorkflowTests(TestCase):
     @preserve_task_registry()
     def test_populate_package_task_history(self) -> None:
         """Test population with binary artifacts and copying build logs."""
-        with context.disable_permission_checks():
-            source_workspace = self.playground.create_workspace(name="source")
-            self.playground.create_group_role(
-                source_workspace, Workspace.Roles.OWNER, users=[self.user]
-            )
-            target_workspace = self.playground.create_workspace(name="target")
-            self.playground.create_group_role(
-                target_workspace, Workspace.Roles.OWNER, users=[self.user]
-            )
+        source_workspace = self.playground.create_workspace(name="source")
+        self.playground.create_group_role(
+            source_workspace, Workspace.Roles.OWNER, users=[self.user]
+        )
+        target_workspace = self.playground.create_workspace(name="target")
+        self.playground.create_group_role(
+            target_workspace, Workspace.Roles.OWNER, users=[self.user]
+        )
         source_workspace.set_inheritance([target_workspace])
         target_suite = self.create_suite_collection(
             "bookworm", workspace=target_workspace

@@ -19,14 +19,14 @@ from debusine.db.context import context
 from debusine.db.models import Artifact, ArtifactRelation, WorkRequest
 from debusine.db.models.permissions import format_permission_check_error
 from debusine.server.tasks.base import ServerTaskPermissionDenied
-from debusine.server.tasks.tests.helpers import TestBaseServerTask
+from debusine.server.tasks.tests.helpers import SampleBaseServerTask
 from debusine.tasks.models import BaseDynamicTaskData, BaseTaskData, WorkerType
 from debusine.test.django import TestCase
 from debusine.worker.system_information import host_architecture
 
 
-class TestBaseServerTask1(
-    TestBaseServerTask[BaseTaskData, BaseDynamicTaskData]
+class SampleBaseServerTask1(
+    SampleBaseServerTask[BaseTaskData, BaseDynamicTaskData]
 ):
     """Sample class to test BaseServerTask class."""
 
@@ -35,16 +35,14 @@ class TestBaseServerTask1(
         raise NotImplementedError()
 
 
-class TestBaseServerTask2Data(BaseTaskData):
-    """Data representation for TestBaseServerTask2."""
-
-    __test__ = False
+class SampleBaseServerTask2Data(BaseTaskData):
+    """Data representation for SampleBaseServerTask2."""
 
     foo: str
 
 
-class TestBaseServerTask2(
-    TestBaseServerTask[TestBaseServerTask2Data, BaseDynamicTaskData]
+class SampleBaseServerTask2(
+    SampleBaseServerTask[SampleBaseServerTask2Data, BaseDynamicTaskData]
 ):
     """Test BaseServerTask class with jsonschema validation."""
 
@@ -56,18 +54,18 @@ class TestBaseServerTask2(
 
 
 class BaseServerTaskTests(TestCase):
-    """Unit tests for :class:`BaseServerTask`."""
+    """Unit tests for :py:class:`BaseServerTask`."""
 
-    task: ClassVar[TestBaseServerTask1]
-    task2: ClassVar[TestBaseServerTask2]
+    task: ClassVar[SampleBaseServerTask1]
+    task2: ClassVar[SampleBaseServerTask2]
     worker_metadata: ClassVar[dict[str, WorkerType]]
 
     @classmethod
     def setUpTestData(cls) -> None:
         """Create the shared attributes."""
         super().setUpTestData()
-        cls.task = TestBaseServerTask1({})
-        cls.task2 = TestBaseServerTask2({"foo": "bar"})
+        cls.task = SampleBaseServerTask1({})
+        cls.task2 = SampleBaseServerTask2({"foo": "bar"})
         cls.worker_metadata = {"system:worker_type": WorkerType.CELERY}
 
     def test_can_run_on_no_version(self) -> None:
@@ -80,7 +78,7 @@ class BaseServerTaskTests(TestCase):
         """Ensure can_run_on returns False if versions differ."""
         self.assertIsNone(self.task.TASK_VERSION)
         metadata = {**self.worker_metadata, **self.task.analyze_worker()}
-        metadata["server:testbaseservertask1:version"] = 1
+        metadata["server:samplebaseservertask1:version"] = 1
         self.assertEqual(self.task.can_run_on(metadata), False)
 
     def test_set_work_request(self) -> None:
@@ -109,7 +107,7 @@ class BaseServerTaskTests(TestCase):
             return True
 
         with mock.patch.object(
-            TestBaseServerTask1, "_execute", side_effect=fake_execute
+            SampleBaseServerTask1, "_execute", side_effect=fake_execute
         ):
             self.task.execute()
 

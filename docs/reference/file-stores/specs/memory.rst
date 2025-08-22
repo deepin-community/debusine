@@ -1,4 +1,4 @@
-.. _file-backend-memory:
+.. file-backend:: Memory
 
 Memory file backend
 ===================

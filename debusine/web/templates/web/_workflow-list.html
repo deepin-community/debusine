@@ -1,37 +1,63 @@
 {% load debusine %}
 {% load static %}
 {% load workflows %}
-<table class="table table-hover" id="workflow-list-table">
-    {% widget paginator.thead %}
-    <tbody>
-        {% for workflow in paginator.page_obj %}
-            <tr>
-                <td>
-                    <a href="{{ workflow.get_absolute_url }}">{{ workflow.id }}</a>
-                </td>
-                <td>{{ workflow.workflow_display_name_parameters }}</td>
-                <td>{% workflow_runtime_status_small workflow %}</td>
-                <td class>{% include "web/_work_request-result-small.html" with result=workflow.result only %}</td>
-                <td class="text-nowrap">{{ workflow.started_at|date:"Y-m-d H:i" }}</td>
-                <td class="text-nowrap">{{ workflow.completed_at|date:"Y-m-d H:i" }}</td>
-                <td class="text-nowrap">
-                    {% spaceless %}
-                        {% include "web/_badge-count.html" with title="Work requests completed successfully" bg_class="success" count=workflow.workflow_work_requests_success only %}
-                        <!-- -->-<!-- -->
-                        {% include "web/_badge-count.html" with title="Work requests terminated with a failure" bg_class="danger" count=workflow.workflow_work_requests_failure only %}
-                    {% endspaceless %}
-                    {% spaceless %}
-                        {% include "web/_badge-count.html" with title="Pending work requests" bg_class="secondary" count=workflow.workflow_work_requests_pending only %}
-                        <!-- -->-<!-- -->
-                        {% include "web/_badge-count.html" with title="Blocked work requests" bg_class="dark" count=workflow.workflow_work_requests_blocked only %}
-                    {% endspaceless %}
-                </td>
-                <td class="text-nowrap">{{ workflow.workflow_last_activity_at|date:"Y-m-d H:i" }}</td>
-                <td>{{ workflow.created_by }}</td>
-            </tr>
-        {% endfor %}
-    </tbody>
-</table>
+<div class="d-flex flex-column" id="{{ table.prefix }}workflow-list-table">
+    {% if table.filters or table.orderings and not table.is_preview %}
+        <div class="border-bottom">{% widget table.filters %}</div>
+    {% endif %}
+    {% if paginator %}
+        <div class="flex-grow-1" id="workflow-list-table-rows">
+            {% for workflow in paginator.page_obj %}
+                {% ui workflow as w %}
+                <div class="p-2 border-bottom">
+                    <div class="d-flex justify-content-between">
+                        <div class="flex-grow-1">
+                            <b>{{ workflow.workflow_display_name_parameters }}</b>
+                        </div>
+                        <div class="me-4">
+                            {% workflow_runtime_status_small workflow %}
+                            {% include "web/_work_request-result-small.html" with result=workflow.result only %}
+                        </div>
+                        <div>
+                            {% spaceless %}
+                                {% include "web/_badge-count.html" with title="Work requests completed successfully" bg_class="success" count=w.workflow_work_requests_success only %}
+                                <!-- -->-<!-- -->
+                                {% include "web/_badge-count.html" with title="Work requests terminated with a failure" bg_class="danger" count=w.workflow_work_requests_failure only %}
+                            {% endspaceless %}
+                            {% spaceless %}
+                                {% include "web/_badge-count.html" with title="Pending work requests" bg_class="secondary" count=w.workflow_work_requests_pending only %}
+                                <!-- -->-<!-- -->
+                                {% include "web/_badge-count.html" with title="Blocked work requests" bg_class="dark" count=w.workflow_work_requests_blocked only %}
+                            {% endspaceless %}
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                        <div>
+                            <a href="{{ workflow.get_absolute_url }}">#{{ workflow.id }}</a>
+                            Started at {{ workflow.started_at|date:"Y-m-d H:i" }}
+                            {% if workflow.created_by|has_perm:"can_display" %}
+                                by <a href="{{ workflow.created_by.get_absolute_url }}">{{ workflow.created_by }}</a>
+                            {% else %}
+                                by {{ workflow.created_by }}
+                            {% endif %}
+                        </div>
+                        <div>
+                            {% if workflow.completed_at %}Completed at {{ workflow.completed_at|date:"Y-m-d H:i" }},{% endif %}
+                            Last activity {{ workflow.workflow_last_activity_at|date:"Y-m-d H:i" }}
+                        </div>
+                    </div>
+                </div>
+            {% empty %}
+                <div class="p-2 border-bottom text-center">There are no workflows matching the current filters.</div>
+            {% endfor %}
+        </div>
+        {% if paginator.has_page_navigation %}
+            <div>{% widget paginator.page_navigation %}</div>
+        {% endif %}
+    {% else %}
+        <div class="p-2 border-bottom text-center">There are no workflows to display.</div>
+    {% endif %}
+</div>
 <script src="{% static "vendor/jquery/jquery.min.js" %}"></script>
 <link href="{% static "vendor/select2.js/select2.min.css" %}"
       rel="stylesheet" />

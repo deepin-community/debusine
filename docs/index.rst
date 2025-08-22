@@ -1,7 +1,10 @@
 Debusine: a CI platform for Debian-based distributions
 ======================================================
 
-Debusine is a modern cloud-powered Continuous Integration (CI)
+Debusine's goal is to be an integrated solution to build, distribute and
+maintain a Debian-based distribution.
+
+Debusine is already a modern cloud-powered Continuous Integration (CI)
 platform to run many packaging and distribution related workflows
 for the Debian ecosystem. It can be used to automate everything from the
 package build up to the generation of installer/disk/cloud/container
@@ -37,13 +40,15 @@ If you are new to Debusine, you will want to read
    :maxdepth: 2
 
    explanation/introduction
-   explanation/why
+   explanation/roadmap
    explanation/concepts
    explanation/lookups
    explanation/work-request-scheduling
    explanation/expiration-of-data
    explanation/workflow-orchestration
    explanation/signing-service
+   explanation/package-repositories
+   explanation/talks
 
 .. todo::
 
@@ -58,6 +63,7 @@ If you are new to Debusine, you will want to read
    howtos/set-up-debusine-client
    howtos/create-an-api-token
    howtos/dput-ng
+   howtos/manage-task-configuration-collection
    howtos/index-admin
    howtos/contribute
    howtos/contribute-workflow

@@ -9,7 +9,7 @@
 
 """Unit tests for the debdiff task support on the worker."""
 import itertools
-from pathlib import Path
+import re
 from unittest.mock import call
 
 from debusine.artifacts import DebDiffArtifact
@@ -21,11 +21,7 @@ from debusine.artifacts.models import (
     DebianUpload,
     EmptyArtifactData,
 )
-from debusine.client.models import (
-    LookupResultType,
-    LookupSingleResponse,
-    RemoteArtifact,
-)
+from debusine.client.models import LookupResultType, LookupSingleResponse
 from debusine.tasks import DebDiff, TaskConfigError
 from debusine.tasks.models import DebDiffDynamicData, LookupMultiple
 from debusine.tasks.server import ArtifactInfo
@@ -34,7 +30,10 @@ from debusine.tasks.tests.helper_mixin import (
     FakeTaskDatabase,
 )
 from debusine.test import TestCase
-from debusine.test.test_utils import create_system_tarball_data
+from debusine.test.test_utils import (
+    create_remote_artifact,
+    create_system_tarball_data,
+)
 
 
 class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
@@ -46,48 +45,27 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
         "environment": "debian/match:codename=bookworm",
     }
 
-    def setUp(self) -> None:  # noqa: D102
+    def setUp(self) -> None:
+        super().setUp()
         self.task = DebDiff(self.SAMPLE_TASK_DATA)
 
-    def tearDown(self) -> None:
-        """Delete directory to avoid ResourceWarning with python -m unittest."""
-        if self.task._debug_log_files_directory is not None:
-            self.task._debug_log_files_directory.cleanup()
-
-    def test_configure_fails_with_missing_required_data(  # noqa: D102
+    def test_configure_fails_with_missing_required_data(
         self,
     ) -> None:
         with self.assertRaises(TaskConfigError):
             self.configure_task(override={"source_artifacts": {}})
 
     def test_configure_with_extra_flag(self) -> None:
-        """Configuration included "extra_flags". Saved, no exceptions."""
-        extra_flags = ["--dirs"]
-
-        directory = self.create_temporary_directory()
-        (original_directory := directory / "original").mkdir()
-        (original_directory / "file.dsc").write_text("")
-        (new_directory := directory / "new").mkdir()
-        (new_directory / "file.dsc").write_text("")
+        """Configuration included "extra_flags". No exception raised."""
+        extra_flags = ["--dirs", "--nocontrol"]
 
         self.configure_task(override={"extra_flags": extra_flags})
-        self.task.dynamic_data = DebDiffDynamicData(
-            environment_id=1,
-            input_source_artifacts_ids=[1, 2],
-        )
-
-        self.patch_prepare_executor_instance()
 
         self.assertEqual(self.task.data.extra_flags, extra_flags)
-
-        self.assertTrue(self.task.configure_for_execution(directory))
 
     def test_configure_with_invalid_flag(self) -> None:
         """Invalid extra flags are rejected."""
         extra_flags = ["--unknown-flag"]
-
-        directory = self.create_temporary_directory()
-        (directory / "file.dsc").write_text("")
 
         with self.assertRaises(TaskConfigError):
             self.configure_task(override={"extra_flags": extra_flags})
@@ -112,7 +90,7 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -153,7 +131,7 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -220,7 +198,7 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -275,13 +253,49 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
             ),
         )
 
+    def test_compute_dynamic_data_raise_task_config_no_lookup_source(
+        self,
+    ) -> None:
+        task_db = FakeTaskDatabase(
+            single_lookups={
+                # environment
+                (
+                    "debian/match:codename=bookworm:architecture=amd64:"
+                    "format=tarball:backend=unshare:variant=",
+                    CollectionCategory.ENVIRONMENTS,
+                ): ArtifactInfo(
+                    id=1,
+                    category=ArtifactCategory.SYSTEM_TARBALL,
+                    data=create_system_tarball_data(),
+                ),
+                # input.source_artifacts
+                ("internal@111", None): None,
+                ("internal@112", None): None,
+            }
+        )
+
+        self.configure_task(
+            override={
+                "input": {'source_artifacts': ["internal@111", "internal@112"]}
+            }
+        )
+
+        with self.assertRaisesRegex(
+            TaskConfigError,
+            re.escape(
+                "Could not look up one of source_artifacts. "
+                "Source artifacts lookup result: [None, None]"
+            ),
+        ):
+            self.task.compute_dynamic_data(task_db)
+
     def test_compute_dynamic_data_raise_task_config_error_source(self) -> None:
         task_db = FakeTaskDatabase(
             single_lookups={
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -320,7 +334,7 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
                 # environment
                 (
                     "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=tarball:backend=unshare",
+                    "format=tarball:backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -359,37 +373,213 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
         with self.assertRaisesRegex(
             TaskConfigError,
             r"^input.binary_artifacts: unexpected artifact category: "
-            r"'debian:source-package'. Valid categories: \['debian:upload'\]$",
+            r"'debian:source-package'. Valid categories: "
+            r"\['debian:binary-package', 'debian:upload'\]$",
         ):
             self.task.compute_dynamic_data(task_db),
 
-    def test_get_source_artifacts_ids_dynamic_dynamic_data_none(self) -> None:
-        self.task.dynamic_data = None
-        self.assertEqual(self.task.get_source_artifacts_ids(), [])
+    def test_compute_dynamic_data_raise_task_config_error_categories(
+        self,
+    ) -> None:
+        """Raise TaskConfigError: invalid categories binary artifacts."""
+        task_db = FakeTaskDatabase(
+            single_lookups={
+                # environment
+                (
+                    "debian/match:codename=bookworm:architecture=amd64:"
+                    "format=tarball:backend=unshare:variant=",
+                    CollectionCategory.ENVIRONMENTS,
+                ): ArtifactInfo(
+                    id=1,
+                    category=ArtifactCategory.SYSTEM_TARBALL,
+                    data=create_system_tarball_data(),
+                ),
+            },
+            multiple_lookups={
+                # binary artifacts
+                (LookupMultiple.parse_obj([500]), None): [
+                    ArtifactInfo(
+                        id=500,
+                        category=ArtifactCategory.UPLOAD,
+                        data=DebianUpload(
+                            type="dpkg",
+                            changes_fields={
+                                "Architecture": "amd64",
+                                "Source": "hello",
+                                "Files": [{"name": "hello.deb"}],
+                            },
+                        ),
+                    ),
+                ],
+                (LookupMultiple.parse_obj([501]), None): [
+                    ArtifactInfo(
+                        id=501,
+                        category=ArtifactCategory.BINARY_PACKAGE,
+                        data=DebianBinaryPackage(
+                            srcpkg_name="linux-base",
+                            srcpkg_version="1.0",
+                            deb_fields={},
+                            deb_control_files=[],
+                        ),
+                    ),
+                ],
+            },
+        )
 
-    def test_get_source_artifacts_ids_source_artifacts(self) -> None:
+        self.configure_task(
+            override={"input": {"binary_artifacts": [[500], [501]]}}
+        )
+
+        with self.assertRaisesRegex(
+            TaskConfigError,
+            r'^All binary artifacts must have the same category. '
+            r'Found "debian:upload" and "debian:binary-package"$',
+        ):
+            self.task.compute_dynamic_data(task_db),
+
+    def test_compute_dynamic_data_raise_invalid_category(self) -> None:
+        """Raise TaskConfigError: invalid categories binary artifacts."""
+        task_db = FakeTaskDatabase(
+            single_lookups={
+                # environment
+                (
+                    "debian/match:codename=bookworm:architecture=amd64:"
+                    "format=tarball:backend=unshare:variant=",
+                    CollectionCategory.ENVIRONMENTS,
+                ): ArtifactInfo(
+                    id=1,
+                    category=ArtifactCategory.SYSTEM_TARBALL,
+                    data=create_system_tarball_data(),
+                ),
+            },
+            multiple_lookups={
+                # binary artifacts
+                (LookupMultiple.parse_obj([500, 501]), None): [
+                    ArtifactInfo(
+                        id=500,
+                        category=ArtifactCategory.UPLOAD,
+                        data=DebianUpload(
+                            type="dpkg",
+                            changes_fields={
+                                "Architecture": "amd64",
+                                "Source": "hello",
+                                "Files": [{"name": "hello.deb"}],
+                            },
+                        ),
+                    ),
+                    ArtifactInfo(
+                        id=501,
+                        category=ArtifactCategory.UPLOAD,
+                        data=DebianUpload(
+                            type="dpkg",
+                            changes_fields={
+                                "Architecture": "amd64",
+                                "Source": "hello",
+                                "Files": [{"name": "hello.deb"}],
+                            },
+                        ),
+                    ),
+                ],
+                (LookupMultiple.parse_obj([502, 503]), None): [
+                    ArtifactInfo(
+                        id=502,
+                        category=ArtifactCategory.UPLOAD,
+                        data=DebianUpload(
+                            type="dpkg",
+                            changes_fields={
+                                "Architecture": "amd64",
+                                "Source": "hello",
+                                "Files": [{"name": "hello.deb"}],
+                            },
+                        ),
+                    ),
+                    ArtifactInfo(
+                        id=503,
+                        category=ArtifactCategory.UPLOAD,
+                        data=DebianUpload(
+                            type="dpkg",
+                            changes_fields={
+                                "Architecture": "amd64",
+                                "Source": "hello",
+                                "Files": [{"name": "hello.deb"}],
+                            },
+                        ),
+                    ),
+                ],
+            },
+        )
+
+        self.configure_task(
+            override={"input": {"binary_artifacts": [[500, 501], [502, 503]]}}
+        )
+
+        with self.assertRaisesRegex(
+            TaskConfigError,
+            r"^If binary_artifacts source and new contain more "
+            r"than one artifact all must be of category debian:binary-package. "
+            r"Found: debian:upload$",
+        ):
+            self.task.compute_dynamic_data(task_db),
+
+    def test_compute_dynamic_data_raise_binary_cannot_be_zero(self) -> None:
+        task_db = FakeTaskDatabase(
+            single_lookups={
+                # environment
+                (
+                    "debian/match:codename=bookworm:architecture=amd64:"
+                    "format=tarball:backend=unshare:variant=",
+                    CollectionCategory.ENVIRONMENTS,
+                ): ArtifactInfo(
+                    id=1,
+                    category=ArtifactCategory.SYSTEM_TARBALL,
+                    data=create_system_tarball_data(),
+                ),
+            },
+            multiple_lookups={
+                # binary artifacts
+                (LookupMultiple.parse_obj([]), None): [],
+                (LookupMultiple.parse_obj([]), None): [],
+            },
+        )
+
+        self.configure_task(override={"input": {"binary_artifacts": [[], []]}})
+
+        with self.assertRaisesRegex(
+            TaskConfigError,
+            re.escape(
+                "input.binary_artifacts[0] and input.binary_artifacts[1] "
+                "cannot have zero artifacts (got 0 and 0)"
+            ),
+        ):
+            self.task.compute_dynamic_data(task_db),
+
+    def test_get_input_artifacts_ids_dynamic_dynamic_data_none(self) -> None:
+        self.task.dynamic_data = None
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
+    def test_get_input_artifacts_ids_source_artifacts(self) -> None:
         self.task.dynamic_data = DebDiffDynamicData(
             environment_id=1,
             input_source_artifacts_ids=[1, 2],
             input_binary_artifacts_ids=None,
         )
-        self.assertEqual(self.task.get_source_artifacts_ids(), [1, 2])
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2])
 
-    def test_get_source_artifacts_ids_binary_artifacts(self) -> None:
+    def test_get_input_artifacts_ids_binary_artifacts(self) -> None:
         self.task.dynamic_data = DebDiffDynamicData(
             environment_id=1,
             input_source_artifacts_ids=None,
             input_binary_artifacts_ids=[[1, 2], [3, 4]],
         )
-        self.assertEqual(self.task.get_source_artifacts_ids(), [1, 2, 3, 4])
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2, 3, 4])
 
-    def test_get_source_artifacts_ids_source_binary_artifacts(self) -> None:
+    def test_get_input_artifacts_ids_source_binary_artifacts(self) -> None:
         self.task.dynamic_data = DebDiffDynamicData(
             environment_id=1,
             input_source_artifacts_ids=[1, 2],
             input_binary_artifacts_ids=[[3, 4]],
         )
-        self.assertEqual(self.task.get_source_artifacts_ids(), [1, 2, 3, 4])
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2, 3, 4])
 
     def test_fetch_input_source(self) -> None:
         """Test fetching different source inputs."""
@@ -408,7 +598,7 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
             result_type=LookupResultType.ARTIFACT, artifact=1
         )
         debusine_mock.download_artifact.return_value = True
-        debusine_mock.upload_artifact.return_value = RemoteArtifact(
+        debusine_mock.upload_artifact.return_value = create_remote_artifact(
             id=2, workspace=self.task.workspace_name
         )
 
@@ -433,92 +623,105 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
             result_type=LookupResultType.ARTIFACT, artifact=1
         )
         debusine_mock.download_artifact.return_value = True
-        debusine_mock.upload_artifact.return_value = RemoteArtifact(
+        debusine_mock.upload_artifact.return_value = create_remote_artifact(
             id=2, workspace=self.task.workspace_name
         )
 
         self.assertTrue(self.task.fetch_input(download_directory))
 
-    def test_configure_for_execution_from_artifact_error_no_build_logs_org(
-        self,
-    ) -> None:
-        """configure_for_execution() no .dsc files in original: return False."""
-        self.patch_prepare_executor_instance()
-        self.task.dynamic_data = DebDiffDynamicData(
-            environment_id=1,
-            input_source_artifacts_ids=[1, 2],
-        )
-        download_directory = self.create_temporary_directory()
-        (original_directory := download_directory / "original").mkdir()
-        (file := original_directory / "file1.changes").write_text("")
-        (new_directory := download_directory / "new").mkdir()
-        (new_directory / "file2.dsc").write_text("")
-
-        self.assertFalse(self.task.configure_for_execution(download_directory))
-
-        assert self.task._debug_log_files_directory is not None
-        log_file_contents = (
-            Path(self.task._debug_log_files_directory.name)
-            / "configure_for_execution.log"
-        ).read_text()
-        self.assertEqual(
-            log_file_contents,
-            f"No original *.dsc file to be analyzed. Files: {[str(file)]}\n",
-        )
-
-    def test_configure_for_execution_from_artifact_error_no_build_logs(
-        self,
-    ) -> None:
-        """configure_for_execution() no .dsc files in new: return False."""
-        self.patch_prepare_executor_instance()
-        self.task.dynamic_data = DebDiffDynamicData(
-            environment_id=1,
-            input_source_artifacts_ids=[1, 2],
-        )
-        download_directory = self.create_temporary_directory()
-        (original_directory := download_directory / "original").mkdir()
-        (original_directory / "file1.dsc").write_text("")
-        (new_directory := download_directory / "new").mkdir()
-        (file := new_directory / "file2.changes").write_text("")
-
-        self.assertFalse(self.task.configure_for_execution(download_directory))
-
-        assert self.task._debug_log_files_directory is not None
-        log_file_contents = (
-            Path(self.task._debug_log_files_directory.name)
-            / "configure_for_execution.log"
-        ).read_text()
-        self.assertEqual(
-            log_file_contents,
-            f"No new *.dsc file to be analyzed. Files: {[str(file)]}\n",
-        )
-
     def test_configure_for_execution_binaries(self) -> None:
-        """configure_for_execution() two .changes files: return True."""
+        """configure_for_execution() with .changes files: return True."""
         self.task.dynamic_data = DebDiffDynamicData(
             environment_id=1,
             input_source_artifacts_ids=None,
-            input_binary_artifacts_ids=[[1, 2], [3, 4]],
+            input_binary_artifacts_ids=[[1], [3]],
         )
         self.patch_prepare_executor_instance()
         download_directory = self.create_temporary_directory()
-        (original_directory := download_directory / "original").mkdir()
-        (original_directory / "file1.changes").write_text("")
-        (new_directory := download_directory / "new").mkdir()
-        (new_directory / "file2.changes").write_text("")
+
+        (artifact1_dir := download_directory / "artifact_1").mkdir()
+        (artifact1_dir / "file1.changes").write_text("")
+
+        (artifact2_dir := download_directory / "artifact_2").mkdir()
+        (artifact2_dir / "file2.changes").write_text("")
+
+        self.task._original_dirs = [artifact1_dir]
+        self.task._new_targets_dirs = [artifact2_dir]
 
         self.assertTrue(self.task.configure_for_execution(download_directory))
 
+        self.assertEqual(
+            self.task._original_targets, [artifact1_dir / "file1.changes"]
+        )
+        self.assertEqual(
+            self.task._new_targets, [artifact2_dir / "file2.changes"]
+        )
+
+    def test_configure_for_execution_sources(self) -> None:
+        """configure_for_execution() with .dsc files: return True."""
+        self.task.dynamic_data = DebDiffDynamicData(
+            environment_id=1,
+            input_source_artifacts_ids=[1, 2],
+        )
+        self.patch_prepare_executor_instance()
+        download_directory = self.create_temporary_directory()
+
+        (artifact1_dir := download_directory / "artifact_1").mkdir()
+        (artifact1_dir / "file1.dsc").write_text("")
+
+        (artifact2_dir := download_directory / "artifact_2").mkdir()
+        (artifact2_dir / "file2.dsc").write_text("")
+
+        self.task._original_dirs = [artifact1_dir]
+        self.task._new_targets_dirs = [artifact2_dir]
+
+        self.assertTrue(self.task.configure_for_execution(download_directory))
+
+        self.assertEqual(
+            self.task._original_targets, [artifact1_dir / "file1.dsc"]
+        )
+        self.assertEqual(self.task._new_targets, [artifact2_dir / "file2.dsc"])
+
     def test_cmdline_with_extra_flags(self) -> None:
         """Cmdline add extra_flags."""
-        extra_flags = ["--dirs"]
+        extra_flags = ["--dirs", "--nocontrol"]
         self.configure_task(override={"extra_flags": extra_flags})
-        self.task._original_targets = [self.create_temporary_file()]
+        original = self.create_temporary_file(suffix=".dsc")
+        new = self.create_temporary_file(suffix=".dsc")
+
+        self.task._original_targets = [original]
+        self.task._new_targets = [new]
 
         cmdline = self.task._cmdline()
 
-        self.assertIn(extra_flags[0], cmdline)
-        self.assertEqual(cmdline[-1], str(self.task._original_targets[0]))
+        self.assertEqual(
+            cmdline,
+            ["debdiff", "--dirs", "--nocontrol", str(original), str(new)],
+        )
+
+    def test_cmdline_with_from_to(self) -> None:
+        """Cmdline use "from" and "to"."""
+        self.task._original_targets = [
+            self.create_temporary_file(suffix=".deb"),
+            self.create_temporary_file(suffix=".deb"),
+        ]
+        self.task._new_targets = [
+            self.create_temporary_file(suffix=".deb"),
+            self.create_temporary_file(suffix=".udeb"),
+        ]
+
+        cmdline = self.task._cmdline()
+
+        self.assertEqual(
+            cmdline,
+            [
+                "debdiff",
+                "--from",
+                *[str(path) for path in self.task._original_targets],
+                "--to",
+                *[str(path) for path in self.task._new_targets],
+            ],
+        )
 
     def test_task_succeeded_empty_file_return_true(self) -> None:
         """task_succeeded() for an empty file return True."""
@@ -554,7 +757,7 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
         workspace_name = "testing"
 
         uploaded_artifacts = [
-            RemoteArtifact(id=10, workspace=workspace_name),
+            create_remote_artifact(id=10, workspace=workspace_name),
         ]
 
         debusine_mock.upload_artifact.side_effect = uploaded_artifacts
@@ -620,27 +823,22 @@ class DebDiffTests(ExternalTaskHelperMixin[DebDiff], TestCase):
             result_type=LookupResultType.ARTIFACT, artifact=1
         )
         debusine_mock.download_artifact.return_value = True
-        debusine_mock.upload_artifact.return_value = RemoteArtifact(
+        debusine_mock.upload_artifact.return_value = create_remote_artifact(
             id=2, workspace=self.task.workspace_name
         )
 
         self.assertTrue(self.task.fetch_input(download_directory))
 
-        assert debusine_mock.download_artifact.call_count == 2
-        debusine_mock.download_artifact.assert_has_calls(
-            [
-                call(1, download_directory / "original", tarball=False),
-                call(2, download_directory / "new", tarball=False),
-            ]
-        )
+        self.assertEqual(len(self.task._original_dirs), 1)
+        self.assertEqual(len(self.task._new_targets_dirs), 1)
 
         f1_contents = "Source: foo"
-        (file1 := download_directory / "original" / "file1.dsc").write_text(
+        (file1 := self.task._original_dirs[0] / "file1.dsc").write_text(
             f1_contents
         )
 
         f2_contents = "Source: bar"
-        (file2 := download_directory / "new" / "file2.dsc").write_text(
+        (file2 := self.task._new_targets_dirs[0] / "file2.dsc").write_text(
             f2_contents
         )
 

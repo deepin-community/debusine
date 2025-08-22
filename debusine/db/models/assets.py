@@ -26,13 +26,12 @@ from debusine.db.constraints import JsonDataUniqueConstraint
 from debusine.db.context import context
 from debusine.db.models import permissions
 from debusine.db.models.permissions import (
-    AllowWorkers,
+    Allow,
     PermissionUser,
     enforce,
     permission_check,
     permission_filter,
 )
-from debusine.db.models.scopes import ScopeRoles
 from debusine.db.models.workspaces import Workspace
 from debusine.tasks.models import WorkerType
 from debusine.utils.typing_utils import copy_signature_from
@@ -57,7 +56,7 @@ class AssetQuerySet(models.QuerySet["Asset", A], Generic[A]):
         """Filter to assets in the current scope."""
         return self.filter(workspace__scope=context.require_scope())
 
-    @permission_filter(workers=AllowWorkers.PASS)
+    @permission_filter(workers=Allow.PASS, anonymous=Allow.PASS)
     def can_display(self, user: PermissionUser) -> "AssetQuerySet[A]":
         """Keep only Assets that can be displayed."""
         # Delegate to workspace can_display check
@@ -65,7 +64,7 @@ class AssetQuerySet(models.QuerySet["Asset", A], Generic[A]):
             workspace__in=Workspace.objects.can_display(user)
         ).exclude(category=AssetCategory.CLOUD_PROVIDER_ACCOUNT)
 
-    @permission_filter(workers=AllowWorkers.NEVER)
+    @permission_filter()
     def can_manage_permissions(
         self, user: PermissionUser
     ) -> "AssetQuerySet[A]":
@@ -191,19 +190,18 @@ class Asset(models.Model):
                     f"No slug defined for category '{self.category}'"
                 )
 
-    @permission_check(
-        "{user} cannot edit asset {resource}", workers=AllowWorkers.NEVER
-    )
+    @permission_check("{user} cannot edit asset {resource}")
     def can_edit(self, user: PermissionUser) -> bool:
         """Can user edit this asset."""
-        if user is None or not user.is_authenticated:
-            return False
+        assert user is not None and user.is_authenticated
         return self.roles.filter(
             group__users=user, role=AssetRoles.OWNER
         ).exists()
 
     @permission_check(
-        "{user} cannot create assets in {resource.workspace.scope}"
+        "{user} cannot create assets in {resource.workspace.scope}",
+        workers=Allow.PASS,
+        anonymous=Allow.PASS,
     )
     def can_create(self, user: PermissionUser) -> bool:
         """Can user create this asset."""
@@ -221,7 +219,12 @@ class Asset(models.Model):
         if self.category == AssetCategory.CLOUD_PROVIDER_ACCOUNT:
             # Not currently creatable through the API
             return False
-        return ScopeRoles.OWNER in self.workspace.scope.get_roles(user)
+        return any(
+            r.implies(Workspace.Roles.OWNER)
+            for r in Workspace.Roles.from_iterable(
+                self.workspace.scope.get_group_roles(user)
+            )
+        )
 
     def has_permission(
         self,

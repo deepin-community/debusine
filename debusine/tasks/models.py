@@ -12,10 +12,10 @@
 import re
 from collections.abc import Iterator
 from datetime import datetime
-from enum import Enum, StrEnum, auto
+from enum import StrEnum
 from itertools import groupby
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias, Union
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias, Union
 
 import debian.deb822 as deb822
 
@@ -29,17 +29,6 @@ import yaml
 from debusine.artifacts.models import BareDataCategory, RuntimeStatistics
 from debusine.client.models import LookupChildType
 from debusine.utils import DjangoChoicesEnum
-
-
-class TaskTypes(DjangoChoicesEnum):
-    """Possible values for task_type."""
-
-    WORKER = "Worker"
-    SERVER = "Server"
-    INTERNAL = "Internal"
-    WORKFLOW = "Workflow"
-    SIGNING = "Signing"
-    WAIT = "Wait"
 
 
 class WorkerType(DjangoChoicesEnum):
@@ -66,14 +55,6 @@ class AutopkgtestNeedsInternet(StrEnum):
     RUN = "run"
     TRY = "try"
     SKIP = "skip"
-
-
-class LintianPackageType(Enum):
-    """Possible package types."""
-
-    SOURCE = auto()
-    BINARY_ALL = auto()
-    BINARY_ANY = auto()
 
 
 class LintianFailOnSeverity(StrEnum):
@@ -441,11 +422,25 @@ class NotificationDataEmail(BaseTaskDataModel):
 class ActionTypes(StrEnum):
     """Possible values for EventReaction actions."""
 
+    SKIP_IF_LOOKUP_RESULT_CHANGED = "skip-if-lookup-result-changed"
     SEND_NOTIFICATION = "send-notification"
     UPDATE_COLLECTION_WITH_ARTIFACTS = "update-collection-with-artifacts"
     UPDATE_COLLECTION_WITH_DATA = "update-collection-with-data"
     RETRY_WITH_DELAYS = "retry-with-delays"
     RECORD_IN_TASK_HISTORY = "record-in-task-history"
+
+
+class ActionSkipIfLookupResultChanged(BaseTaskDataModel):
+    """Action for skipping a work request if a lookup result changed."""
+
+    action: Literal[ActionTypes.SKIP_IF_LOOKUP_RESULT_CHANGED] = (
+        ActionTypes.SKIP_IF_LOOKUP_RESULT_CHANGED
+    )
+    # Deliberately not LookupSingle; this must be able to return a
+    # collection item, so integer lookups are never valid.
+    lookup: str
+    collection_item_id: int | None
+    promise_name: str | None = None
 
 
 class ActionSendNotification(BaseTaskDataModel):
@@ -468,6 +463,7 @@ class ActionUpdateCollectionWithArtifacts(BaseTaskDataModel):
     name_template: str | None = None
     variables: dict[str, Any] | None = None
     artifact_filters: dict[str, Any]
+    created_at: datetime | None = None
 
 
 class ActionUpdateCollectionWithData(BaseTaskDataModel):
@@ -480,6 +476,7 @@ class ActionUpdateCollectionWithData(BaseTaskDataModel):
     category: BareDataCategory
     name_template: str | None = None
     data: dict[str, Any] | None = None
+    created_at: datetime | None = None
 
 
 class ActionRetryWithDelays(BaseTaskDataModel):
@@ -517,6 +514,7 @@ class ActionRecordInTaskHistory(BaseTaskDataModel):
 
 EventReaction = Annotated[
     Union[
+        ActionSkipIfLookupResultChanged,
         ActionSendNotification,
         ActionUpdateCollectionWithArtifacts,
         ActionUpdateCollectionWithData,
@@ -532,6 +530,7 @@ class EventReactions(BaseTaskDataModel):
 
     on_creation: list[EventReaction] = []
     on_unblock: list[EventReaction] = []
+    on_assignment: list[EventReaction] = []
     on_success: list[EventReaction] = []
     on_failure: list[EventReaction] = []
 
@@ -545,8 +544,12 @@ class BaseTaskData(BaseTaskDataModel):
     validation.
     """
 
+    DEFAULT_TASK_CONFIGURATION_LOOKUP: ClassVar[str] = (
+        "default@debusine:task-configuration"
+    )
+
     #: debusine:task-configuration collection to use to configure the task
-    task_configuration: LookupSingle | None = None
+    task_configuration: LookupSingle | None = DEFAULT_TASK_CONFIGURATION_LOOKUP
 
 
 class BaseTaskDataWithExecutor(BaseTaskData):
@@ -554,6 +557,11 @@ class BaseTaskDataWithExecutor(BaseTaskData):
 
     backend: BackendType = BackendType.AUTO
     environment: LookupSingle | None = None
+
+    # Not all executor-based tasks strictly require this, but it can
+    # nevertheless be useful to constrain a task to run on an architecture
+    # for which we know that a suitable environment exists.
+    host_architecture: str | None = None
 
 
 class BaseTaskDataWithExtraRepositories(BaseTaskData):
@@ -608,11 +616,45 @@ class OutputDataError(BaseTaskDataModel):
     code: str
 
 
+class RegressionAnalysisStatus(StrEnum):
+    """Possible values for ``RegressionAnalysis.status``."""
+
+    NO_RESULT = "no-result"
+    ERROR = "error"
+    IMPROVEMENT = "improvement"
+    STABLE = "stable"
+    REGRESSION = "regression"
+
+
+class RegressionAnalysis(BaseTaskDataModel):
+    """The result of a regression analysis."""
+
+    original_url: str | None = None
+    new_url: str | None = None
+    status: RegressionAnalysisStatus
+    details: dict[str, Any] | list[Any] | None = None
+
+
 class OutputData(BaseTaskDataModel):
     """Data produced when a task is completed."""
 
     runtime_statistics: RuntimeStatistics | None = None
     errors: list[OutputDataError] | None = None
+    skip_reason: str | None = None
+    regression_analysis: dict[str, RegressionAnalysis] | None = None
+
+    def merge(self, other: "OutputData") -> "OutputData":
+        """
+        Return the combination of two ``OutputData`` objects.
+
+        Merge all the fields that were explicitly set on each model.  If a
+        field is set on both models, the values in ``other`` take
+        precedence.
+        """
+        merged = self.copy()
+        for name in other.__fields_set__:
+            setattr(merged, name, getattr(other, name))
+        return merged
 
 
 class NoopData(BaseTaskData):
@@ -661,6 +703,8 @@ class AutopkgtestData(
     """In memory task data for the Autopkgtest task."""
 
     input: AutopkgtestInput
+    # BaseTaskDataWithExecutor declares this as optional, but it's required
+    # here.
     host_architecture: str
     include_tests: list[str] = pydantic.Field(default_factory=list)
     exclude_tests: list[str] = pydantic.Field(default_factory=list)
@@ -734,7 +778,7 @@ class LintianData(BaseTaskDataWithExecutor):
     exclude_tags: list[str] = pydantic.Field(default_factory=list)
     # If the analysis emits tags of this severity or higher, the task will
     # return 'failure' instead of 'success'
-    fail_on_severity: LintianFailOnSeverity = LintianFailOnSeverity.NONE
+    fail_on_severity: LintianFailOnSeverity = LintianFailOnSeverity.ERROR
 
 
 class LintianDynamicData(BaseDynamicTaskDataWithExecutor):
@@ -820,6 +864,8 @@ class DebDiffData(BaseTaskDataWithExecutor):
     input: DebDiffInput
     # Passed to debdiff
     extra_flags: list[DebDiffFlags] = pydantic.Field(default_factory=list)
+    # BaseTaskDataWithExecutor declares this as optional, but it's required
+    # here.
     host_architecture: str
     # BaseTaskDataWithExecutor declares this as optional, but it's required
     # here.
@@ -1032,6 +1078,8 @@ class PiupartsData(BaseTaskDataWithExecutor, BaseTaskDataWithExtraRepositories):
     """In memory task data for the Piuparts task."""
 
     input: PiupartsDataInput
+    # BaseTaskDataWithExecutor declares this as optional, but it's required
+    # here.
     host_architecture: str
     base_tgz: LookupSingle
     # BaseTaskDataWithExecutor declares this as optional, but it's required
@@ -1080,10 +1128,21 @@ class SbuildBuildComponent(StrEnum):
     SOURCE = "source"
 
 
+class SbuildBuildDepResolver(StrEnum):
+    """Possible values for build_dep_resolver."""
+
+    APT = "apt"
+    APTITUDE = "aptitude"
+    ASPCUD = "aspcud"
+    XAPT = "xapt"
+
+
 class SbuildData(BaseTaskDataWithExecutor, BaseTaskDataWithExtraRepositories):
     """In memory task data for the Sbuild task."""
 
     input: SbuildInput
+    # BaseTaskDataWithExecutor declares this as optional, but it's required
+    # here.
     host_architecture: str
     build_components: list[SbuildBuildComponent] = pydantic.Field(
         default_factory=lambda: [SbuildBuildComponent.ANY],
@@ -1093,6 +1152,8 @@ class SbuildData(BaseTaskDataWithExecutor, BaseTaskDataWithExtraRepositories):
     # BaseTaskDataWithExecutor declares this as optional, but it's required
     # here.
     environment: LookupSingle
+    build_dep_resolver: SbuildBuildDepResolver | None = None
+    aspcud_criteria: str | None = None
 
     @pydantic.root_validator
     @classmethod
@@ -1275,6 +1336,12 @@ class MergeUploadsDynamicData(BaseDynamicTaskData):
     environment_id: int | None = None
 
     input_uploads_ids: list[int]
+
+
+class DebianPipelineWorkflowDynamicData(BaseDynamicTaskData):
+    """Dynamic data for the DebianPipeline workflow."""
+
+    input_source_artifact_id: int | None = None
 
 
 # Workarounds for https://github.com/yaml/pyyaml/issues/722

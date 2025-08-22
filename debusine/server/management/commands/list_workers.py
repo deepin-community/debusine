@@ -9,16 +9,15 @@
 
 """debusine-admin command to list workers."""
 
-from typing import Any
+import warnings
+from typing import Any, NoReturn
 
 from django.core.management import CommandParser
 
-from debusine.db.models import Worker
-from debusine.django.management.debusine_base_command import DebusineBaseCommand
-from debusine.server.management.management_utils import Workers
+from debusine.server.management.commands import worker
 
 
-class Command(DebusineBaseCommand):
+class Command(worker.Command):
     """Command to list the workers."""
 
     help = "List all the workers"
@@ -29,8 +28,11 @@ class Command(DebusineBaseCommand):
             '--yaml', action="store_true", help="Machine readable YAML output"
         )
 
-    def handle(self, *args: Any, **options: Any) -> None:
-        """List the workers."""
-        workers = Worker.objects.all()
-        Workers(options["yaml"]).print(workers, self.stdout)
-        raise SystemExit(0)
+    def handle(self, *args: Any, **options: Any) -> NoReturn:
+        """Forward to `debusine-admin worker list`."""
+        warnings.warn(
+            "The `debusine-admin list_workers` command has been deprecated in "
+            "favour of `debusine-admin worker list`",
+            DeprecationWarning,
+        )
+        super().handle_list(*args, **options)

@@ -1,63 +1,64 @@
 {% load debusine %}
-<div class="d-flex">
-    <div class="dropdown">
-        <button class="btn btn-light dropdown-toggle"
-                type="button"
-                data-bs-toggle="dropdown"
-                aria-expanded="false">
-            {% if not filters.active %}Table filters{% endif %}
-            <i class="bi bi-funnel" title="Add filter"></i>
-        </button>
-        <ul class="dropdown-menu" id="filters-list-{{ f.filter_prefix }}">
-            {% for f in filters.available %}
-                <li>{% widget f.menu_entry %}</li>
-            {% endfor %}
-            <li>
-                <hr class="dropdown-divider">
-            </li>
-            <li>
-                <a class="dropdown-item" href="?{{ column.filters.qs_clear_filters }}">Reset filters</a>
-            </li>
-        </ul>
-    </div>
-    <div class="d-flex flex-grow-1" id="filters-{{ filters.filter_prefix }}">
-        <div class="collapse show align-self-center flex-grow-1"
-             id="filters-current-{{ filters.filter_prefix }}"
-             data-bs-parent="#filters-{{ filters.filter_prefix }}">
-            {% for f in filters.active %}
-                {% widget f.active_entry %}
-            {% endfor %}
-        </div>
-        {% for f in filters.available %}
-            {% if f.form %}
-                <div class="collapse collapse-horizontal align-self-center flex-grow-1"
-                     id="filters-form-{{ f.filter_prefix }}"
-                     data-bs-parent="#filters-{{ filters.filter_prefix }}">
-                    <form class="d-flex table-filter-form" method="get">
-                        {% for k, v in f.base_filter_args %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
-                        <div class="align-self-center ms-2 flex-grow-1">{% widget f.form %}</div>
-                        <button class="btn btn-sm btn-primary align-self-center ms-2" type="submit">Add filter</button>
-                        <a class="btn btn-sm btn-secondary align-self-center ms-1"
-                           data-bs-toggle="collapse"
-                           href="#filters-current-{{ filters.filter_prefix }}"
-                           aria-expanded="false"
-                           aria-controls="filters-current-{{ filters.filter_prefix }}">Cancel</a>
-                    </form>
+<div class="d-flex bg-light p-2">
+    {% if filters %}
+        {# Filtering and ordering container #}
+        <div class="d-flex flex-grow-1 border">
+            {# Filtering container #}
+            {# Filters menu #}
+            <button class="btn btn-light dropdown-toggle debusine-dropdown-remote"
+                    type="button"
+                    data-bs-target="#{{ filters.dom_id }}-menu"
+                    aria-expanded="false">
+                <i class="bi bi-funnel" title="Add filter"></i>
+            </button>
+            <div class="d-flex flex-grow-1 align-items-center p-1 border-start">
+                {# Active filters #}
+                {% for f in filters.active %}
+                    {% widget f.main_entry %}
+                {% endfor %}
+                <div class="dropdown">
+                    {# Dropdown anchor for filters menu #}
+                    <div id="{{ filters.dom_id_filters_menu }}"
+                         data-bs-toggle='dropdown'
+                         aria-expanded='false'></div>
+                    <ul class="dropdown-menu">
+                        <li>
+                            <h6 class="dropdown-header">Add filter on field…</h6>
+                        </li>
+                        {% for f in filters.available %}
+                            <li>{% widget f.menu_entry %}</li>
+                        {% endfor %}
+                    </ul>
                 </div>
-            {% endif %}
-        {% endfor %}
-    </div>
+                {% for f in filters.inactive %}
+                    {# Hidden filter form dropdowns #}
+                    {% widget f.main_entry %}
+                {% endfor %}
+                <div class="flex-grow-1 dropdown text-secondary debusine-dropdown-remote"
+                     data-bs-target="#{{ filters.dom_id_filters_menu }}">Filter results...</div>
+                {% if filters.active %}
+                    <a class="text-decoration-none text-secondary"
+                       href="?{{ filters.qs_clear_filters }}"
+                       title="Reset filters"><i class="bi bi-x-circle"></i></a>
+                {% endif %}
+            </div>
+        </div>
+    {% else %}
+        <div class="d-flex flex-grow-1"></div>
+    {% endif %}
     <div class="dropdown">
+        {# What to order #}
         <button class="btn btn-light dropdown-toggle"
                 type="button"
                 data-bs-toggle="dropdown"
-                aria-expanded="false">{{ filters.table.orderings.current.label_what }}</button>
+                aria-expanded="false">{{ table.orderings.current.label_what }}</button>
         <ul class="dropdown-menu dropdown-menu-end"
-            id="order-list-what-{{ filters.table.prefix }}">
-            {% for o in filters.table.orderings.what_menu_entries %}<li>{{ o }}</li>{% endfor %}
+            id="{{ table.orderings.dom_id }}-menu-what">
+            {% for o in table.orderings.what_menu_entries %}<li>{{ o }}</li>{% endfor %}
         </ul>
     </div>
     <div class="btn-group">
+        {# How to order #}
         {{ filters.table.orderings.how_sort_icon }}
         <div class="dropdown">
             <button class="btn btn-light dropdown-toggle dropdown-toggle-split"
@@ -67,9 +68,14 @@
                 <span class="visually-hidden">Toggle ordering options menu</span>
             </button>
             <ul class="dropdown-menu dropdown-menu-end"
-                id="order-list-how-{{ filters.table.prefix }}">
-                {% for o in filters.table.orderings.how_menu_entries %}<li>{{ o }}</li>{% endfor %}
+                id="{{ table.orderings.dom_id }}-menu-how">
+                {% for o in table.orderings.how_menu_entries %}<li>{{ o }}</li>{% endfor %}
             </ul>
         </div>
     </div>
 </div>
+<script type="module">
+    import { DebusineRemoteDropdown, DebusineCloseDropdown } from "debusine";
+    DebusineRemoteDropdown.setup_all();
+    DebusineCloseDropdown.setup_all();
+</script>

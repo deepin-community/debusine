@@ -45,11 +45,10 @@ Sub-workflows
 -------------
 
 Advanced workflows can be created by combining multiple limited-purpose
-workflows: for example, the :ref:`reverse_dependencies_autopkgtest
-<workflow-reverse-dependencies-autopkgtest>` workflow figures out which
-source packages need to have tests run for them, but creates instances of
-the :ref:`autopkgtest <workflow-autopkgtest>` workflow to schedule tests for
-each individual source package.
+workflows: for example, the :workflow:`reverse_dependencies_autopkgtest`
+workflow figures out which source packages need to have tests run for them,
+but creates instances of the :workflow:`autopkgtest` workflow to schedule
+tests for each individual source package.
 
 Sub-workflows are integrated in the general graph of their parent workflow
 as work requests of type ``workflow``.  From a user interface perspective,
@@ -64,9 +63,9 @@ linked to the work request.
 On the providing side, workflows use the
 :ref:`action-update-collection-with-artifacts` event reaction to add
 relevant output artifacts from work requests to the internal collection, and
-create :ref:`promises <bare-data-promise>` to indicate to other workflows
-that they have done so.  Providing workflows choose item names in the
-internal collection; it is the responsibility of workflow designers to
+create :bare-data:`promises <debusine:promise>` to indicate to other
+workflows that they have done so.  Providing workflows choose item names in
+the internal collection; it is the responsibility of workflow designers to
 ensure that they do not clash, and workflows that provide output artifacts
 have a optional ``prefix`` field in their task data to allow multiple
 instances of the same workflow to cooperate under the same root workflow.

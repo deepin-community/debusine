@@ -22,6 +22,7 @@ class ManageUserCommandTests(TestCase):
 
     def setUp(self) -> None:
         """Create a default User."""
+        super().setUp()
         self.user = get_user_model().objects.create_user(
             username="bob", password="123456"
         )

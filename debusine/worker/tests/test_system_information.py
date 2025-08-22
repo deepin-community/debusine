@@ -24,6 +24,7 @@ class TestSystemInformation(TestCase):
 
     def setUp(self) -> None:
         """Ensure that host_architecture() is not cached."""
+        super().setUp()
         system_information.host_architecture.cache_clear()
         self.addCleanup(system_information.host_architecture.cache_clear)
 

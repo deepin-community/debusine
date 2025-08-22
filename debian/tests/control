@@ -2,6 +2,10 @@ Tests: unit-tests-tasks
 Depends:
  python3-debusine,
  python3-lxml,
+ python3-pytest,
+ python3-pytest-asyncio,
+ python3-pytest-subtests,
+ python3-pytest-xdist,
  python3-responses,
 Restrictions: allow-stderr
 
@@ -9,7 +13,12 @@ Tests: unit-tests-client
 Depends:
  debusine-client,
  dput-ng,
+ git,
  python3-lxml,
+ python3-pytest,
+ python3-pytest-asyncio,
+ python3-pytest-subtests,
+ python3-pytest-xdist,
  python3-responses,
 Restrictions: allow-stderr
 
@@ -17,6 +26,10 @@ Tests: unit-tests-worker
 Depends:
  debusine-worker,
  python3-lxml,
+ python3-pytest,
+ python3-pytest-asyncio,
+ python3-pytest-subtests,
+ python3-pytest-xdist,
  python3-responses,
 Restrictions: allow-stderr
 
@@ -28,6 +41,11 @@ Depends:
  python3-lxml,
  python3-paramiko,
  python3-pyftpdlib,
+ python3-pytest,
+ python3-pytest-asyncio,
+ python3-pytest-django,
+ python3-pytest-subtests,
+ python3-pytest-xdist,
  python3-responses,
  redis-server,
 Restrictions: allow-stderr, needs-root
@@ -40,6 +58,11 @@ Depends:
  postgresql,
  python3-cryptography,
  python3-lxml,
+ python3-pytest,
+ python3-pytest-asyncio,
+ python3-pytest-django,
+ python3-pytest-subtests,
+ python3-pytest-xdist,
  python3-responses,
 Restrictions: allow-stderr, needs-root
 
@@ -56,6 +79,7 @@ Depends:
  nginx,
  postgresql,
  python3-lxml,
+ python3-pytest,
  python3-responses,
  redis-server,
  sbuild,
@@ -72,7 +96,7 @@ Depends:
  debusine-client,
  debusine-server,
  debusine-worker,
- debvm,
+ debvm (>= 0.4.4~),
  dosfstools,
  e2fsprogs,
  fdisk,
@@ -84,6 +108,7 @@ Depends:
  parted,
  postgresql,
  python3-lxml,
+ python3-pytest,
  python3-responses,
  qemu-utils,
  redis-server,
@@ -107,12 +132,31 @@ Depends:
  nginx,
  postgresql,
  python3-lxml,
+ python3-pytest,
  python3-responses,
  redis-server,
  sbsigntool [amd64 arm64 armhf i386 riscv64],
  ssl-cert,
  sudo,
  uidmap,
+Restrictions: allow-stderr, needs-root, isolation-container, skippable, needs-internet
+
+Tests: integration-tests-task-aptmirror
+Depends:
+ apt-utils,
+ ca-certificates,
+ debusine-client,
+ debusine-server,
+ debusine-worker,
+ nginx,
+ postgresql,
+ python3-gpg,
+ python3-lxml,
+ python3-pytest,
+ python3-responses,
+ redis-server,
+ ssl-cert,
+ sudo,
 Restrictions: allow-stderr, needs-root, isolation-container, needs-internet
 
 Tests: integration-tests-generic
@@ -125,6 +169,7 @@ Depends:
  nginx,
  postgresql,
  python3-lxml,
+ python3-pytest,
  redis-server,
  ssl-cert,
  sudo,

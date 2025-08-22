@@ -192,7 +192,8 @@ class BaseUIView(ContextMixin, View):
         if isinstance(workspace, Workspace):
             workspace = workspace.name
         raise Http404(
-            f"Workspace {workspace} not found in scope {context.scope}"
+            f"Workspace {workspace} not found in scope {context.scope}, or "
+            f"you are not authorized to see it"
         )
 
     def set_current_workspace(

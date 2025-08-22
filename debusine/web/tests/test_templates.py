@@ -32,6 +32,9 @@ def _html_work_request_result(result: str) -> str:
         case "error":
             text_bg = "text-bg-danger"
             text = "Error"
+        case "skipped":
+            text_bg = "text-bg-light"
+            text = "Skipped"
         case _ as unreachable:
             raise AssertionError(f"unsupported result {unreachable}")
 
@@ -99,11 +102,12 @@ class WorkRequestResultTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.template = get_template("web/_work_request-result.html")
 
     def test_work_request_results(self) -> None:
-        """Test rendering for success, failure and error results."""
-        for result in ["success", "failure", "error"]:
+        """Test rendering for possible results."""
+        for result in ["success", "failure", "error", "skipped"]:
             with self.subTest(result=result):
                 rendered_template = self.template.render({"result": result})
                 self.assertHTMLEqual(
@@ -122,6 +126,7 @@ class WorkRequestResultSmallTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.template = get_template("web/_work_request-result-small.html")
 
     def test_work_request_result_small(self) -> None:
@@ -138,6 +143,7 @@ class WorkRequestResultSmallTests(TestCase):
             wr.SUCCESS: _render("text-bg-success", "Success", "S"),
             wr.FAILURE: _render("text-bg-warning", "Failure", "F"),
             wr.ERROR: _render("text-bg-danger", "Error", "E"),
+            wr.SKIPPED: _render("text-bg-light", "Skipped", "s"),
             "unknown-result": "unknown-result",
         }
 
@@ -153,6 +159,7 @@ class WorkRequestStatusTests(TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.template = get_template("web/_work_request-status.html")
 
     def test_work_request_status(self) -> None:
@@ -176,6 +183,7 @@ class BadgeCountTests(TestCase):
 
     def setUp(self) -> None:
         """Set up tests."""
+        super().setUp()
         self.template = get_template("web/_badge-count.html")
 
     def test_count_is_zero(self) -> None:
@@ -199,4 +207,46 @@ class BadgeCountTests(TestCase):
                 '<span class="badge text-bg-primary" '
                 'title="count of...">11</span>'
             ),
+        )
+
+
+class DictToHtmlTests(TestCase):
+    """Tests for _dict-to-html.html."""
+
+    def setUp(self) -> None:
+        """Set up tests."""
+        super().setUp()
+        self.template = get_template("web/_dict_to_ul.html")
+
+    def test_recursive_dict_and_list(self) -> None:
+        """Test recursive dict."""
+        rendered = self.template.render(
+            context={
+                "dict": {
+                    "keyA": "valueB",
+                    "keyC": {
+                        "keyD": "valueE",
+                    },
+                    "keyF": [1, 2],
+                }
+            }
+        )
+        self.assertHTMLEqual(
+            rendered,
+            """
+            <ul>
+                <li><b>keyA:</b> valueB</li>
+                <li><b>keyC:</b>
+                    <ul>
+                        <li><b>keyD:</b> valueE</li>
+                    </ul>
+                </li>
+                <li><b>keyF:</b>
+                    <ul>
+                        <li>1</li>
+                        <li>2</li>
+                    </ul>
+                </li>
+            </ul>
+            """,
         )

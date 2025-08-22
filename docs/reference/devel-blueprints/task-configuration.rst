@@ -24,6 +24,8 @@ to store this information in new collections and improve workflows/work
 request creation to be able to use those collections to apply the
 desired overrides.
 
+.. collection:: debusine:task-configuration
+
 Collection ``debusine:task-configuration``
 ==========================================
 
@@ -94,7 +96,7 @@ Other collection-specific characteristics:
 
 * Valid items:
 
-  * ``debusine:task-configuration`` bare data
+  * :bare-data:`debusine:task-configuration` bare data
 
 * Lookup names:
 
@@ -104,6 +106,8 @@ Other collection-specific characteristics:
 
   * when ``template`` is set, ``task_type``, ``task_name``, ``subject`` and
     ``context`` should be None
+
+.. bare-data:: debusine:task-configuration
 
 Bare data ``debusine:task-configuration``
 -----------------------------------------
@@ -213,10 +217,10 @@ longer be needed on the ``debian-pipeline`` workflow. We might still want
 to keep it.
 
 Despite this, I still expect that the bulk of the configuration data
-stored in ``debusine:task-configuration`` will concern workflows because
-workflows are designed to have a very flat ``task_data`` structure, i.e. with
-many top-level keys that can thus be individually overridden. This is not
-always the case for worker tasks.
+stored in :collection:`debusine:task-configuration` will concern workflows
+because workflows are designed to have a very flat ``task_data`` structure,
+i.e. with many top-level keys that can thus be individually overridden. This
+is not always the case for worker tasks.
 
 Integration with dynamic_data
 -----------------------------
@@ -293,7 +297,7 @@ Implementation plan
 
 * Extend ``BaseTaskData`` with a ``task_configuration`` field that
   is a :ref:`lookup-single` and that should return the (optional)
-  ``debusine:task-configuration`` collection to use to configure
+  :collection:`debusine:task-configuration` collection to use to configure
   the task.
 
 * Extend ``BaseDynamicTaskData`` with 4 new fields:

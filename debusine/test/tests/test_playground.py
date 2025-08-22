@@ -215,7 +215,6 @@ class PlaygroundTransactionalTestMixin(TestCase):
     art2: ClassVar[Artifact]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Create a playground to setup test data."""
         super().setUpTestData()
@@ -244,7 +243,6 @@ class PlaygroundTransactionalTestMixin(TestCase):
         with backend.get_stream(files2[1]) as fd:
             self.assertEqual(fd.read(), b"testtarxz")
 
-    @context.disable_permission_checks()
     def test_alter_file_storage_1(self) -> None:
         """First part of testing transactional file storage behaviour."""
         self.assertTestFixtureUnchanged()

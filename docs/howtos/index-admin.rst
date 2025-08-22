@@ -17,3 +17,4 @@ Tasks for administrators
    generate-signing-keys
    configure-hsm
    add-new-worker-pool
+   customize-site-branding

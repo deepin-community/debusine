@@ -89,7 +89,7 @@ and their associated ``task_data`` in a work request is an empty
 dictionary.
 
 Their main use is to provide synchronization points in a graph of blocked
-work requests. In particular they can be used used to represent the entry
+work requests. In particular they can be used to represent the entry
 or exit points of sub-workflows or of groups of related work requests.
 
 When such a work request becomes pending, it is immediately marked as
@@ -142,6 +142,8 @@ Signing tasks
 ``Signing`` tasks are like ``Worker`` tasks, but run on restricted signing
 workers. They typically interact with secret keys that required to perform
 the requested operation.
+
+.. _task-type-wait:
 
 Wait tasks
 ==========

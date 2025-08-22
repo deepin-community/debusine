@@ -13,11 +13,17 @@ import abc
 import asyncio
 import contextlib
 import copy
+import http.client
 import inspect
 import io
 import itertools
+import json
+import traceback
 import unittest
-from collections.abc import Callable, Collection, Generator
+from collections.abc import Callable
+from collections.abc import Collection as AbcCollection
+from collections.abc import Generator
+from operator import itemgetter
 from pathlib import Path
 from typing import (
     Any,
@@ -27,12 +33,14 @@ from typing import (
     TYPE_CHECKING,
     TypeAlias,
     TypeVar,
+    Union,
     cast,
     runtime_checkable,
 )
 from unittest import mock
 from unittest.util import safe_repr
 
+import django.template
 import django.test
 import lxml
 import requests
@@ -42,11 +50,21 @@ from django.conf import settings
 from django.db import transaction
 from django.db.models import Model, QuerySet
 from django.http.response import HttpResponseBase
+from django.test.client import JSON_CONTENT_TYPE_RE
 from rest_framework import status
 
 from debusine.db.context import ContextConsistencyError, context
-from debusine.db.models import Scope, Token, User, WorkRequest, Workspace
+from debusine.db.models import (
+    Collection,
+    CollectionItemMatchConstraint,
+    Scope,
+    Token,
+    User,
+    WorkRequest,
+    Workspace,
+)
 from debusine.db.models.permissions import (
+    Allow,
     PermissionCheckPredicate,
     PermissionUser,
     Roles,
@@ -72,6 +90,10 @@ R = TypeVar("R", bound=Roles)
 
 #: Type alias for response objects returned by the Django test client
 TestResponseType: TypeAlias = "_MonkeyPatchedWSGIResponse"
+#: Type alias for any response type
+AnyResponseType: TypeAlias = Union[
+    HttpResponseBase, "_MonkeyPatchedWSGIResponse"
+]
 
 
 class PermissionOverride(abc.ABC, Generic[M]):
@@ -234,22 +256,59 @@ class BaseDjangoTestCase(django.test.SimpleTestCase, BaseTestCase):
     """
 
     @classmethod
-    def setUpClass(cls) -> None:
-        """
-        Reset context before the TestCase initializes.
+    def get_precious_globals(cls) -> dict[str, Any]:
+        """Collect global values that tests should not change."""
+        res = super().get_precious_globals()
+        res["templates_0_dirs"] = settings.TEMPLATES[0]["DIRS"]
+        return res
 
-        Context is likely to be accessed by class-level test case setup (like
-        ``setUpTestData``), and a context left over from a previous test will
-        interfere with that
-        """
-        context.reset()
-        super().setUpClass()
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Run class-wide test setup in a temporary context."""
+        with context.local():
+            context.reset()
+            super().setUpClass()
 
     def setUp(self) -> None:
         """Ensure test methods do not change the global scope."""
         super().setUp()
         self.enterContext(context.local())
         context.reset()
+
+    @contextlib.contextmanager
+    def custom_template(self, path: str | Path) -> Generator[Path]:
+        """
+        Install a custom template, removing it at context manager exit.
+
+        It generates a path pointing to the custom template file, but nothing
+        is written: you can use the path you get to write out the template
+        contents.
+        """
+        # Clear template caches before writing the new template and after
+        # removing it: if we are changing an included template, Django doesn't
+        # seem able to notice that the cache needs invalidating
+        path = Path(path)
+        template_path = Path(settings.DEBUSINE_TEMPLATE_DIRECTORY) / path
+        template_path.parent.mkdir(exist_ok=True, parents=True)
+        try:
+            self.clear_template_cache()
+            yield template_path
+        finally:
+            template_path.unlink(missing_ok=True)
+            self.clear_template_cache()
+
+    def clear_template_cache(self) -> None:
+        """Clear the Django template cache."""
+        from django.template.backends.django import DjangoTemplates
+        from django.template.loaders.base import Loader
+
+        for engine in django.template.engines.all():
+            if not isinstance(engine, DjangoTemplates):
+                continue
+            for loader in engine.engine.template_loaders:
+                if not isinstance(loader, Loader):
+                    continue
+                loader.reset()
 
     @contextlib.contextmanager
     def ephemeral_savepoint(self) -> Generator[Any, None, None]:
@@ -290,6 +349,76 @@ class BaseDjangoTestCase(django.test.SimpleTestCase, BaseTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.context["error"], error)
 
+    def format_api_response(self, response: AnyResponseType) -> str:
+        """
+        Format an API response.
+
+        The result is intended to be compact and useful in error messages and
+        exception annotations.
+        """
+        status_description = http.client.responses.get(
+            response.status_code, 'unknown'
+        )
+        content_type = response["content-type"]
+        res = f"{response.status_code} {status_description} ({content_type}): "
+
+        if hasattr(response, "content"):
+            content = response.content.decode(response.charset)
+            if content_type == "application/problem+json":
+                # Format a ProblemResponse
+                decoded = json.loads(content)
+                title = decoded.get("title", "(no title)")
+                res += f"{title=!r}"
+                if detail := decoded.get("detail"):
+                    res += f" {detail=!r}"
+                if validation_errors := decoded.get("validation_errors"):
+                    res += f" {validation_errors=!r}"
+                if original_exception := getattr(
+                    response, "_original_exception", None
+                ):
+                    res += " original exception follows:\n"
+                    exception_formatted = traceback.format_exception(
+                        original_exception
+                    )
+                    res += "".join(exception_formatted)
+            elif JSON_CONTENT_TYPE_RE.match(content_type):
+                content = repr(json.loads(content))
+                if len(content) > 200:
+                    content = content[:200] + "…"
+                res += f"content={content}"
+            else:
+                if len(content) > 200:
+                    content = content[:200] + "…"
+                res += f"{content=!r}"
+        else:
+            res += "content not available"
+        return res
+
+    def assertAPIResponseOk(
+        self, response: AnyResponseType, status_code: int = status.HTTP_200_OK
+    ) -> Any:
+        """
+        Ensure an API response succeeded with the given status code.
+
+        :returns: the decoded JSON contents.
+        """
+        try:
+            self.assertEqual(response.status_code, status_code)
+
+            content_type = response.get("Content-Type")
+            if content_type is None:
+                self.fail("response has no content type")
+            if not JSON_CONTENT_TYPE_RE.match(content_type):
+                self.fail(
+                    f"content type {content_type!r} is not a JSON response"
+                )
+
+            assert hasattr(response, "content")
+            return json.loads(response.content.decode(response.charset))
+        except Exception as exc:
+            exc.add_note(self.format_api_response(response))
+            raise
+
     def assertResponseProblem(
         self,
         response: HttpResponseBase,
@@ -324,7 +453,7 @@ class BaseDjangoTestCase(django.test.SimpleTestCase, BaseTestCase):
         self.assertEqual(
             content_type,
             "application/problem+json",
-            f'content_type "{content_type}" != ' f'"application/problem+json"',
+            f'content_type "{content_type}" != "application/problem+json"',
         )
 
         assert isinstance(response, JSONResponseProtocol)
@@ -371,6 +500,125 @@ class BaseDjangoTestCase(django.test.SimpleTestCase, BaseTestCase):
                 data,
                 '"validation_errors" is in the response',
             )
+
+    def assertRolePredicate(
+        self,
+        obj: Model,
+        name: str,
+        role: str,
+        *,
+        workers: Allow = Allow.NEVER,
+        anonymous: Allow = Allow.NEVER,
+    ) -> None:
+        """
+        Test a predicate only checks if the user has a role.
+
+        :param obj: an instance of the model. The actual value does not matter,
+                    as testing is done via mocking.
+        :param name: predicate name
+        :param role: role that the predicate should check
+        """
+        model = obj.__class__
+        model_name = model.__name__
+        user = User()
+
+        # Checks that model.name and model.objects.name exist
+        perm_check = getattr(obj, name, None)
+        if perm_check is None:
+            self.fail(f"{model_name} has no @permission_check {name}")
+        if not hasattr(perm_check, "workers") or not hasattr(
+            perm_check, "anonymous"
+        ):
+            self.fail(f"{model_name}.{name} is not marked as @permission_check")
+
+        # Test the check predicate
+        with mock.patch.object(
+            obj, "has_role", autospec=True, return_value=False
+        ) as has_role:
+            self.assertFalse(perm_check(user))
+        has_role.assert_called_with(user, role)
+
+        with mock.patch.object(
+            obj, "has_role", autospec=True, return_value=True
+        ) as has_role:
+            self.assertTrue(perm_check(user))
+        has_role.assert_called_with(user, role)
+
+        # Test the filter predicate on manager
+        manager = getattr(model, "objects")
+        manager_name = f"{model_name}.objects"
+        perm_filter_manager = getattr(manager, name, None)
+        if perm_filter_manager is None:
+            self.fail(f"{manager_name} has no @permission_filter {name}")
+        if not hasattr(perm_filter_manager, "workers") or not hasattr(
+            perm_filter_manager, "anonymous"
+        ):
+            self.fail(
+                f"{manager_name}.{name} is not marked as @permission_filter"
+            )
+
+        queryset_class = manager.get_queryset().__class__
+
+        RESULT = object()
+        with mock.patch.object(
+            queryset_class, "with_role", return_value=RESULT
+        ) as with_role:
+            self.assertIs(perm_filter_manager(user), RESULT)
+        with_role.assert_called_with(user, role)
+
+        # Test the filter predicate on QuerySet
+        queryset = getattr(model, "objects").all()
+        queryset_name = f"QuerySet[{model_name}]"
+
+        perm_filter_queryset = getattr(queryset, name, None)
+        if perm_filter_queryset is None:
+            self.fail(f"{queryset_name} has no @permission_filter {name}")
+        if not hasattr(perm_filter_queryset, "workers") or not hasattr(
+            perm_filter_queryset, "anonymous"
+        ):
+            self.fail(
+                f"{queryset_name}.{name} is not marked as @permission_filter"
+            )
+
+        RESULT = object()
+        with mock.patch.object(
+            queryset, "with_role", return_value=RESULT
+        ) as with_role:
+            self.assertIs(perm_filter_queryset(user), RESULT)
+        with_role.assert_called_with(user, role)
+
+        # Check that the workers= arguments match
+        self.assertEqual(perm_check.workers, workers)
+        self.assertEqual(perm_filter_manager.workers, workers)
+        self.assertEqual(perm_filter_queryset.workers, workers)
+        self.assertEqual(perm_check.anonymous, anonymous)
+        self.assertEqual(perm_filter_manager.anonymous, anonymous)
+        self.assertEqual(perm_filter_queryset.anonymous, anonymous)
+
+    def assertPermissionPredicate(
+        self,
+        pred: Callable[[PermissionUser], bool],
+        user: PermissionUser,
+        expected_pass: bool,
+    ) -> None:
+        """
+        Check the result of a permission predicate.
+
+        :param pred: the permission predicate, as the check method on a
+                     resource object
+        :param user: the user to check
+        :param expected_pass: True if the predicate is expected to pass
+        """
+        resource: Model = pred.__self__  # type: ignore[attr-defined]
+        self.assertEqual(pred(user), expected_pass)
+        filtered = getattr(
+            resource.__class__.objects,  # type: ignore[attr-defined]
+            pred.__name__,
+        )(user)
+        if expected_pass:
+            self.assertIn(resource, list(filtered))
+        else:
+            self.assertNotIn(resource, list(filtered))
 
     @context.local()
     def _test_check_predicate(
@@ -430,9 +678,9 @@ class BaseDjangoTestCase(django.test.SimpleTestCase, BaseTestCase):
     def assertPermission(  # noqa: C901
         self,
         name: str,
-        users: PermissionUser | Collection[PermissionUser],
-        allowed: M | Collection[M] = (),
-        denied: M | Collection[M] = (),
+        users: PermissionUser | AbcCollection[PermissionUser],
+        allowed: M | AbcCollection[M] = (),
+        denied: M | AbcCollection[M] = (),
         token: Token | None = None,
     ) -> None:
         """
@@ -445,15 +693,11 @@ class BaseDjangoTestCase(django.test.SimpleTestCase, BaseTestCase):
         filter predicate is tested, allowed must list all objects in the
         database that test true for the permission.
         """
-        context.reset()
-        if token is not None and hasattr(token, "worker"):
-            context.set_worker_token(token)
-
-        if not isinstance(users, Collection):
+        if not isinstance(users, AbcCollection):
             users = (users,)
-        if not isinstance(allowed, Collection):
+        if not isinstance(allowed, AbcCollection):
             allowed = (allowed,)
-        if not isinstance(denied, Collection):
+        if not isinstance(denied, AbcCollection):
             denied = (denied,)
 
         errors: list[str] = []
@@ -468,8 +712,13 @@ class BaseDjangoTestCase(django.test.SimpleTestCase, BaseTestCase):
                 )
 
             for obj in denied:
-                if getattr(obj, name)(user):
-                    errors.append(f"{name} is True for {user} on {obj}")
+                errors += self._test_check_predicate(
+                    user, obj, name, False, token=token
+                )
+
+            context.reset()
+            if token is not None and hasattr(token, "worker"):
+                context.set_worker_token(token)
 
             # Pick the model class from the first element of allow or
             # denied
@@ -524,6 +773,31 @@ class BaseDjangoTestCase(django.test.SimpleTestCase, BaseTestCase):
         with django.test.override_settings(TEMPLATES=template_settings):
             yield template_dir
 
+    def assert_collection_has_constraints(
+        self,
+        collection: Collection,
+        expected_constraints: list[dict[str, Any]],
+    ) -> None:
+        """Assert that a collection has these constraints."""
+        constraints = [
+            dict(constraint)
+            for constraint in CollectionItemMatchConstraint.objects.filter(
+                collection=collection
+            ).values()
+        ]
+        for constraint in constraints:
+            del constraint["id"]
+        self.assertEqual(
+            sorted(constraints, key=itemgetter("collection_item_id", "key")),
+            sorted(
+                [
+                    {"collection_id": collection.id, **constraint}
+                    for constraint in expected_constraints
+                ],
+                key=itemgetter("collection_item_id", "key"),
+            ),
+        )
+
 
 class PlaygroundTestCase(BaseDjangoTestCase):
     """
@@ -573,10 +847,10 @@ class PlaygroundTestCase(BaseDjangoTestCase):
     def _build_permission_when_role_testlist(
         self,
         predicate: Callable[[PermissionUser], bool],
-        roles: str | Collection[str] = (),
+        roles: str | AbcCollection[str] = (),
         *,
-        scope_roles: str | Collection[str] = (),
-        workspace_roles: str | Collection[str] = (),
+        scope_roles: str | AbcCollection[str] = (),
+        workspace_roles: str | AbcCollection[str] = (),
     ) -> list[tuple[Model, str]]:
         """Build a TODO list for testing the predicate with the given roles."""
         assert isinstance(predicate, PermissionCheckPredicate)
@@ -602,10 +876,10 @@ class PlaygroundTestCase(BaseDjangoTestCase):
         self,
         predicate: Callable[[PermissionUser], bool],
         user: User,
-        roles: str | Collection[str] = (),
+        roles: str | AbcCollection[str] = (),
         *,
-        scope_roles: str | Collection[str] = (),
-        workspace_roles: str | Collection[str] = (),
+        scope_roles: str | AbcCollection[str] = (),
+        workspace_roles: str | AbcCollection[str] = (),
     ) -> None:
         """
         Check that assigning roles does not make the predicate come true.
@@ -671,9 +945,9 @@ class PlaygroundTestCase(BaseDjangoTestCase):
         self,
         predicate: Callable[[PermissionUser], bool],
         user: User,
-        roles: str | Collection[str] = (),
-        scope_roles: str | Collection[str] = (),
-        workspace_roles: str | Collection[str] = (),
+        roles: str | AbcCollection[str] = (),
+        scope_roles: str | AbcCollection[str] = (),
+        workspace_roles: str | AbcCollection[str] = (),
     ) -> None:
         """
         Check that assigning roles makes the predicate come true.
@@ -801,6 +1075,7 @@ class TestCase(
         *,
         on_creation: list[dict[str, Any]] | None = None,
         on_unblock: list[dict[str, Any]] | None = None,
+        on_assignment: list[dict[str, Any]] | None = None,
         on_success: list[dict[str, Any]] | None = None,
         on_failure: list[dict[str, Any]] | None = None,
     ) -> None:
@@ -818,6 +1093,10 @@ class TestCase(
         self.assertCountEqual(
             work_request.event_reactions_json.get("on_unblock", []),
             on_unblock or [],
+        )
+        self.assertCountEqual(
+            work_request.event_reactions_json.get("on_assignment", []),
+            on_assignment or [],
         )
         self.assertCountEqual(
             work_request.event_reactions_json.get("on_success", []),

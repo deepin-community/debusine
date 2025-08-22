@@ -1,23 +1,23 @@
-.. _collection-suite-lintian:
+.. collection:: debian:suite-lintian
 
 Category ``debian:suite-lintian``
 ---------------------------------
 
 This :ref:`derived collection <collection-derived>` represents a group of
-:ref:`debian:lintian artifacts <artifact-lintian>` for packages in a
-:ref:`debian:suite collection <collection-suite>`.
+:artifact:`debian:lintian` artifacts for packages in a
+:collection:`debian:suite` collection.
 
 Lintian analysis tasks are performed on combinations of source and binary
 packages together, since that provides the best test coverage.  The
-resulting ``debian:lintian`` artifacts are related to all the source and
-binary artifacts that were used by that task, and each of the items in this
-collection is recorded as being derived from all the base
-``debian:source-package`` or ``debian:binary-package`` artifacts that were
-used in building the associated ``debian:lintian`` artifact.  However, each
-item in this collection has exactly one architecture (including ``source``
-and ``all``) in its metadata; as a result, source packages and
-``Architecture: all`` binary packages may be base items for multiple derived
-items at once.
+resulting :artifact:`debian:lintian` artifacts are related to all the source
+and binary artifacts that were used by that task, and each of the items in
+this collection is recorded as being derived from all the base
+:artifact:`debian:source-package` or :artifact:`debian:binary-package`
+artifacts that were used in building the associated
+:artifact:`debian:lintian` artifact.  However, each item in this collection
+has exactly one architecture (including ``source`` and ``all``) in its
+metadata; as a result, source packages and ``Architecture: all`` binary
+packages may be base items for multiple derived items at once.
 
 Item names are set to ``{package}_{version}_{architecture}``, substituting
 values from the per-item data described below.
@@ -28,7 +28,7 @@ values from the per-item data described below.
 
 * Valid items:
 
-  * ``debian:lintian`` artifacts (see :ref:`artifact-lintian`)
+  * :artifact:`debian:lintian` artifacts
 
 * Per-item data:
 

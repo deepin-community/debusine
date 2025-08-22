@@ -14,20 +14,21 @@ from typing import Any, AnyStr, Literal
 from unittest.mock import Mock, call, patch
 
 from debusine.tasks.executors.base import (
+    ExecutorInterface,
     ExecutorStatistics,
     InstanceInterface,
     InstanceNotRunning,
     InstanceRunning,
     _backends,
     analyze_worker_all_executors,
+    executor_backends,
+    executor_class,
 )
 from debusine.test import TestCase
 
 
-class TestInstance(InstanceInterface):
+class SampleInstance(InstanceInterface):
     """Instance used for testing."""
-
-    __test__ = False
 
     started: bool = False
 
@@ -97,13 +98,20 @@ class ExecutorTests(TestCase):
         executors_metadata = analyze_worker_all_executors()
         self.assertTrue(executors_metadata["executor:unshare:available"])
 
+    def test_executor_class_and_backends(self) -> None:
+        backends = executor_backends()
+        self.assertGreater(len(backends), 0)
+        instance = executor_class(backends[0])
+        self.assertTrue(issubclass(instance, ExecutorInterface))
+
 
 class InstanceTests(TestCase):
     """Unit tests for the Instance basic interface."""
 
     def setUp(self) -> None:
         """Configure a test instance."""
-        self.instance = TestInstance()
+        super().setUp()
+        self.instance = SampleInstance()
 
     def patch_instance(self, method: str) -> Mock:
         """Mock method on self.instance."""
@@ -399,6 +407,8 @@ class InstanceTests(TestCase):
 
         def create_user(args: list[str]) -> str:
             """Fake for run_check_output that creates a user."""
+            if args[0] == "sh":
+                return ""
             if args[0] == "useradd":
                 self.instance._uid_map["testuser"] = 42
                 return ""
@@ -410,6 +420,17 @@ class InstanceTests(TestCase):
         run_mock.assert_has_calls(
             [
                 call(["getent", "passwd", "testuser"]),
+                call(
+                    [
+                        "sh",
+                        "-c",
+                        (
+                            "if [ ! -x /usr/sbin/useradd ]; then "
+                            "apt-get update && apt-get -y install passwd; "
+                            "fi"
+                        ),
+                    ]
+                ),
                 call(["useradd", "testuser"]),
             ]
         )

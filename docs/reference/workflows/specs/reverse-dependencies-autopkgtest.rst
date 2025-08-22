@@ -1,4 +1,4 @@
-.. _workflow-reverse-dependencies-autopkgtest:
+.. workflow:: reverse_dependencies_autopkgtest
 
 Workflow ``reverse_dependencies_autopkgtest``
 =============================================
@@ -8,23 +8,39 @@ package in a suite.
 
 * ``task_data``:
 
+  * ``prefix`` (string, optional): prefix this string to the item names
+    provided in the internal collection
+
   * ``source_artifact`` (:ref:`lookup-single`, required): the source package
     whose reverse-dependencies should be tested
   * ``binary_artifacts`` (:ref:`lookup-multiple`, required): a list of
-    ``debian:binary-packages`` or ``debian:upload`` artifacts representing
-    the binary packages whose reverse-dependencies should be tested
+    :artifact:`debian:binary-package`, :artifact:`debian:binary-packages`,
+    or :artifact:`debian:upload` artifacts representing the binary packages
+    whose reverse-dependencies should be tested
   * ``context_artifacts`` (:ref:`lookup-multiple`, optional): a list of
-    ``debian:binary-packages`` or ``debian:upload`` artifacts that should
-    additionally be used to satisfy dependencies of tests
-  * ``suite_collection`` (:ref:`lookup-single`, required): the
-    ``debian:suite`` collection to search for reverse-dependencies
+    :artifact:`debian:binary-package`, :artifact:`debian:binary-packages`,
+    or :artifact:`debian:upload` artifacts that should additionally be used
+    to satisfy dependencies of tests
+
+  * ``qa_suite`` (:ref:`lookup-single`, required): the
+    :collection:`debian:suite` collection to search for
+    reverse-dependencies, and (if ``update_qa_results`` is True) the
+    :collection:`debian:suite` collection that reference tests are being run
+    against to detect regressions
+  * ``reference_qa_results`` (:ref:`lookup-single`, optional unless
+    ``update_qa_results`` is True): the :collection:`debian:qa-results`
+    collection that contains the reference results of QA tasks to use to
+    detect regressions
+  * ``update_qa_results`` (boolean, defaults to False): when set to True,
+    the workflow runs QA tasks and updates the collection passed in
+    ``reference_qa_results`` with the results.
 
   * ``vendor`` (string, required): the distribution vendor on which to run
     tests
   * ``codename`` (string, required): the distribution codename on which to
     run tests
-  * ``backend`` (string, optional): see :ref:`task-autopkgtest`
-  * ``extra_repositories`` (optional): see :ref:`task-autopkgtest`
+  * ``backend`` (string, optional): see :task:`Autopkgtest`
+  * ``extra_repositories`` (optional): see :task:`Autopkgtest`
   * ``architectures`` (list of strings, optional): if set, only consider
     reverse-dependencies on any of these architecture names
   * ``arch_all_host_architecture`` (string, defaults to ``amd64``): concrete
@@ -34,7 +50,7 @@ package in a suite.
   * ``packages_denylist`` (list of strings, optional): skip tests of
     packages from this list
 
-  * ``debug_level``: see :ref:`task-autopkgtest`
+  * ``debug_level``: see :task:`Autopkgtest`
 
 The workflow computes dynamic metadata as:
 
@@ -56,22 +72,24 @@ where all the following conditions hold:
 * its ``Testsuite`` field has an item either equal to ``autopkgtest`` or
   starting with ``autopkgtest-pkg``
 
-It then creates an :ref:`autopkgtest sub-workflow <workflow-autopkgtest>`
-for each one, with task data as follows:
+It then creates an :workflow:`autopkgtest` sub-workflow for each one, with
+task data as follows:
 
-* ``prefix``: ``{source_artifact.name}_{source_artifact.version}|``
+* ``prefix``: ``{prefix}{source_artifact.name}_{source_artifact.version}|``
+  (i.e. append another segment to this workflow's own ``prefix``)
 * ``source_artifact``: the source package to test
 * ``binary_artifacts``: the binary packages built from that source package
 * ``context_artifacts``: ``{binary_artifacts}`` (the binary packages whose
   reverse-dependencies are being tested) plus ``{context_artifacts}`` (any
   other binary packages used to satisfy dependencies of tests)
-* ``vendor``, ``codename``, ``backend``, ``architectures``,
+* ``qa_suite``, ``reference_qa_results``, ``update_qa_results``, ``vendor``,
+  ``codename``, ``backend``, ``architectures``,
   ``arch_all_host_architecture``, ``debug_level``: copied from workflow task
   data parameters of the same names
 
 Any of the lookups in ``binary_artifacts`` or ``context_artifacts`` may
-result in :ref:`promises <bare-data-promise>`, and in that case the workflow
-adds corresponding dependencies.  Binary promises must include a
+result in :bare-data:`promises <debusine:promise>`, and in that case the
+workflow adds corresponding dependencies.  Binary promises must include a
 ``binary_names`` field in their data.
 
 As usual, the workflow as a whole will succeed only if all the sub-workflows

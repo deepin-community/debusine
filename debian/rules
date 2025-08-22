@@ -67,7 +67,13 @@ override_dh_python3:
 	rm -rf debian/python3-debusine-server/usr/lib/python3*/dist-packages/debusine-*.dist-info
 	rm -rf debian/python3-debusine-signing/usr/lib/python3*/dist-packages/debusine-*.dist-info
 
-execute_after_dh_installsystemd:
+override_dh_installsystemd:
+	# Run this before the main service so that migrations are run first
+	# on upgrade.
+	dh_installsystemd --package=debusine-server \
+		--name=debusine-server-migrate
+	dh_installsystemd --package=debusine-server \
+		debusine-server.service
 	dh_installsystemd --package=debusine-server \
 		--name=debusine-server-celery
 	dh_installsystemd --package=debusine-server \
@@ -88,7 +94,13 @@ execute_after_dh_installsystemd:
 	dh_installsystemd --package=debusine-server --no-start \
 		--name=debusine-server-vacuum-storage \
 		debusine-server-vacuum-storage.service
-	dh_installsystemd --package=debusine-server \
-		--name=debusine-server-migrate
+
+	# Run this before the main service so that migrations are run first
+	# on upgrade.
 	dh_installsystemd --package=debusine-signing \
 		--name=debusine-signing-migrate
+	dh_installsystemd --package=debusine-signing \
+		debusine-signing.service
+
+	dh_installsystemd \
+		--no-package=debusine-server --no-package=debusine-signing

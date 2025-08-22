@@ -1,4 +1,4 @@
-.. _task-autopkgtest:
+.. task:: Autopkgtest
 
 Autopkgtest task
 ----------------
@@ -8,20 +8,21 @@ The ``task_data`` associated to this task can contain the following keys:
 * ``input`` (required): a dictionary describing the input data:
 
   * ``source_artifact`` (:ref:`lookup-single`, required): the
-    ``debian:source-package`` or ``debian:upload`` artifact representing the
-    source package to be tested with autopkgtest
+    :artifact:`debian:source-package` or :artifact:`debian:upload` artifact
+    representing the source package to be tested with autopkgtest
   * ``binary_artifacts`` (:ref:`lookup-multiple`, required): a list of
-    ``debian:binary-packages`` or ``debian:upload`` artifacts representing
-    the binary packages to be tested with autopkgtest (they are expected to
-    be part of the same source package as the one identified with
-    ``source_artifact``)
+    :artifact:`debian:binary-package`, :artifact:`debian:binary-packages`,
+    or :artifact:`debian:upload` artifacts representing the binary packages
+    to be tested with autopkgtest (they are expected to be part of the same
+    source package as the one identified with ``source_artifact``)
   * ``context_artifacts`` (:ref:`lookup-multiple`, optional): a list of
-    ``debian:binary-packages`` or ``debian:upload`` artifacts representing a
-    special context for the tests. This is used to trigger autopkgtests of
-    reverse dependencies, where ``context_artifacts`` is set to the
-    artifacts of the updated package whose reverse dependencies are tested,
-    and source/binary artifacts are one of the reverse dependencies whose
-    autopkgtests will be executed.
+    :artifact:`debian:binary-package`, :artifact:`debian:binary-packages`,
+    or :artifact:`debian:upload` artifacts representing a special context
+    for the tests. This is used to trigger autopkgtests of reverse
+    dependencies, where ``context_artifacts`` is set to the artifacts of the
+    updated package whose reverse dependencies are tested, and source/binary
+    artifacts are one of the reverse dependencies whose autopkgtests will be
+    executed.
 
 * ``host_architecture`` (required): the Debian architecture that will be
   used in the chroot or VM where tests are going to be run.  The
@@ -30,9 +31,10 @@ The ``task_data`` associated to this task can contain the following keys:
   testing, eg. testing i386 packages in an amd64 system).
 
 * ``environment`` (:ref:`lookup-single` with default category
-  ``debian:environments``, required): ``debian:system-tarball`` or
-  ``debian:system-image`` artifact (as appropriate for the selected backend)
-  that will be used to run the tests.
+  :collection:`debian:environments`, required):
+  :artifact:`debian:system-tarball` or :artifact:`debian:system-image`
+  artifact (as appropriate for the selected backend) that will be used to
+  run the tests.
 
 * ``backend`` (optional): the virtualization backend to use, defaults to
   ``auto`` where the task is free to use the most suitable backend.
@@ -51,7 +53,7 @@ The ``task_data`` associated to this task can contain the following keys:
 
 * ``extra_repositories`` (optional): a list of extra repositories to enable.
   Each repository is described by the same dictionary as the
-  ``extra_repositories`` option in the :ref:`package-build-task`.
+  ``extra_repositories`` option in the :task:`PackageBuild` task.
 
 * ``use_packages_from_base_repository`` (optional, defaults to False): if
   True, then we pass ``--apt-default-release=$DISTRIBUTION`` with the name
@@ -105,5 +107,5 @@ The task computes dynamic metadata as:
 autopkgtest is always run with the options ``--apt-upgrade
 --output-dir=ARTIFACT-DIR --summary=ARTIFACT-DIR/summary --no-built-binaries``.
 
-An artifact of category ``debian:autopkgtest`` is generated to store all output
-files, and is described :ref:`in the artifacts reference <artifact-autopkgtest>`.
+A :artifact:`debian:autopkgtest` artifact is generated to store all output
+files.

@@ -14,7 +14,6 @@ from django.template.loader import get_template
 
 from debusine.artifacts import AutopkgtestArtifact
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
-from debusine.db.context import context
 from debusine.db.models import Artifact, WorkRequest, Workspace
 from debusine.tasks.models import (
     AutopkgtestData,
@@ -94,52 +93,59 @@ class AutopkgtestViewTests(TestCase):
             "results": {
                 "command1": {"status": "PASS"},
                 "command2": {"status": "FAIL", "details": "partial"},
-            }
+            },
+            "cmdline": "/usr/bin/hello",
+            "source_package": {
+                "name": "hello",
+                "version": "1.0",
+                "url": "https://example.org/hello.deb",
+            },
+            "architecture": "amd64",
+            "distribution": "debian:sid",
         }
         artifact.save()
         return artifact
 
     def test_get_context_data_simple(self) -> None:
         """get_context_data returns the expected data for a simple case."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                paths=["system.tar.xz"],
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data={
-                    "vendor": "debian",
-                    "codename": "bookworm",
-                    "architecture": "amd64",
-                    "variant": "",
-                },
-                create_files=True,
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-            )
-            binary_artifact_1, _ = self.playground.create_artifact(
-                paths=["hello-1.deb"], create_files=True
-            )
-            binary_artifact_2, _ = self.playground.create_artifact(
-                paths=["hello-2.deb"], create_files=True
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact,
-                source_artifact,
-                [binary_artifact_1, binary_artifact_2],
-            )
-            work_request.dynamic_task_data = AutopkgtestDynamicData(
-                environment_id=environment_artifact.id,
-                input_source_artifact_id=source_artifact.id,
-                input_binary_artifacts_ids=[
-                    binary_artifact_1.id,
-                    binary_artifact_2.id,
-                ],
-            ).dict()
-            work_request.save()
-            result_artifact = self.create_autopkgtest_artifact(work_request)
+        environment_artifact, _ = self.playground.create_artifact(
+            paths=["system.tar.xz"],
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data={
+                "vendor": "debian",
+                "codename": "bookworm",
+                "architecture": "amd64",
+                "variant": "",
+            },
+            create_files=True,
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={"name": "hello", "version": "1.0", "type": "dpkg"},
+            create_files=True,
+        )
+        binary_artifact_1, _ = self.playground.create_artifact(
+            paths=["hello-1.deb"], create_files=True
+        )
+        binary_artifact_2, _ = self.playground.create_artifact(
+            paths=["hello-2.deb"], create_files=True
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact,
+            source_artifact,
+            [binary_artifact_1, binary_artifact_2],
+        )
+        work_request.dynamic_task_data = AutopkgtestDynamicData(
+            environment_id=environment_artifact.id,
+            input_source_artifact_id=source_artifact.id,
+            input_binary_artifacts_ids=[
+                binary_artifact_1.id,
+                binary_artifact_2.id,
+            ],
+        ).dict()
+        work_request.save()
+        result_artifact = self.create_autopkgtest_artifact(work_request)
         autopkgtest_view = AutopkgtestView(work_request)
         context_data = autopkgtest_view.get_context_data()
 
@@ -192,51 +198,55 @@ class AutopkgtestViewTests(TestCase):
                     ("command1", "PASS", None),
                     ("command2", "FAIL", "partial"),
                 ],
+                "specialized_tab": {
+                    "label": "Autopkgtest",
+                    "slug": "autopkgtest",
+                    "template": "web/_autopkgtest-work_request-detail.html",
+                },
             },
         )
 
     def test_get_context_data_with_context_artifacts(self) -> None:
         """Any context artifacts show up in the context data."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                paths=["system.tar.xz"],
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data={
-                    "vendor": "debian",
-                    "codename": "bookworm",
-                    "architecture": "amd64",
-                    "variant": "",
-                },
-                create_files=True,
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-            )
-            context_artifact_1, _ = self.playground.create_artifact(
-                paths=["hello-rdep-1.deb"], create_files=True
-            )
-            context_artifact_2, _ = self.playground.create_artifact(
-                paths=["hello-rdep-2.deb"], create_files=True
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact,
-                source_artifact,
-                [],
-                context_artifacts=[context_artifact_1, context_artifact_2],
-            )
-            work_request.dynamic_task_data = AutopkgtestDynamicData(
-                environment_id=environment_artifact.id,
-                input_source_artifact_id=source_artifact.id,
-                input_binary_artifacts_ids=[],
-                input_context_artifacts_ids=[
-                    context_artifact_1.id,
-                    context_artifact_2.id,
-                ],
-            ).dict()
-            work_request.save()
+        environment_artifact, _ = self.playground.create_artifact(
+            paths=["system.tar.xz"],
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data={
+                "vendor": "debian",
+                "codename": "bookworm",
+                "architecture": "amd64",
+                "variant": "",
+            },
+            create_files=True,
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={"name": "hello", "version": "1.0", "type": "dpkg"},
+            create_files=True,
+        )
+        context_artifact_1, _ = self.playground.create_artifact(
+            paths=["hello-rdep-1.deb"], create_files=True
+        )
+        context_artifact_2, _ = self.playground.create_artifact(
+            paths=["hello-rdep-2.deb"], create_files=True
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact,
+            source_artifact,
+            [],
+            context_artifacts=[context_artifact_1, context_artifact_2],
+        )
+        work_request.dynamic_task_data = AutopkgtestDynamicData(
+            environment_id=environment_artifact.id,
+            input_source_artifact_id=source_artifact.id,
+            input_binary_artifacts_ids=[],
+            input_context_artifacts_ids=[
+                context_artifact_1.id,
+                context_artifact_2.id,
+            ],
+        ).dict()
+        work_request.save()
         autopkgtest_view = AutopkgtestView(work_request)
         context_data = autopkgtest_view.get_context_data()
 
@@ -259,46 +269,46 @@ class AutopkgtestViewTests(TestCase):
 
     def test_context_data_no_artifacts(self) -> None:
         """If there are no output artifacts, context data omits that info."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                paths=["system.tar.xz"],
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data={
-                    "vendor": "debian",
-                    "codename": "bookworm",
-                    "architecture": "amd64",
-                    "variant": "",
-                },
-                create_files=True,
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact, source_artifact, []
-            )
+        environment_artifact, _ = self.playground.create_artifact(
+            paths=["system.tar.xz"],
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data={
+                "vendor": "debian",
+                "codename": "bookworm",
+                "architecture": "amd64",
+                "variant": "",
+            },
+            create_files=True,
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={"name": "hello", "version": "1.0", "type": "dpkg"},
+            create_files=True,
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact, source_artifact, []
+        )
         autopkgtest_view = AutopkgtestView(work_request)
         context_data = autopkgtest_view.get_context_data()
-        self.assertCountEqual(context_data.keys(), {"request_data", "result"})
+        self.assertCountEqual(
+            context_data.keys(), {"request_data", "result", "specialized_tab"}
+        )
 
     def test_context_data_no_dynamic_task_data(self) -> None:
         """If there is no dynamic data, context data omits artifact info."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact, source_artifact, []
-            )
+        environment_artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={"name": "hello", "version": "1.0", "type": "dpkg"},
+            create_files=True,
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact, source_artifact, []
+        )
         autopkgtest_view = AutopkgtestView(work_request)
         context_data = autopkgtest_view.get_context_data()
         self.assertIsNone(context_data["request_data"]["codename"])
@@ -319,26 +329,25 @@ class AutopkgtestViewTests(TestCase):
 
     def test_context_data_missing_environment_artifact(self) -> None:
         """If the environment artifact is missing, context data omits it."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact, source_artifact, []
-            )
-            work_request.dynamic_task_data = AutopkgtestDynamicData(
-                environment_id=environment_artifact.id,
-                input_source_artifact_id=source_artifact.id,
-                input_binary_artifacts_ids=[],
-            ).dict()
-            work_request.save()
-            environment_artifact.delete()
+        environment_artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={"name": "hello", "version": "1.0", "type": "dpkg"},
+            create_files=True,
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact, source_artifact, []
+        )
+        work_request.dynamic_task_data = AutopkgtestDynamicData(
+            environment_id=environment_artifact.id,
+            input_source_artifact_id=source_artifact.id,
+            input_binary_artifacts_ids=[],
+        ).dict()
+        work_request.save()
+        environment_artifact.delete()
         autopkgtest_view = AutopkgtestView(work_request)
         context_data = autopkgtest_view.get_context_data()
         self.assertIsNone(context_data["request_data"]["codename"])
@@ -349,27 +358,26 @@ class AutopkgtestViewTests(TestCase):
 
     def test_context_data_environment_artifact_wrong_category(self) -> None:
         """We cope with the environment artifact having an odd category."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                paths=["system.tar.xz"],
-                category=ArtifactCategory.TEST,
-                create_files=True,
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact, source_artifact, []
-            )
-            work_request.dynamic_task_data = AutopkgtestDynamicData(
-                environment_id=environment_artifact.id,
-                input_source_artifact_id=source_artifact.id,
-                input_binary_artifacts_ids=[],
-            ).dict()
-            work_request.save()
+        environment_artifact, _ = self.playground.create_artifact(
+            paths=["system.tar.xz"],
+            category=ArtifactCategory.TEST,
+            create_files=True,
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={"name": "hello", "version": "1.0", "type": "dpkg"},
+            create_files=True,
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact, source_artifact, []
+        )
+        work_request.dynamic_task_data = AutopkgtestDynamicData(
+            environment_id=environment_artifact.id,
+            input_source_artifact_id=source_artifact.id,
+            input_binary_artifacts_ids=[],
+        ).dict()
+        work_request.save()
         autopkgtest_view = AutopkgtestView(work_request)
         context_data = autopkgtest_view.get_context_data()
         self.assertIsNone(context_data["request_data"]["codename"])
@@ -380,28 +388,27 @@ class AutopkgtestViewTests(TestCase):
 
     def test_context_data_missing_source_artifact(self) -> None:
         """If the source artifact is missing, context data omits its files."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact, source_artifact, []
-            )
-            work_request.dynamic_task_data = AutopkgtestDynamicData(
-                environment_id=environment_artifact.id,
-                input_source_artifact_id=source_artifact.id,
-                input_binary_artifacts_ids=[],
-            ).dict()
-            work_request.save()
-            source_artifact_id = source_artifact.id
-            source_artifact.files.clear()
-            source_artifact.delete()
+        environment_artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={"name": "hello", "version": "1.0", "type": "dpkg"},
+            create_files=True,
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact, source_artifact, []
+        )
+        work_request.dynamic_task_data = AutopkgtestDynamicData(
+            environment_id=environment_artifact.id,
+            input_source_artifact_id=source_artifact.id,
+            input_binary_artifacts_ids=[],
+        ).dict()
+        work_request.save()
+        source_artifact_id = source_artifact.id
+        source_artifact.files.clear()
+        source_artifact.delete()
         autopkgtest_view = AutopkgtestView(work_request)
         context_data = autopkgtest_view.get_context_data()
         self.assertEqual(
@@ -416,32 +423,31 @@ class AutopkgtestViewTests(TestCase):
 
     def test_context_data_source_artifact_wrong_category(self) -> None:
         """We cope with the source artifact having an odd category."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                paths=["system.tar.xz"],
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data={
-                    "vendor": "debian",
-                    "codename": "bookworm",
-                    "architecture": "amd64",
-                    "variant": "",
-                },
-                create_files=True,
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.TEST,
-                create_files=True,
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact, source_artifact, []
-            )
-            work_request.dynamic_task_data = AutopkgtestDynamicData(
-                environment_id=environment_artifact.id,
-                input_source_artifact_id=source_artifact.id,
-                input_binary_artifacts_ids=[],
-            ).dict()
-            work_request.save()
+        environment_artifact, _ = self.playground.create_artifact(
+            paths=["system.tar.xz"],
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data={
+                "vendor": "debian",
+                "codename": "bookworm",
+                "architecture": "amd64",
+                "variant": "",
+            },
+            create_files=True,
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.TEST,
+            create_files=True,
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact, source_artifact, []
+        )
+        work_request.dynamic_task_data = AutopkgtestDynamicData(
+            environment_id=environment_artifact.id,
+            input_source_artifact_id=source_artifact.id,
+            input_binary_artifacts_ids=[],
+        ).dict()
+        work_request.save()
         autopkgtest_view = AutopkgtestView(work_request)
         context_data = autopkgtest_view.get_context_data()
         self.assertIsNone(context_data["request_data"]["source_name"])
@@ -453,37 +459,36 @@ class AutopkgtestViewTests(TestCase):
 
     def test_context_data_missing_binary_artifact(self) -> None:
         """If a binary artifact is missing, context data omits its files."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                category=ArtifactCategory.SYSTEM_TARBALL
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-            )
-            binary_artifact_1, _ = self.playground.create_artifact(
-                paths=["hello-1.deb"], create_files=True
-            )
-            binary_artifact_2, _ = self.playground.create_artifact(
-                paths=["hello-2.deb"], create_files=True
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact, source_artifact, []
-            )
-            work_request.dynamic_task_data = AutopkgtestDynamicData(
-                environment_id=environment_artifact.id,
-                input_source_artifact_id=source_artifact.id,
-                input_binary_artifacts_ids=[
-                    binary_artifact_1.id,
-                    binary_artifact_2.id,
-                ],
-            ).dict()
-            work_request.save()
-            binary_artifact_1_id = binary_artifact_1.id
-            binary_artifact_1.files.clear()
-            binary_artifact_1.delete()
+        environment_artifact, _ = self.playground.create_artifact(
+            category=ArtifactCategory.SYSTEM_TARBALL
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={"name": "hello", "version": "1.0", "type": "dpkg"},
+            create_files=True,
+        )
+        binary_artifact_1, _ = self.playground.create_artifact(
+            paths=["hello-1.deb"], create_files=True
+        )
+        binary_artifact_2, _ = self.playground.create_artifact(
+            paths=["hello-2.deb"], create_files=True
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact, source_artifact, []
+        )
+        work_request.dynamic_task_data = AutopkgtestDynamicData(
+            environment_id=environment_artifact.id,
+            input_source_artifact_id=source_artifact.id,
+            input_binary_artifacts_ids=[
+                binary_artifact_1.id,
+                binary_artifact_2.id,
+            ],
+        ).dict()
+        work_request.save()
+        binary_artifact_1_id = binary_artifact_1.id
+        binary_artifact_1.files.clear()
+        binary_artifact_1.delete()
         autopkgtest_view = AutopkgtestView(work_request)
         context_data = autopkgtest_view.get_context_data()
         self.assertEqual(
@@ -582,77 +587,49 @@ class AutopkgtestViewTests(TestCase):
 
     def test_template_output(self) -> None:
         """Generic output of the template."""
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace(
-                name="Public", public=True
+        workspace = self.playground.create_workspace(name="Public", public=True)
+        environment = self.playground.create_debian_environment(
+            workspace=workspace
+        )
+        assert environment.artifact
+        source_artifact = self.playground.create_source_artifact(
+            workspace=workspace
+        )
+        binary_artifact_1 = (
+            self.playground.create_minimal_binary_package_artifact(
+                package="hello-1"
             )
-            environment_artifact, _ = self.playground.create_artifact(
-                paths=["system.tar.xz"],
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data={
-                    "vendor": "debian",
-                    "codename": "bookworm",
-                    "architecture": "amd64",
-                    "variant": "",
-                },
-                create_files=True,
-                workspace=workspace,
+        )
+        binary_artifact_2 = (
+            self.playground.create_minimal_binary_package_artifact(
+                package="hello-2"
             )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-                workspace=workspace,
-            )
-            binary_artifact_1, _ = self.playground.create_artifact(
-                paths=["hello-1.deb"],
-                create_files=True,
-                workspace=workspace,
-            )
-            binary_artifact_2, _ = self.playground.create_artifact(
-                paths=["hello-2.deb"],
-                create_files=True,
-                workspace=workspace,
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact,
-                source_artifact,
-                [binary_artifact_1, binary_artifact_2],
-                workspace=workspace,
-            )
-            work_request.dynamic_task_data = AutopkgtestDynamicData(
-                environment_id=environment_artifact.id,
-                input_source_artifact_id=source_artifact.id,
-                input_binary_artifacts_ids=[
-                    binary_artifact_1.id,
-                    binary_artifact_2.id,
-                ],
-            ).dict()
-            work_request.save()
-            self.create_autopkgtest_artifact(work_request)
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment.artifact,
+            source_artifact,
+            [binary_artifact_1, binary_artifact_2],
+            workspace=workspace,
+        )
+        work_request.dynamic_task_data = AutopkgtestDynamicData(
+            environment_id=environment.artifact.id,
+            input_source_artifact_id=source_artifact.id,
+            input_binary_artifacts_ids=[
+                binary_artifact_1.id,
+                binary_artifact_2.id,
+            ],
+        ).dict()
+        work_request.save()
+        self.create_autopkgtest_artifact(work_request)
 
         response = self.client.get(work_request.get_absolute_url())
 
         self.assertContains(
             response,
-            "<title>Debusine - Autopkgtest run for hello_1.0_amd64 in "
-            "debian:bookworm</title>",
+            f"<title>Debusine - {work_request.id}: autopkgtest</title>",
             html=True,
         )
-        self.assertContains(
-            response,
-            "<h1>Autopkgtest run for hello_1.0_amd64 in debian:bookworm</h1>",
-            html=True,
-        )
-        work_request_generic_path = (
-            work_request.get_absolute_url() + "?view=generic"
-        )
-        self.assertContains(
-            response,
-            f'<a href="{work_request_generic_path}">Generic view</a>',
-            html=True,
-        )
+
         result_output = get_template("web/_work_request-result.html").render(
             {"result": work_request.result}
         )
@@ -702,27 +679,26 @@ class AutopkgtestViewTests(TestCase):
 
     def test_show_configured_task_data(self) -> None:
         """The view shows configured task data if present."""
-        with context.disable_permission_checks():
-            environment_artifact, _ = self.playground.create_artifact(
-                paths=["system.tar.xz"],
-                category=ArtifactCategory.SYSTEM_TARBALL,
-                data={
-                    "vendor": "debian",
-                    "codename": "bookworm",
-                    "architecture": "amd64",
-                    "variant": "",
-                },
-                create_files=True,
-            )
-            source_artifact, _ = self.playground.create_artifact(
-                paths=["hello.dsc"],
-                category=ArtifactCategory.SOURCE_PACKAGE,
-                data={"name": "hello", "version": "1.0", "type": "dpkg"},
-                create_files=True,
-            )
-            work_request: WorkRequest = self.create_work_request_for_artifacts(
-                environment_artifact, source_artifact, []
-            )
+        environment_artifact, _ = self.playground.create_artifact(
+            paths=["system.tar.xz"],
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data={
+                "vendor": "debian",
+                "codename": "bookworm",
+                "architecture": "amd64",
+                "variant": "",
+            },
+            create_files=True,
+        )
+        source_artifact, _ = self.playground.create_artifact(
+            paths=["hello.dsc"],
+            category=ArtifactCategory.SOURCE_PACKAGE,
+            data={"name": "hello", "version": "1.0", "type": "dpkg"},
+            create_files=True,
+        )
+        work_request: WorkRequest = self.create_work_request_for_artifacts(
+            environment_artifact, source_artifact, []
+        )
 
         # Try unconfigured
         autopkgtest_view = AutopkgtestView(work_request)

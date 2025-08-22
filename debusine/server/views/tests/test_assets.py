@@ -15,6 +15,7 @@ from django.urls import reverse
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
 
+from debusine.artifacts.models import ArtifactCategory, TaskTypes
 from debusine.assets import AssetCategory, KeyPurpose, SigningKeyData
 from debusine.db.models import Artifact, Asset, Scope, WorkRequest, Workspace
 from debusine.db.models.assets import AssetUsageRoles
@@ -28,7 +29,7 @@ from debusine.signing.tasks.models import (
     SignData,
     SignDynamicData,
 )
-from debusine.tasks.models import LookupMultiple, TaskTypes
+from debusine.tasks.models import LookupMultiple
 from debusine.test.django import TestCase, TestResponseType
 
 
@@ -128,8 +129,7 @@ class AssetViewTests(TestCase):
             ),
             scope=workspace.scope,
         )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        body = response.json()
+        body = self.assertAPIResponseOk(response, status.HTTP_201_CREATED)
         asset = Asset.objects.get(id=body["id"])
         self.assertEqual(asset.category, AssetCategory.SIGNING_KEY)
         data = asset.data_model
@@ -160,17 +160,22 @@ class AssetViewTests(TestCase):
             ),
             scope=workspace.scope,
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        body = response.json()
+        body = self.assertAPIResponseOk(response)
         self.assertEqual(body["id"], asset.id)
 
     def assert_asset_equals(
         self, asset: Asset, asset_response: dict[str, Any]
     ) -> None:
         """Assert that asset == asset_response."""
+        # Not true in general, but true for all the assets that the view can
+        # currently return (since it uses Asset.objects.in_current_scope).
+        assert asset.workspace is not None
+
         self.assertEqual(asset_response["id"], asset.id)
         self.assertEqual(asset_response["data"], asset.data)
         self.assertEqual(asset_response["category"], asset.category)
+        self.assertEqual(asset_response["scope"], asset.workspace.scope.name)
+        self.assertEqual(asset_response["workspace"], asset.workspace.name)
         self.assertEqual(
             parse_datetime(asset_response["created_at"]), asset.created_at
         )
@@ -187,8 +192,7 @@ class AssetViewTests(TestCase):
             query_params={"asset": asset.id},
             scope=workspace.scope,
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        body = response.json()
+        body = self.assertAPIResponseOk(response)
         self.assert_asset_equals(asset, body[0])
 
     def test_list_asset_by_work_request(self) -> None:
@@ -203,8 +207,7 @@ class AssetViewTests(TestCase):
             query_params={"work_request": work_request.id},
             scope=workspace.scope,
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        body = response.json()
+        body = self.assertAPIResponseOk(response)
         self.assert_asset_equals(asset, body[0])
 
     def test_list_assets_by_workspace(self) -> None:
@@ -221,8 +224,7 @@ class AssetViewTests(TestCase):
             query_params={"workspace": workspace.name},
             scope=workspace.scope,
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        body = response.json()
+        body = self.assertAPIResponseOk(response)
         self.assertEqual(len(body), 2)
         self.assert_asset_equals(asset1, body[0])
         self.assert_asset_equals(asset2, body[1])
@@ -324,8 +326,7 @@ class AssetPermissionCheckViewTests(TestCase):
                 "workspace": workspace.name,
             },
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        body = response.json()
+        body = self.assertAPIResponseOk(response)
         self.assertFalse(body["has_permission"])
         self.assertEqual(body["username"], work_request.created_by.username)
         self.assertEqual(body["user_id"], work_request.created_by.id)
@@ -365,8 +366,7 @@ class AssetPermissionCheckViewTests(TestCase):
                 "workspace": workspace.name,
             },
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        body = response.json()
+        body = self.assertAPIResponseOk(response)
         self.assertTrue(body["has_permission"])
         self.assertEqual(body["username"], user.username)
         self.assertEqual(body["user_id"], work_request.created_by.id)
@@ -421,8 +421,7 @@ class AssetPermissionCheckViewTests(TestCase):
                 "workspace": workspace.name,
             },
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        body = response.json()
+        body = self.assertAPIResponseOk(response)
         self.assertFalse(body["has_permission"])
         self.assertEqual(body["username"], work_request.created_by.username)
         self.assertEqual(body["user_id"], work_request.created_by.id)
@@ -645,6 +644,15 @@ class AssetPermissionCheckViewTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         body = response.json()
         self.assertEqual(body["title"], "Unknown permission 'unknown'")
+
+    def test_describe_artifact_repository_index(self) -> None:
+        artifact, _ = self.playground.create_artifact(
+            paths=["Release"],
+            category=ArtifactCategory.REPOSITORY_INDEX,
+            create_files=True,
+        )
+        result = AssetPermissionCheckView.describe_artifact(artifact)
+        self.assertEqual(result, {"path": "Release"})
 
     def test_describe_artifact_signing_input_standalone(self) -> None:
         artifact = self.playground.create_signing_input_artifact()

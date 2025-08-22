@@ -16,11 +16,14 @@ from debusine.assets import AssetCategory, SigningKeyData
 from debusine.signing.db.models import Key
 from debusine.signing.tasks import BaseSigningTask
 from debusine.signing.tasks.models import GenerateKeyData
+from debusine.tasks import DefaultDynamicData
 from debusine.tasks.models import BaseDynamicTaskData
-from debusine.tasks.server import TaskDatabaseInterface
 
 
-class GenerateKey(BaseSigningTask[GenerateKeyData, BaseDynamicTaskData]):
+class GenerateKey(
+    BaseSigningTask[GenerateKeyData, BaseDynamicTaskData],
+    DefaultDynamicData[GenerateKeyData],
+):
     """Task that generates a new key."""
 
     _key: Key | None = None
@@ -66,10 +69,3 @@ class GenerateKey(BaseSigningTask[GenerateKeyData, BaseDynamicTaskData]):
     def get_label(self) -> str:
         """Return the task label."""
         return f"generate {self.data.purpose} key"
-
-    def build_dynamic_data(
-        self,
-        task_database: TaskDatabaseInterface,  # noqa: U100
-    ) -> BaseDynamicTaskData:
-        """Resolve artifact lookups for this task."""
-        return BaseDynamicTaskData()

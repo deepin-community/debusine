@@ -24,11 +24,9 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import urlencode
 from rest_framework import status
-from rest_framework.response import Response
 from rest_framework.test import APIClient
 
 from debusine.artifacts.models import ArtifactCategory
-from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
     ArtifactRelation,
@@ -45,11 +43,7 @@ from debusine.db.tests.utils import _calculate_hash_from_data
 from debusine.server.scopes import urlconf_scope
 from debusine.server.serializers import ArtifactSerializerResponse
 from debusine.server.views.artifacts import UploadFileView
-from debusine.test.django import (
-    JSONResponseProtocol,
-    TestCase,
-    TestResponseType,
-)
+from debusine.test.django import TestCase, TestResponseType
 from debusine.test.test_utils import data_generator
 
 
@@ -63,7 +57,6 @@ class ArtifactViewTests(TestCase):
     workspace: ClassVar[Workspace]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()
@@ -213,9 +206,9 @@ class ArtifactViewTests(TestCase):
             hostname=hostname,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-
-        response_json = response.json()
+        response_json = self.assertAPIResponseOk(
+            response, status_code=status.HTTP_201_CREATED
+        )
         artifact = Artifact.objects.get(id=response_json["id"])
 
         # Assert created artifact is as expected
@@ -396,10 +389,11 @@ class ArtifactViewTests(TestCase):
             hostname="example.com",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        data = self.assertAPIResponseOk(
+            response, status_code=status.HTTP_201_CREATED
+        )
 
-        assert isinstance(response, Response)
-        artifact = Artifact.objects.get(id=response.data["id"])
+        artifact = Artifact.objects.get(id=data["id"])
         self.assertIsNone(artifact.created_by_work_request)
         self.assertEqual(artifact.created_by, token.user)
 
@@ -477,15 +471,22 @@ class ArtifactViewTests(TestCase):
             "data": {},
         }
 
+        self.playground.create_group_role(
+            self.scenario.workspace,
+            Workspace.Roles.CONTRIBUTOR,
+            users=[self.scenario.user],
+        )
+
         response = self.post_artifact_create(
             token_key=self.scenario.user_token.key,
             data=artifact_serialized,
             hostname="example.com",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        assert isinstance(response, Response)
-        artifact = Artifact.objects.get(id=response.data["id"])
+        data = self.assertAPIResponseOk(
+            response, status_code=status.HTTP_201_CREATED
+        )
+        artifact = Artifact.objects.get(id=data["id"])
         self.assertEqual(
             artifact.workspace.name, settings.DEBUSINE_DEFAULT_WORKSPACE
         )
@@ -532,13 +533,10 @@ class ArtifactViewTests(TestCase):
     @override_settings(ALLOWED_HOSTS=["*"])
     def test_create_artifact_do_not_reuse_invisible_files(self) -> None:
         """Files not in this workspace must be reuploaded."""
-        with context.disable_permission_checks():
-            other_workspace = self.playground.create_workspace(name="other")
-            other_artifact, other_files_contents = (
-                self.playground.create_artifact(
-                    paths=["foo"], workspace=other_workspace, create_files=True
-                )
-            )
+        other_workspace = self.playground.create_workspace(name="other")
+        other_artifact, other_files_contents = self.playground.create_artifact(
+            paths=["foo"], workspace=other_workspace, create_files=True
+        )
         artifact_serialized = {
             "workspace": self.default_workspace_name,
             "category": ArtifactCategory.TEST,
@@ -562,8 +560,9 @@ class ArtifactViewTests(TestCase):
             hostname="example.com",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        response_json = response.json()
+        response_json = self.assertAPIResponseOk(
+            response, status_code=status.HTTP_201_CREATED
+        )
         self.assertEqual(response_json["files_to_upload"], ["foo"])
         file_in_artifact = FileInArtifact.objects.get(
             artifact=response_json["id"], path="foo"
@@ -573,10 +572,9 @@ class ArtifactViewTests(TestCase):
     @override_settings(ALLOWED_HOSTS=["*"])
     def test_create_artifact_reuse_visible_files(self) -> None:
         """Files in this workspace do not need to be reuploaded."""
-        with context.disable_permission_checks():
-            artifact, files_contents = self.playground.create_artifact(
-                paths=["foo"], workspace=self.workspace, create_files=True
-            )
+        artifact, files_contents = self.playground.create_artifact(
+            paths=["foo"], workspace=self.workspace, create_files=True
+        )
         artifact_serialized = {
             "workspace": self.default_workspace_name,
             "category": ArtifactCategory.TEST,
@@ -600,8 +598,9 @@ class ArtifactViewTests(TestCase):
             hostname="example.com",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        response_json = response.json()
+        response_json = self.assertAPIResponseOk(
+            response, status_code=status.HTTP_201_CREATED
+        )
         self.assertEqual(response_json["files_to_upload"], [])
         file_in_artifact = FileInArtifact.objects.get(
             artifact=response_json["id"], path="foo"
@@ -628,6 +627,12 @@ class ArtifactViewTests(TestCase):
         }
 
         for workspace in (workspace1, workspace2):
+            self.playground.create_group_role(
+                workspace,
+                Workspace.Roles.CONTRIBUTOR,
+                users=[self.scenario.user],
+            )
+
             response = self.post_artifact_create(
                 token_key=self.scenario.user_token.key,
                 data=artifact_serialized,
@@ -635,9 +640,10 @@ class ArtifactViewTests(TestCase):
                 scope=workspace.scope.name,
             )
 
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-            assert isinstance(response, Response)
-            artifact = Artifact.objects.get(id=response.data["id"])
+            data = self.assertAPIResponseOk(
+                response, status_code=status.HTTP_201_CREATED
+            )
+            artifact = Artifact.objects.get(id=data["id"])
             self.assertEqual(artifact.workspace, workspace)
 
         response = self.post_artifact_create(
@@ -728,43 +734,41 @@ class ArtifactViewTests(TestCase):
             scope=private_workspace.scope.name,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        assert isinstance(response, Response)
-        artifact = Artifact.objects.get(id=response.data["id"])
+        data = self.assertAPIResponseOk(
+            response, status_code=status.HTTP_201_CREATED
+        )
+        artifact = Artifact.objects.get(id=data["id"])
         self.assertEqual(artifact.workspace, private_workspace)
 
     @override_settings(ALLOWED_HOSTS=["*"])
     def test_get_information(self) -> None:
         """Get information for the artifact."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact()
-            token_key = self.scenario.user_token.key
+        artifact, _ = self.playground.create_artifact()
+        token_key = self.scenario.user_token.key
 
-            # Add a file (without "uploading" it) to test that files_to_upload
-            # returns it.
-            fileobj = self.playground.create_file()
-            path_in_artifact = "README.txt"
-            FileInArtifact.objects.create(
-                artifact=artifact, file=fileobj, path=path_in_artifact
-            )
-
-        hostname = "example.com"
-        response = self.client.get(
-            reverse("api:artifact", kwargs={"artifact_id": artifact.id}),
-            headers={"token": token_key, "host": hostname},
+        # Add a file (without "uploading" it) to test that files_to_upload
+        # returns it.
+        fileobj = self.playground.create_file()
+        path_in_artifact = "README.txt"
+        FileInArtifact.objects.create(
+            artifact=artifact, file=fileobj, path=path_in_artifact
         )
+
         # HTTP_HOST must be a real hostname. By default, it is "testserver",
         # The Serializer needs a valid hostname for the URLField: otherwise
         # it fails the validation on the serializer
         # (for the download_artifact_tar_gz_url).
         # URLField can be an ipv4 or ipv6 address, a domain
         # or localhost.
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-
+        hostname = "example.com"
         expected = self.artifact_as_dict_response(artifact, hostname)
 
-        assert isinstance(response, Response)
-        self.assertEqual(response.data, expected)
+        response = self.client.get(
+            reverse("api:artifact", kwargs={"artifact_id": artifact.id}),
+            headers={"token": token_key, "host": hostname},
+        )
+        data = self.assertAPIResponseOk(response)
+        self.assertEqual(data, expected)
 
     def test_get_information_artifact_not_found(self) -> None:
         """Get information return 404: artifact not found."""
@@ -800,11 +804,11 @@ class ArtifactViewTests(TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
         with urlconf_scope(artifact.workspace.scope.name):
             expected = self.artifact_as_dict_response(artifact, hostname)
-        assert isinstance(response, Response)
-        self.assertEqual(response.data, expected)
+
+        data = self.assertAPIResponseOk(response)
+        self.assertEqual(data, expected)
 
         response = self.client.get(
             reverse("api:artifact", kwargs={"artifact_id": artifact.id}),
@@ -866,19 +870,20 @@ class ArtifactViewTests(TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
         with urlconf_scope(artifact.workspace.scope.name):
             expected = self.artifact_as_dict_response(artifact, hostname)
-        assert isinstance(response, Response)
-        self.assertEqual(response.data, expected)
+
+        data = self.assertAPIResponseOk(response)
+        self.assertEqual(data, expected)
 
 
 class UploadFileViewTests(TestCase):
     """Tests for UploadFileView class."""
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Set up objects for the tests."""
+        super().setUp()
+
         self.token: Token | None = self.playground.create_worker_token()
         self.path_in_artifact = "README"
         self.file_size = 100
@@ -905,6 +910,8 @@ class UploadFileViewTests(TestCase):
 
         with self.captureOnCommitCallbacks(execute=True):
             file_upload.delete()
+
+        super().tearDown()
 
     @staticmethod
     def hash_data(data: bytes) -> str:
@@ -1693,15 +1700,11 @@ class ArtifactRelationsViewTests(TestCase):
 
     scenario = scenarios.DefaultContextAPI()
 
-    @context.disable_permission_checks()
     def setUp(self) -> None:
         """Initialize object."""
-        self.artifact = Artifact.objects.create(
-            category="test", workspace=self.scenario.workspace
-        )
-        self.artifact_target = Artifact.objects.create(
-            category="test", workspace=self.scenario.workspace
-        )
+        super().setUp()
+        self.artifact, _ = self.playground.create_artifact()
+        self.artifact_target, _ = self.playground.create_artifact()
         self.client = APIClient()
 
     @staticmethod
@@ -1831,25 +1834,35 @@ class ArtifactRelationsViewTests(TestCase):
 
     def test_get_return_404_artifact_not_found(self) -> None:
         """Get relations for a non-existing artifact: return 404."""
-        artifact_id = 0
-        response = self.get_relations(artifact_id=artifact_id)
+        worker_token = self.playground.create_worker_token()
+        for token in (None, self.scenario.user_token, worker_token):
+            with self.subTest(token=token):
+                artifact_id = 0
+                response = self.get_relations(
+                    artifact_id=artifact_id, token=token
+                )
 
-        self.assertResponseProblem(
-            response,
-            f"Artifact {artifact_id} not found",
-            status_code=status.HTTP_404_NOT_FOUND,
-        )
+                self.assertResponseProblem(
+                    response,
+                    f"Artifact {artifact_id} not found",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
 
     def test_get_return_404_target_artifact_not_found(self) -> None:
         """Get target relations for a non-existing artifact: return 404."""
-        artifact_id = 0
-        response = self.get_relations(target_artifact_id=artifact_id)
+        worker_token = self.playground.create_worker_token()
+        for token in (None, self.scenario.user_token, worker_token):
+            with self.subTest(token=token):
+                artifact_id = 0
+                response = self.get_relations(
+                    target_artifact_id=artifact_id, token=token
+                )
 
-        self.assertResponseProblem(
-            response,
-            f"Artifact {artifact_id} not found",
-            status_code=status.HTTP_404_NOT_FOUND,
-        )
+                self.assertResponseProblem(
+                    response,
+                    f"Artifact {artifact_id} not found",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
 
     def test_get_return_400_mandatory_parameters_missing(self) -> None:
         """Get relations: fails because missing mandatory parameters."""
@@ -1861,69 +1874,69 @@ class ArtifactRelationsViewTests(TestCase):
 
     def create_relations(self) -> None:
         """Create two relations to be used in the tests."""
-        ArtifactRelation.objects.create(
+        self.playground.create_artifact_relation(
             artifact=self.artifact,
             target=self.artifact_target,
-            type=ArtifactRelation.Relations.BUILT_USING,
+            relation_type=ArtifactRelation.Relations.BUILT_USING,
         )
-        ArtifactRelation.objects.create(
+        self.playground.create_artifact_relation(
             artifact=self.artifact,
             target=self.artifact_target,
-            type=ArtifactRelation.Relations.RELATES_TO,
+            relation_type=ArtifactRelation.Relations.RELATES_TO,
         )
 
     def test_get_200_target_artifact_relations(self) -> None:
         """Get return target artifact relations."""
-        with context.disable_permission_checks():
-            self.create_relations()
+        self.create_relations()
 
-            another_artifact = Artifact.objects.create(
-                category=self.artifact.category,
-                workspace=self.artifact.workspace,
-            )
-            ArtifactRelation.objects.create(
-                artifact=self.artifact,
-                target=another_artifact,
-                type=ArtifactRelation.Relations.RELATES_TO,
-            )
-
-        response = self.get_relations(
-            target_artifact_id=self.artifact_target.id
+        another_artifact, _ = self.playground.create_artifact()
+        self.playground.create_artifact_relation(
+            artifact=self.artifact,
+            target=another_artifact,
+            relation_type=ArtifactRelation.Relations.RELATES_TO,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        worker_token = self.playground.create_worker_token()
+        for token in (None, self.scenario.user_token, worker_token):
+            with self.subTest(token=token):
+                response = self.get_relations(
+                    target_artifact_id=self.artifact_target.id, token=token
+                )
 
-        assert isinstance(response, JSONResponseProtocol)
-        self.assertEqual(
-            len(response.json()), self.artifact_target.targeted_by.count()
-        )
+                data = self.assertAPIResponseOk(response)
+                self.assertEqual(
+                    len(data), self.artifact_target.targeted_by.count()
+                )
 
-        for artifact_relation in response.json():
-            ArtifactRelation.objects.get(
-                artifact_id=artifact_relation["artifact"],
-                target_id=artifact_relation["target"],
-                type=artifact_relation["type"],
-            )
+                for artifact_relation in data:
+                    ArtifactRelation.objects.get(
+                        artifact_id=artifact_relation["artifact"],
+                        target_id=artifact_relation["target"],
+                        type=artifact_relation["type"],
+                    )
 
     def test_get_200_artifact_relations(self) -> None:
         """Get return artifact relations."""
         self.create_relations()
 
-        response = self.get_relations(artifact_id=self.artifact.id)
+        worker_token = self.playground.create_worker_token()
+        for token in (None, self.scenario.user_token, worker_token):
+            with self.subTest(token=token):
+                response = self.get_relations(
+                    artifact_id=self.artifact.id, token=token
+                )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+                data = self.assertAPIResponseOk(response)
+                self.assertEqual(
+                    len(data), ArtifactRelation.objects.all().count()
+                )
 
-        assert isinstance(response, JSONResponseProtocol)
-        self.assertEqual(
-            len(response.json()), ArtifactRelation.objects.all().count()
-        )
-
-        for artifact_relation in response.json():
-            ArtifactRelation.objects.get(
-                artifact_id=self.artifact.id,
-                target_id=artifact_relation["target"],
-                type=artifact_relation["type"],
-            )
+                for artifact_relation in data:
+                    ArtifactRelation.objects.get(
+                        artifact_id=self.artifact.id,
+                        target_id=artifact_relation["target"],
+                        type=artifact_relation["type"],
+                    )
 
     def test_get_honours_scope(self) -> None:
         """Getting relations looks up the artifact in the current scope."""
@@ -1944,11 +1957,8 @@ class ArtifactRelationsViewTests(TestCase):
             scope=workspace.scope.name,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        assert isinstance(response, JSONResponseProtocol)
-        self.assertEqual(
-            len(response.json()), ArtifactRelation.objects.all().count()
-        )
+        data = self.assertAPIResponseOk(response)
+        self.assertEqual(len(data), ArtifactRelation.objects.all().count())
 
         response = self.get_relations(
             artifact_id=self.artifact.id,
@@ -1999,11 +2009,8 @@ class ArtifactRelationsViewTests(TestCase):
             scope=private_workspace.scope.name,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        assert isinstance(response, JSONResponseProtocol)
-        self.assertEqual(
-            len(response.json()), ArtifactRelation.objects.all().count()
-        )
+        data = self.assertAPIResponseOk(response)
+        self.assertEqual(len(data), ArtifactRelation.objects.all().count())
 
     def test_post_400_artifact_id_does_not_exist(self) -> None:
         """Post the relations for a non-existing artifact: return 400."""
@@ -2043,11 +2050,9 @@ class ArtifactRelationsViewTests(TestCase):
         }
 
         response = self.post_relation(body=relation)
-
-        assert isinstance(response, JSONResponseProtocol)
-        response_data = response.json()
-
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        response_data = self.assertAPIResponseOk(
+            response, status_code=status.HTTP_201_CREATED
+        )
 
         relation["id"] = ArtifactRelation.objects.all()[0].id
         self.assertEqual(response_data, relation)
@@ -2075,10 +2080,9 @@ class ArtifactRelationsViewTests(TestCase):
 
         response = self.post_relation(body=relation)
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = self.assertAPIResponseOk(response)
         relation["id"] = artifact_relation.id
-        assert isinstance(response, JSONResponseProtocol)
-        self.assertEqual(response.json(), relation)
+        self.assertEqual(data, relation)
 
     def test_post_400_invalid_target_id(self) -> None:
         """No relations added to the artifact: invalid target id."""
@@ -2096,6 +2100,50 @@ class ArtifactRelationsViewTests(TestCase):
             response,
             title="Cannot deserialize artifact relation",
             validation_errors_pattern="Invalid pk",
+        )
+
+    def test_post_400_source_artifact_incomplete(self) -> None:
+        """Try to add relation with incomplete source artifact: HTTP 400."""
+        FileInArtifact.objects.create(
+            artifact=self.artifact,
+            path="incomplete",
+            file=self.playground.create_file(),
+            complete=False,
+        )
+        relation = {
+            "artifact": self.artifact.id,
+            "target": self.artifact_target.id,
+            "type": ArtifactRelation.Relations.RELATES_TO,
+        }
+
+        response = self.post_relation(body=relation)
+
+        self.assertResponseProblem(
+            response,
+            f"Cannot create relation: source artifact "
+            f"{self.artifact.id} is incomplete",
+        )
+
+    def test_post_400_target_artifact_incomplete(self) -> None:
+        """Try to add relation with incomplete target artifact: HTTP 400."""
+        FileInArtifact.objects.create(
+            artifact=self.artifact_target,
+            path="incomplete",
+            file=self.playground.create_file(),
+            complete=False,
+        )
+        relation = {
+            "artifact": self.artifact.id,
+            "target": self.artifact_target.id,
+            "type": ArtifactRelation.Relations.RELATES_TO,
+        }
+
+        response = self.post_relation(body=relation)
+
+        self.assertResponseProblem(
+            response,
+            f"Cannot create relation: target artifact "
+            f"{self.artifact_target.id} is incomplete",
         )
 
     def test_post_honours_scope(self) -> None:
@@ -2132,10 +2180,11 @@ class ArtifactRelationsViewTests(TestCase):
             scope=workspace.scope.name,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        assert isinstance(response, JSONResponseProtocol)
+        data = self.assertAPIResponseOk(
+            response, status_code=status.HTTP_201_CREATED
+        )
         relation["id"] = ArtifactRelation.objects.all()[0].id
-        self.assertEqual(response.json(), relation)
+        self.assertEqual(data, relation)
 
     def test_post_private_workspace_unauthorized(self) -> None:
         """Creating relations in private workspaces 404s to the unauthorized."""
@@ -2188,10 +2237,11 @@ class ArtifactRelationsViewTests(TestCase):
             scope=private_workspace.scope.name,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        assert isinstance(response, JSONResponseProtocol)
+        data = self.assertAPIResponseOk(
+            response, status_code=status.HTTP_201_CREATED
+        )
         relation["id"] = ArtifactRelation.objects.all()[0].id
-        self.assertEqual(response.json(), relation)
+        self.assertEqual(data, relation)
 
     def test_delete_404_artifact_not_found(self) -> None:
         """Delete relation: cannot find artifact."""

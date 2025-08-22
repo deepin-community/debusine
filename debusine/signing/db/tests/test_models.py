@@ -24,8 +24,8 @@ from django.test import TestCase as DjangoTestCase
 from gpg.results import GenkeyResult, ImportResult, ImportStatus
 from nacl.public import PrivateKey
 
-from debusine.signing.db.models import AuditLog, Key
-from debusine.signing.gnupg import GnuPGError
+from debusine.signing.db.models import AuditLog, Key, sign
+from debusine.signing.gnupg import GnuPGError, gpg_sign
 from debusine.signing.models import (
     ProtectedKeyNaCl,
     ProtectedKeyPKCS11Static,
@@ -35,8 +35,29 @@ from debusine.signing.tests import make_fake_fingerprint
 from debusine.test import TestCase
 
 
-class KeyManagerTests(DjangoTestCase):
+class KeyManagerTests(TestCase, DjangoTestCase):
     """Unit tests for `KeyManager`."""
+
+    def create_nacl_key(
+        self, *, storage_private_key: PrivateKey, purpose: Key.Purpose
+    ) -> tuple[Key, bytes]:
+        """
+        Make a random NaCl-encrypted Key.
+
+        :return: A tuple of the Key itself and its private key.
+        """
+        private_key = random.randbytes(64)
+        public_key = random.randbytes(64)
+        fingerprint = make_fake_fingerprint()
+        key = Key.objects.create(
+            purpose=purpose,
+            fingerprint=fingerprint,
+            private_key=ProtectedKeyNaCl.encrypt(
+                storage_private_key.public_key, private_key
+            ).dict(),
+            public_key=public_key,
+        )
+        return key, private_key
 
     def test_generate_uefi(self) -> None:
         """Generate a UEFI key."""
@@ -289,31 +310,6 @@ class KeyManagerTests(DjangoTestCase):
         ):
             Key.objects.generate(Key.Purpose.OPENPGP, "test key", 123, log_file)
 
-
-class KeyTests(TestCase, DjangoTestCase):
-    """Unit tests for `Key`."""
-
-    def create_nacl_key(
-        self, *, storage_private_key: PrivateKey, purpose: Key.Purpose
-    ) -> tuple[Key, bytes]:
-        """
-        Make a random NaCl-encrypted Key.
-
-        :return: A tuple of the Key itself and its private key.
-        """
-        private_key = random.randbytes(64)
-        public_key = random.randbytes(64)
-        fingerprint = make_fake_fingerprint()
-        key = Key.objects.create(
-            purpose=purpose,
-            fingerprint=fingerprint,
-            private_key=ProtectedKeyNaCl.encrypt(
-                storage_private_key.public_key, private_key
-            ).dict(),
-            public_key=public_key,
-        )
-        return key, private_key
-
     def test_sign_uefi_attached(self) -> None:
         """Sign data using a UEFI key, returning an attached signature."""
         # Signing data is slow, so we just test that the correct
@@ -346,7 +342,8 @@ class KeyTests(TestCase, DjangoTestCase):
             mock.patch("subprocess.run", side_effect=run) as mock_run,
             self.settings(DEBUSINE_SIGNING_PRIVATE_KEYS=[storage_private_key]),
         ):
-            key.sign(
+            sign(
+                [key],
                 data_path,
                 signature_path,
                 SigningMode.ATTACHED,
@@ -424,7 +421,8 @@ class KeyTests(TestCase, DjangoTestCase):
             mock.patch("subprocess.run", side_effect=run) as mock_run,
             self.settings(DEBUSINE_SIGNING_PRIVATE_KEYS=[storage_private_key]),
         ):
-            key.sign(
+            sign(
+                [key],
                 data_path,
                 signature_path,
                 SigningMode.DETACHED,
@@ -452,8 +450,8 @@ class KeyTests(TestCase, DjangoTestCase):
         self.assertEqual(certificate_bytes, key.public_key)
         self.assertEqual(signature_path.read_bytes(), signature_bytes)
 
-    def test_sign_openpgp(self) -> None:
-        """Sign data using an OpenPGP key."""
+    def test_sign_openpgp_clear(self) -> None:
+        """Sign data using an OpenPGP key, returning a clear signature."""
         # Signing data is slow, so we mock most of this and just test the
         # sequence of operations.  Integration tests will make sure that it
         # actually works.
@@ -473,7 +471,7 @@ class KeyTests(TestCase, DjangoTestCase):
         signature_path = temp_path / "data.asc"
         signature_bytes = random.randbytes(64)
 
-        def sign(
+        def gpg_sign(
             ctx: gpg.Context,
             data: gpg.Data,
             sink: BinaryIO | None = None,
@@ -497,10 +495,10 @@ class KeyTests(TestCase, DjangoTestCase):
                 "gpg.Context.signers", new_callable=mock.PropertyMock
             ) as mock_signers,
             mock.patch(
-                "gpg.Context.sign", autospec=True, side_effect=sign
+                "gpg.Context.sign", autospec=True, side_effect=gpg_sign
             ) as mock_sign,
         ):
-            key.sign(data_path, signature_path, SigningMode.CLEAR, 123)
+            sign([key], data_path, signature_path, SigningMode.CLEAR, 123)
 
         mock_key_import.assert_called_once_with(secret_key)
         mock_keylist.assert_called_once_with(
@@ -509,6 +507,167 @@ class KeyTests(TestCase, DjangoTestCase):
         mock_signers.assert_called_with(keylist)
         mock_sign.assert_called_once()
         self.assertEqual(signature_path.read_bytes(), signature_bytes)
+
+    def test_sign_openpgp_detached(self) -> None:
+        """Sign data using an OpenPGP key, returning a detached signature."""
+        # Signing data is slow, so we mock most of this and just test the
+        # sequence of operations.  Integration tests will make sure that it
+        # actually works.
+        storage_private_key = PrivateKey.generate()
+        key, secret_key = self.create_nacl_key(
+            storage_private_key=storage_private_key, purpose=Key.Purpose.OPENPGP
+        )
+        import_status = ImportStatus(None)
+        import_status.fpr = key.fingerprint
+        import_result = ImportResult(None)
+        import_result.secret_imported = 1
+        import_result.imports = [import_status]
+        keylist = [object()]
+        temp_path = self.create_temporary_directory()
+        data_bytes = b"data to sign"
+        (data_path := temp_path / "data").write_bytes(data_bytes)
+        signature_path = temp_path / "data.asc"
+        signature_bytes = random.randbytes(64)
+
+        def gpg_sign(
+            ctx: gpg.Context,
+            data: gpg.Data,
+            sink: BinaryIO | None = None,
+            mode: int = gpg.constants.SIG_MODE_NORMAL,
+        ) -> None:
+            self.assertTrue(ctx.armor)
+            self.assertEqual(data.read(), data_bytes)
+            self.assertEqual(mode, gpg.constants.SIG_MODE_DETACH)
+            assert sink is not None
+            sink.write(signature_bytes)
+
+        with (
+            self.settings(DEBUSINE_SIGNING_PRIVATE_KEYS=[storage_private_key]),
+            mock.patch(
+                "gpg.Context.key_import", return_value=import_result
+            ) as mock_key_import,
+            mock.patch(
+                "gpg.Context.keylist", return_value=iter(keylist)
+            ) as mock_keylist,
+            mock.patch(
+                "gpg.Context.signers", new_callable=mock.PropertyMock
+            ) as mock_signers,
+            mock.patch(
+                "gpg.Context.sign", autospec=True, side_effect=gpg_sign
+            ) as mock_sign,
+        ):
+            sign([key], data_path, signature_path, SigningMode.DETACHED, 123)
+
+        mock_key_import.assert_called_once_with(secret_key)
+        mock_keylist.assert_called_once_with(
+            pattern=key.fingerprint, secret=True
+        )
+        mock_signers.assert_called_with(keylist)
+        mock_sign.assert_called_once()
+        self.assertEqual(signature_path.read_bytes(), signature_bytes)
+
+    def test_sign_openpgp_multiple(self) -> None:
+        """Sign data using multiple OpenPGP keys."""
+        # Signing data is slow, so we mock most of this and just test the
+        # sequence of operations.  Integration tests will make sure that it
+        # actually works.
+        storage_private_key = PrivateKey.generate()
+        key_pairs = [
+            self.create_nacl_key(
+                storage_private_key=storage_private_key,
+                purpose=Key.Purpose.OPENPGP,
+            )
+            for _ in range(2)
+        ]
+        import_results: list[ImportResult] = []
+        for key, _ in key_pairs:
+            import_status = ImportStatus(None)
+            import_status.fpr = key.fingerprint
+            import_result = ImportResult(None)
+            import_result.secret_imported = 1
+            import_result.imports = [import_status]
+            import_results.append(import_result)
+        keylist = [object() for _ in key_pairs]
+        temp_path = self.create_temporary_directory()
+        data_bytes = b"data to sign"
+        (data_path := temp_path / "data").write_bytes(data_bytes)
+        signature_path = temp_path / "data.asc"
+        signature_bytes = random.randbytes(64)
+
+        def gpg_sign(
+            ctx: gpg.Context,
+            data: gpg.Data,
+            sink: BinaryIO | None = None,
+            mode: int = gpg.constants.SIG_MODE_NORMAL,
+        ) -> None:
+            self.assertTrue(ctx.armor)
+            self.assertEqual(data.read(), data_bytes)
+            self.assertEqual(mode, gpg.constants.SIG_MODE_CLEAR)
+            assert sink is not None
+            sink.write(signature_bytes)
+
+        with (
+            self.settings(DEBUSINE_SIGNING_PRIVATE_KEYS=[storage_private_key]),
+            mock.patch(
+                "gpg.Context.key_import", side_effect=import_results
+            ) as mock_key_import,
+            mock.patch(
+                "gpg.Context.keylist",
+                side_effect=[iter([signer]) for signer in keylist],
+            ) as mock_keylist,
+            mock.patch(
+                "gpg.Context.signers", new_callable=mock.PropertyMock
+            ) as mock_signers,
+            mock.patch(
+                "gpg.Context.sign", autospec=True, side_effect=gpg_sign
+            ) as mock_sign,
+        ):
+            sign(
+                [key for key, _ in key_pairs],
+                data_path,
+                signature_path,
+                SigningMode.CLEAR,
+                123,
+            )
+
+        self.assertEqual(mock_key_import.call_count, len(key_pairs))
+        mock_key_import.assert_has_calls(
+            [mock.call(secret_key) for _, secret_key in key_pairs]
+        )
+        self.assertEqual(mock_keylist.call_count, len(key_pairs))
+        mock_keylist.assert_has_calls(
+            [
+                mock.call(pattern=key.fingerprint, secret=True)
+                for key, _ in key_pairs
+            ]
+        )
+        mock_signers.assert_called_with(keylist)
+        mock_sign.assert_called_once()
+        self.assertEqual(signature_path.read_bytes(), signature_bytes)
+
+    def test_sign_openpgp_not_detached_or_clear(self) -> None:
+        """Key signing error: signing mode not detached or clear."""
+        storage_private_key = PrivateKey.generate()
+        key, secret_key = self.create_nacl_key(
+            storage_private_key=storage_private_key, purpose=Key.Purpose.OPENPGP
+        )
+        temp_path = self.create_temporary_directory()
+        (data_path := temp_path / "data").write_bytes(b"data to sign")
+        signature_path = temp_path / "data.asc"
+
+        with self.assertRaisesRegex(
+            GnuPGError,
+            "OpenPGP signing currently only supports detached or clear "
+            "signatures",
+        ):
+            # Bypass debusine.signing.db.models.sign, since it also catches
+            # this.
+            gpg_sign(
+                [(key.stored_private_key, key.public_key)],
+                data_path,
+                signature_path,
+                SigningMode.ATTACHED,
+            )
 
     def test_sign_openpgp_not_software_encrypted(self) -> None:
         """Key signing error: OpenPGP key is not software-encrypted."""
@@ -530,7 +689,7 @@ class KeyTests(TestCase, DjangoTestCase):
             GnuPGError,
             "OpenPGP signing currently only supports software-encrypted keys",
         ):
-            key.sign(data_path, signature_path, SigningMode.CLEAR, 123)
+            sign([key], data_path, signature_path, SigningMode.CLEAR, 123)
 
     def test_sign_openpgp_key_import_failed(self) -> None:
         """Key signing error: failed to import OpenPGP secret key."""
@@ -554,7 +713,7 @@ class KeyTests(TestCase, DjangoTestCase):
             mock.patch("gpg.Context.key_import", return_value=import_result),
             self.assertRaisesRegex(GnuPGError, "Failed to import secret key"),
         ):
-            key.sign(data_path, signature_path, SigningMode.CLEAR, 123)
+            sign([key], data_path, signature_path, SigningMode.CLEAR, 123)
 
     def test_sign_openpgp_debsign(self) -> None:
         """Sign an upload using an OpenPGP key and debsign."""
@@ -599,7 +758,8 @@ class KeyTests(TestCase, DjangoTestCase):
             ) as mock_key_import,
             mock.patch("subprocess.run", side_effect=run) as mock_run,
         ):
-            key.sign(
+            sign(
+                [key],
                 unsigned_changes_path,
                 signed_changes_path,
                 SigningMode.DEBSIGN,
@@ -647,7 +807,8 @@ class KeyTests(TestCase, DjangoTestCase):
             GnuPGError,
             "OpenPGP signing currently only supports software-encrypted keys",
         ):
-            key.sign(
+            sign(
+                [key],
                 unsigned_changes_path,
                 signed_changes_path,
                 SigningMode.DEBSIGN,
@@ -679,7 +840,8 @@ class KeyTests(TestCase, DjangoTestCase):
             mock.patch("gpg.Context.key_import", return_value=import_result),
             self.assertRaisesRegex(GnuPGError, "Failed to import secret key"),
         ):
-            key.sign(
+            sign(
+                [key],
                 unsigned_changes_path,
                 signed_changes_path,
                 SigningMode.DEBSIGN,
@@ -715,7 +877,8 @@ class KeyTests(TestCase, DjangoTestCase):
                 GnuPGError, "Directory containing signature_path is not empty"
             ),
         ):
-            key.sign(
+            sign(
+                [key],
                 unsigned_changes_path,
                 signed_changes_path,
                 SigningMode.DEBSIGN,

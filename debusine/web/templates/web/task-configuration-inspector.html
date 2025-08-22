@@ -1,0 +1,88 @@
+{% extends base_template %}
+{% load debusine %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <div class="card mt-4" id="user-input">
+        {% if not collection %}
+            <div class="card-header">
+                <h2>Select a task configuration collection to inspect</h2>
+            </div>
+            {% if collections %}
+                <div class="list-group list-group-flush" id="collection-selector">
+                    {% for collection in collections %}
+                        <a class="list-group-item list-group-item-action"
+                           href="?collection={{ collection.id }}">{{ collection.name }} in {{ workspace }}</a>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="card-body">
+                    <div class="alert alert-light" role="alert">
+                        There are no task configuration collections accessible from this workspace.
+                    </div>
+                </div>
+            {% endif %}
+        {% else %}
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div class="me-auto">
+                    <h2>
+                        Collection <b>{{ collection.name }}</b> in {{ collection.workspace }}
+                    </h2>
+                </div>
+                {% if collections|length > 1 %}
+                    <a class="badge text-bg-primary rounded-pill"
+                       href="."
+                       title="select another collection"><span class="bi bi-x"></span></a>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                {% if form %}
+                    <p>{{ item_count }} entries available</p>
+                    <form method="GET">
+                        <input type="hidden" name="collection" value="{{ collection.id }}">
+                        {% for error in form.non_field_errors %}<div class="alert alert-danger" role="alert">{{ error }}</div>{% endfor %}
+                        {% for field in form %}
+                            <div class="mb-3 row">
+                                <label for="{{ field.id_for_label }}" class="col-sm-2 col-form-label">{{ field.label }}</label>
+                                <div class="col-sm-10">
+                                    {{ field }}
+                                    {% if field.errors %}
+                                        <div class="form-text text-danger">
+                                            {% for error in field.errors %}{{ error }}{% endfor %}
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        {% endfor %}
+                        <p>
+                            <input class="btn btn-primary btn-sm" type="submit" value="Lookup">
+                        </p>
+                    </form>
+                {% else %}
+                    <div class="alert alert-warning" role="alert">This collection is empty</div>
+                {% endif %}
+            </div>
+        {% endif %}
+    </div>
+    {% if has_result %}
+        <div id="results">
+            <h2 class="mt-4">Lookup result</h2>
+            <div class="card mt-4" id="default-values">
+                <div class="card-header">Default values</div>
+                <div class="card-body text-white bg-dark">{{ default_values|format_yaml }}</div>
+            </div>
+            <div class="card mt-4" id="override-values">
+                <div class="card-header">Override values</div>
+                <div class="card-body text-white bg-dark">{{ override_values|format_yaml }}</div>
+            </div>
+            <h3 class="mt-4">Configuration items used</h3>
+            <div id="configuration-items">
+                {% for item in config_items %}
+                    <div class="card mt-4">
+                        <div class="card-header">{{ item.name }}</div>
+                        <div class="card-body text-white bg-dark">{{ item.dict|format_yaml:"unsorted" }}</div>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    {% endif %}
+{% endblock %}

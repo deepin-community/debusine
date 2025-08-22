@@ -1,11 +1,11 @@
-.. _workflow-create-experiment-workspace:
+.. workflow:: create_experiment_workspace
 
 Workflow ``create_experiment_workspace``
 ========================================
 
 This workflow creates a :ref:`workspace for experiments
 <experiment-workspaces>`.  It provides a simple interface for users to
-invoke the :ref:`corresponding task <task-create-experiment-workspace>`.
+invoke the :task:`corresponding task <CreateExperimentWorkspace>`.
 
 * ``task_data``:
 
@@ -24,5 +24,5 @@ invoke the :ref:`corresponding task <task-create-experiment-workspace>`.
     since the last task completion time after which the new workspace can be
     deleted
 
-The workflow creates a :ref:`task-create-experiment-workspace`, with the
-same task data.
+The workflow creates a :task:`CreateExperimentWorkspace`, with the same task
+data.

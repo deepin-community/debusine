@@ -20,9 +20,10 @@ except ImportError:
 
 from django.db.models import Count
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import WorkRequest, Worker
 from debusine.tasks import TaskConfigError
-from debusine.tasks.models import TaskTypes, WorkerType
+from debusine.tasks.models import WorkerType
 
 log = logging.getLogger(__name__)
 

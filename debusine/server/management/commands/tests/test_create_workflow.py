@@ -15,7 +15,7 @@ from typing import ClassVar
 import yaml
 from django.core.management import CommandError
 
-from debusine.db.context import context
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import (
     Artifact,
     WorkRequest,
@@ -24,7 +24,6 @@ from debusine.db.models import (
     system_user,
 )
 from debusine.django.management.tests import call_command
-from debusine.tasks.models import TaskTypes
 from debusine.test.django import TestCase
 
 
@@ -35,7 +34,6 @@ class CreateWorkflowCommandTests(TestCase):
     template: ClassVar[WorkflowTemplate]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up test fixture."""
         super().setUpTestData()

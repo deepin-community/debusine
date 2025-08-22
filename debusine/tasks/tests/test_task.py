@@ -34,9 +34,13 @@ except ImportError:
     import pydantic as pydantic  # type: ignore
 
 from debusine.artifacts import WorkRequestDebugLogs
-from debusine.artifacts.models import ArtifactCategory, EmptyArtifactData
+from debusine.artifacts.models import (
+    ArtifactCategory,
+    CollectionCategory,
+    EmptyArtifactData,
+    TaskTypes,
+)
 from debusine.client.debusine import Debusine
-from debusine.client.models import ArtifactResponse
 from debusine.tasks import (
     BaseExternalTask,
     BaseTask,
@@ -59,66 +63,58 @@ from debusine.tasks.models import (
     BaseTaskDataWithExecutor,
     BaseTaskDataWithExtraRepositories,
     ExtraRepository,
-    TaskTypes,
     WorkerType,
 )
 from debusine.tasks.server import ArtifactInfo
 from debusine.tasks.tests.helper_mixin import (
     ExternalTaskHelperMixin,
     FakeTaskDatabase,
-    TestBaseExternalTask,
-    TestBaseTask,
-    TestBaseTaskWithExecutor,
+    SampleBaseExternalTask,
+    SampleBaseTask,
+    SampleBaseTaskWithExecutor,
 )
 from debusine.test import TestCase
 from debusine.test.test_utils import (
+    create_artifact_response,
     create_system_tarball_data,
     preserve_task_registry,
 )
 
 
-class TestBaseTask1(
-    TestBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
+class SampleBaseTask1(
+    SampleBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
 ):
     """Sample class to test BaseExternalTask class."""
-
-    __test__ = False
 
     def run(self, execute_directory: Path) -> bool:
         """Unused abstract method from BaseExternalTask."""
         raise NotImplementedError()
 
 
-class TestBaseTaskWithExecutor1(
-    TestBaseTaskWithExecutor[
+class SampleBaseTaskWithExecutor1(
+    SampleBaseTaskWithExecutor[
         BaseTaskDataWithExecutor, BaseDynamicTaskDataWithExecutor
     ],
 ):
     """Sample class to test BaseTaskWithExecutor class."""
 
-    __test__ = False
-
     def run(self, execute_directory: Path) -> bool:
         """Unused abstract method from BaseExternalTask."""
         raise NotImplementedError()
 
 
-class TestBaseTask2Data(BaseTaskData):
-    """Data representation for TestBaseTask2."""
-
-    __test__ = False
+class SampleBaseTask2Data(BaseTaskData):
+    """Data representation for SampleBaseTask2."""
 
     foo: str
     bar: float | None = None
     host_architecture: str | None = None
 
 
-class TestBaseTask2(
-    TestBaseExternalTask[TestBaseTask2Data, BaseDynamicTaskData],
+class SampleBaseTask2(
+    SampleBaseExternalTask[SampleBaseTask2Data, BaseDynamicTaskData],
 ):
     """Test BaseExternalTask class with data validation."""
-
-    __test__ = False
 
     TASK_VERSION = 1
 
@@ -127,24 +123,20 @@ class TestBaseTask2(
         raise NotImplementedError()
 
 
-class TestBaseTaskDataWithExecutorAndArchitecture(BaseTaskDataWithExecutor):
+class SampleBaseTaskDataWithExecutorAndArchitecture(BaseTaskDataWithExecutor):
     """BaseTaskDataWithExecutor with a host architecture."""
-
-    __test__ = False
 
     host_architecture: str | None = None
 
 
-class TestBaseTaskWithExecutorAndArchitecture(
-    TestBaseTaskWithExecutor[
-        TestBaseTaskDataWithExecutorAndArchitecture,
+class SampleBaseTaskWithExecutorAndArchitecture(
+    SampleBaseTaskWithExecutor[
+        SampleBaseTaskDataWithExecutorAndArchitecture,
         BaseDynamicTaskDataWithExecutor,
     ],
 ):
     """Test BaseTaskWithExecutor with a host architecture."""
 
-    __test__ = False
-
     TASK_VERSION = 1
 
     def run(self, execute_directory: Path) -> bool:
@@ -152,8 +144,8 @@ class TestBaseTaskWithExecutorAndArchitecture(
         raise NotImplementedError()
 
 
-class TestExtraRepositoryMixin(
-    TestBaseTask[BaseTaskDataWithExtraRepositories, BaseDynamicTaskData],
+class SampleExtraRepositoryMixin(
+    SampleBaseTask[BaseTaskDataWithExtraRepositories, BaseDynamicTaskData],
     ExtraRepositoryMixin[
         BaseTaskDataWithExtraRepositories, BaseDynamicTaskData
     ],
@@ -165,9 +157,9 @@ class TestExtraRepositoryMixin(
         raise NotImplementedError()
 
 
-class TestDefaultDynamicData(
+class SampleDefaultDynamicData(
     DefaultDynamicData[BaseTaskData],
-    TestBaseTask[BaseTaskData, BaseDynamicTaskData],
+    SampleBaseTask[BaseTaskData, BaseDynamicTaskData],
 ):
     """Test DefaultDynamicData."""
 
@@ -191,13 +183,15 @@ class BaseTaskTests(TestCase):
 
     def setUp(self) -> None:
         """Create the shared attributes."""
-        self.task = TestBaseTask1({})
-        self.task2 = TestBaseTask2({"foo": "bar"})
+        super().setUp()
+        self.task = SampleBaseTask1({})
+        self.task2 = SampleBaseTask2({"foo": "bar"})
 
     def tearDown(self) -> None:
         """Delete directory to avoid ResourceWarning."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def test_task_initialize_member_variables(self) -> None:
         """Member variables expected used in other methods are initialized."""
@@ -206,7 +200,7 @@ class BaseTaskTests(TestCase):
 
     def test_name_is_set(self) -> None:
         """task.name is built from class name."""
-        self.assertEqual(self.task.name, "testbasetask1")
+        self.assertEqual(self.task.name, "samplebasetask1")
 
     def test_logger_is_configured(self) -> None:
         """task.logger is available."""
@@ -223,7 +217,7 @@ class BaseTaskTests(TestCase):
         # Cannot import ServerNoop or NoopWorkflow because sometimes these
         # tests are run without the django test runner
 
-        class TestServer(BaseTask[BaseTaskData, BaseDynamicTaskData]):
+        class SampleServer(BaseTask[BaseTaskData, BaseDynamicTaskData]):
             TASK_TYPE = TaskTypes.SERVER
 
             def _execute(self) -> bool:
@@ -233,10 +227,10 @@ class BaseTaskTests(TestCase):
                 raise NotImplementedError()
 
         self.assertEqual(
-            TestServer.prefix_with_task_name("foo"), "server:testserver:foo"
+            SampleServer.prefix_with_task_name("foo"), "server:sampleserver:foo"
         )
 
-        class TestInternal(BaseTask[BaseTaskData, BaseDynamicTaskData]):
+        class SampleInternal(BaseTask[BaseTaskData, BaseDynamicTaskData]):
             TASK_TYPE = TaskTypes.INTERNAL
 
             def _execute(self) -> bool:
@@ -246,11 +240,11 @@ class BaseTaskTests(TestCase):
                 raise NotImplementedError()
 
         self.assertEqual(
-            TestInternal.prefix_with_task_name("foo"),
-            "internal:testinternal:foo",
+            SampleInternal.prefix_with_task_name("foo"),
+            "internal:sampleinternal:foo",
         )
 
-        class TestWorkflow(BaseTask[BaseTaskData, BaseDynamicTaskData]):
+        class SampleWorkflow(BaseTask[BaseTaskData, BaseDynamicTaskData]):
             TASK_TYPE = TaskTypes.WORKFLOW
 
             def _execute(self) -> bool:
@@ -260,11 +254,11 @@ class BaseTaskTests(TestCase):
                 raise NotImplementedError()
 
         self.assertEqual(
-            TestWorkflow.prefix_with_task_name("foo"),
-            "workflow:testworkflow:foo",
+            SampleWorkflow.prefix_with_task_name("foo"),
+            "workflow:sampleworkflow:foo",
         )
 
-        class TestSigning(BaseTask[BaseTaskData, BaseDynamicTaskData]):
+        class SampleSigning(BaseTask[BaseTaskData, BaseDynamicTaskData]):
             TASK_TYPE = TaskTypes.SIGNING
 
             def _execute(self) -> bool:
@@ -274,11 +268,11 @@ class BaseTaskTests(TestCase):
                 raise NotImplementedError()
 
         self.assertEqual(
-            TestSigning.prefix_with_task_name("foo"),
-            "signing:testsigning:foo",
+            SampleSigning.prefix_with_task_name("foo"),
+            "signing:samplesigning:foo",
         )
 
-        class TestWait(BaseTask[BaseTaskData, BaseDynamicTaskData]):
+        class SampleWait(BaseTask[BaseTaskData, BaseDynamicTaskData]):
             TASK_TYPE = TaskTypes.WAIT
 
             def _execute(self) -> bool:
@@ -288,7 +282,7 @@ class BaseTaskTests(TestCase):
                 raise NotImplementedError()
 
         self.assertEqual(
-            TestWait.prefix_with_task_name("foo"), "wait:testwait:foo"
+            SampleWait.prefix_with_task_name("foo"), "wait:samplewait:foo"
         )
 
     def test_get_subject(self) -> None:
@@ -309,36 +303,36 @@ class BaseTaskTests(TestCase):
             "foo": "bar",
         }
 
-        data = TestBaseTask2Data.parse_obj(task_data)
+        data = SampleBaseTask2Data.parse_obj(task_data)
 
         self.assertEqual(
             data,
-            TestBaseTask2Data(
+            SampleBaseTask2Data(
                 foo="bar",
             ),
         )
 
     def test_configure_task_data_notification_drop(self) -> None:
         """Raise TaskConfigError: "notifications" is not valid anymore."""
-        task_data = TestBaseTask2Data(foo="bar")
+        task_data = SampleBaseTask2Data(foo="bar")
         task_data_notification = {
             "notifications": {"on_failure": [{"channel": "test"}]}
         }
 
         with self.assertRaisesRegex(TaskConfigError, "notifications"):
-            TestBaseTask2({**task_data.dict(), **task_data_notification})
+            SampleBaseTask2({**task_data.dict(), **task_data_notification})
 
     def test_configure_fails_with_bad_schema(self) -> None:
         """configure() raises TaskConfigError if schema is not respected."""
         task_data = {"nonexistent": "bar"}
         with self.assertRaises(TaskConfigError):
-            TestBaseTask2(task_data)
+            SampleBaseTask2(task_data)
 
     def test_configure_works_with_good_schema(self) -> None:
         """configure() doesn't raise TaskConfigError."""
-        task_data = TestBaseTask2Data(foo="bar", bar=3.14)
+        task_data = SampleBaseTask2Data(foo="bar", bar=3.14)
 
-        task2 = TestBaseTask2(task_data.dict())
+        task2 = SampleBaseTask2(task_data.dict())
 
         self.assertEqual(task2.data.foo, "bar")
         self.assertEqual(task2.data.bar, 3.14)
@@ -346,12 +340,12 @@ class BaseTaskTests(TestCase):
     def test_analyze_worker_without_task_version(self) -> None:
         """analyze_worker() reports an unknown task version."""
         metadata = self.task.analyze_worker()
-        self.assertIsNone(metadata["testbasetask1:version"])
+        self.assertIsNone(metadata["samplebasetask1:version"])
 
     def test_analyze_worker_with_task_version(self) -> None:
         """analyze_worker() reports a task version."""
         metadata = self.task2.analyze_worker()
-        self.assertEqual(metadata["testbasetask2:version"], 1)
+        self.assertEqual(metadata["samplebasetask2:version"], 1)
 
     def test_analyze_worker_all_tasks(self) -> None:
         """analyze_worker_all_tasks() reports results for each task."""
@@ -360,8 +354,8 @@ class BaseTaskTests(TestCase):
             "_sub_tasks",
             new={
                 TaskTypes.WORKER: {
-                    "task": TestBaseTask1,
-                    "task2": TestBaseTask2,
+                    "task": SampleBaseTask1,
+                    "task2": SampleBaseTask2,
                 }
             },
         )
@@ -432,13 +426,13 @@ class BaseTaskTests(TestCase):
         with self.assertRaisesRegex(AssertionError, msg):
 
             class Somesubclassname(
-                TestBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
+                SampleBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
             ):
                 def run(self, execute_directory: Path) -> bool:  # noqa: U100
                     raise NotImplementedError()
 
             class SomeSubclassName(
-                TestBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
+                SampleBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
             ):
                 def run(self, execute_directory: Path) -> bool:  # noqa: U100
                     raise NotImplementedError()
@@ -450,7 +444,7 @@ class BaseTaskTests(TestCase):
         with self.assertRaisesRegex(AssertionError, msg):
 
             class Somesubclassname(
-                TestBaseTask[BaseTaskData, BaseDynamicTaskData]
+                SampleBaseTask[BaseTaskData, BaseDynamicTaskData]
             ):
                 TASK_TYPE = TaskTypes.SERVER
 
@@ -461,7 +455,7 @@ class BaseTaskTests(TestCase):
                     raise NotImplementedError()
 
             class SomeSubclassName(
-                TestBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
+                SampleBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
             ):
                 def run(self, execute_directory: Path) -> bool:  # noqa: U100
                     raise NotImplementedError()
@@ -470,13 +464,13 @@ class BaseTaskTests(TestCase):
         with self.assertRaisesRegex(AssertionError, msg):
 
             class SomeSubclassName1(
-                TestBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
+                SampleBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
             ):
                 def run(self, execute_directory: Path) -> bool:  # noqa: U100
                     raise NotImplementedError()
 
             class Somesubclassname1(
-                TestBaseTask[BaseTaskData, BaseDynamicTaskData]
+                SampleBaseTask[BaseTaskData, BaseDynamicTaskData]
             ):
                 TASK_TYPE = TaskTypes.SERVER
 
@@ -713,6 +707,26 @@ class BaseTaskTests(TestCase):
                 ],
             )
 
+    def test_ensure_collection_category_ok(self) -> None:
+        BaseTask.ensure_collection_category(
+            configuration_key="source_collection",
+            category=CollectionCategory.TEST,
+            expected=CollectionCategory.TEST,
+        )
+
+    def test_ensure_collection_category_raise(self) -> None:
+        with self.assertRaisesRegex(
+            TaskConfigError,
+            fr"^source_collection: unexpected collection category: "
+            fr"'{CollectionCategory.TEST}'\. "
+            fr"Expected: '{CollectionCategory.SUITE}'$",
+        ):
+            BaseTask.ensure_collection_category(
+                configuration_key="source_collection",
+                category=CollectionCategory.TEST,
+                expected=CollectionCategory.SUITE,
+            )
+
     def test_instantiate_with_new_data(self) -> None:
         task = self.task2.instantiate_with_new_data({"foo": "baz"})
         self.assertEqual(self.task2.data.foo, "bar")
@@ -749,24 +763,20 @@ class BaseTaskTests(TestCase):
         )
 
 
-class TestBaseExternalTask1(
-    TestBaseExternalTask[BaseTaskData, BaseDynamicTaskData]
+class SampleBaseExternalTask1(
+    SampleBaseExternalTask[BaseTaskData, BaseDynamicTaskData]
 ):
     """Sample class to test BaseExternalTask class."""
-
-    __test__ = False
 
     def run(self, execute_directory: Path) -> bool:
         """Unused abstract method from BaseExternalTask."""
         raise NotImplementedError()
 
 
-class TestBaseExternalTask2(
-    TestBaseExternalTask[TestBaseTask2Data, BaseDynamicTaskData]
+class SampleBaseExternalTask2(
+    SampleBaseExternalTask[SampleBaseTask2Data, BaseDynamicTaskData]
 ):
     """Test BaseExternalTask class with data validation."""
-
-    __test__ = False
 
     TASK_VERSION = 1
 
@@ -776,18 +786,20 @@ class TestBaseExternalTask2(
 
 
 class BaseExternalTaskTests(TestCase):
-    """Unit tests for :class:`BaseExternalTask`."""
+    """Unit tests for :py:class:`BaseExternalTask`."""
 
     def setUp(self) -> None:
         """Create the shared attributes."""
-        self.task = TestBaseExternalTask1({})
-        self.task2 = TestBaseExternalTask2({"foo": "bar"})
+        super().setUp()
+        self.task = SampleBaseExternalTask1({})
+        self.task2 = SampleBaseExternalTask2({"foo": "bar"})
         self.worker_metadata = {"system:worker_type": WorkerType.EXTERNAL}
 
     def tearDown(self) -> None:
         """Delete temporary directory, if it exists."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def test_can_run_on_no_version(self) -> None:
         """Ensure can_run_on returns True if no version is specified."""
@@ -799,7 +811,7 @@ class BaseExternalTaskTests(TestCase):
         """Ensure can_run_on returns False if versions differ."""
         self.assertIsNone(self.task.TASK_VERSION)
         metadata = {**self.worker_metadata, **self.task.analyze_worker()}
-        metadata["testbaseexternaltask1:version"] = 1
+        metadata["samplebaseexternaltask1:version"] = 1
         self.assertFalse(self.task.can_run_on(metadata))
 
     def test_can_run_on_type_mismatch(self) -> None:
@@ -844,7 +856,7 @@ class BaseExternalTaskTests(TestCase):
 
         self.task.work_request_id = 1
         self.task.debusine = mock.create_autospec(spec=Debusine)
-        artifact_response = ArtifactResponse(
+        artifact_response = create_artifact_response(
             workspace=artifact_workspace,
             id=5,
             category=ArtifactCategory.TEST,
@@ -1302,7 +1314,7 @@ class TestsTaskConfigError(TestCase):
 
 
 class RunCommandTaskForTesting(
-    TestBaseTask[BaseTaskData, BaseDynamicTaskData],
+    SampleBaseTask[BaseTaskData, BaseDynamicTaskData],
     RunCommandTask[BaseTaskData, BaseDynamicTaskData],
 ):
     """Used in TaskTests."""
@@ -1448,6 +1460,7 @@ class RunCommandTaskTests(
 
     def setUp(self) -> None:
         """Set up tests."""
+        super().setUp()
         self.temp_directory = self.create_temporary_directory()
         self.task = RunCommandTaskForTesting()
 
@@ -1455,6 +1468,7 @@ class RunCommandTaskTests(
         """Delete temporary directory, if it exists."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def test_cmdline_as_root(self) -> None:
         """_cmdline_as_root return False."""
@@ -1529,40 +1543,38 @@ class RunCommandTaskTests(
         # Block SIGUSR1 signal in case that it is delivered before
         # _do_wait_for_sigusr1 collects it
 
-        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
-
-        self.addCleanup(
-            signal.pthread_sigmask, signal.SIG_UNBLOCK, {signal.SIGUSR1}
-        )
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
 
         script_path = self.write_signal_logger()
 
-        return task.run_cmd(
-            [
-                str(script_path),
-                str(self.temp_directory),
-                str(os.getpid()),
-                *options,
-            ],
-            self.temp_directory,
-        )
+        try:
+            return task.run_cmd(
+                [
+                    str(script_path),
+                    str(self.temp_directory),
+                    str(os.getpid()),
+                    *options,
+                ],
+                self.temp_directory,
+            )
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
     def run_success_failure(self, task: RunCommandTaskForTesting) -> int | None:
         """Run success/failure script in task."""
         # Block SIGUSR1 signal in case that it is delivered before
         # _do_wait_for_sigusr1 collects it
 
-        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
-
-        self.addCleanup(
-            signal.pthread_sigmask, signal.SIG_UNBLOCK, {signal.SIGUSR1}
-        )
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
 
         script_path = self.write_success_failure()
 
-        return task.run_cmd(
-            [str(script_path), str(os.getpid())], self.temp_directory
-        )
+        try:
+            return task.run_cmd(
+                [str(script_path), str(os.getpid())], self.temp_directory
+            )
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
     @staticmethod
     def pid_exist_not_zombie(pid: int) -> bool:
@@ -1995,12 +2007,14 @@ class BaseTaskWithExecutorTests(TestCase):
 
     def setUp(self) -> None:
         """Create the shared attributes."""
-        self.task = TestBaseTaskWithExecutor1({})
+        super().setUp()
+        self.task = SampleBaseTaskWithExecutor1({})
 
     def tearDown(self) -> None:
         """Delete directory to avoid ResourceWarning."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def patch_executor(
         self, backend: BackendType, image_category: ExecutorImageCategory
@@ -2057,7 +2071,144 @@ class BaseTaskWithExecutorTests(TestCase):
 
     def test_get_environment_with_architecture_and_backend(self) -> None:
         """`get_environment` fills in architecture/backend."""
-        task = TestBaseTaskWithExecutorAndArchitecture(
+        task = SampleBaseTaskWithExecutorAndArchitecture(
+            {
+                "backend": BackendType.UNSHARE,
+                "environment": "debian/match:codename=bookworm",
+                "host_architecture": "amd64",
+            }
+        )
+        assert task.data.environment
+        self.patch_executor(BackendType.UNSHARE, ExecutorImageCategory.TARBALL)
+        artifact_info = ArtifactInfo(
+            id=2,
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data=create_system_tarball_data(),
+        )
+        task_db = FakeTaskDatabase(
+            single_lookups={
+                (
+                    "debian/match:codename=bookworm:architecture=amd64:"
+                    "format=tarball:backend=unshare:variant=",
+                    None,
+                ): artifact_info
+            }
+        )
+
+        self.assertEqual(
+            task.get_environment(task_db, task.data.environment), artifact_info
+        )
+
+    def test_get_environment_with_architecture_from_worker(self) -> None:
+        """`get_environment` falls back to the worker's host architecture."""
+        task = SampleBaseTaskWithExecutorAndArchitecture(
+            {
+                "backend": BackendType.UNSHARE,
+                "environment": "debian/match:codename=bookworm",
+            }
+        )
+        assert task.data.environment
+        task.worker_host_architecture = "amd64"
+        self.patch_executor(BackendType.UNSHARE, ExecutorImageCategory.IMAGE)
+        artifact_info = ArtifactInfo(
+            id=3,
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data=create_system_tarball_data(),
+        )
+        task_db = FakeTaskDatabase(
+            single_lookups={
+                (
+                    "debian/match:codename=bookworm:architecture=amd64:"
+                    "format=image:backend=unshare:variant=",
+                    None,
+                ): artifact_info
+            }
+        )
+
+        self.assertEqual(
+            task.get_environment(task_db, task.data.environment), artifact_info
+        )
+
+    def test_get_environment_with_architecture_missing(self) -> None:
+        """`get_environment` skips architecture if it's missing."""
+        task = SampleBaseTaskWithExecutorAndArchitecture(
+            {
+                "backend": BackendType.UNSHARE,
+                "environment": "debian/match:codename=bookworm",
+            }
+        )
+        assert task.data.environment
+        self.patch_executor(BackendType.UNSHARE, ExecutorImageCategory.IMAGE)
+        artifact_info = ArtifactInfo(
+            id=3,
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data=create_system_tarball_data(),
+        )
+        task_db = FakeTaskDatabase(
+            single_lookups={
+                (
+                    "debian/match:codename=bookworm:format=image:"
+                    "backend=unshare:variant=",
+                    None,
+                ): artifact_info
+            }
+        )
+
+        self.assertEqual(
+            task.get_environment(task_db, task.data.environment), artifact_info
+        )
+
+    def test_get_environment_tries_variant(self) -> None:
+        """`get_environment` tries the task name as a variant first."""
+        task = SampleBaseTaskWithExecutorAndArchitecture(
+            {
+                "backend": BackendType.UNSHARE,
+                "environment": "debian/match:codename=bookworm",
+                "host_architecture": "amd64",
+            }
+        )
+        assert task.data.environment
+        self.patch_executor(BackendType.UNSHARE, ExecutorImageCategory.TARBALL)
+        artifact_info = ArtifactInfo(
+            id=2,
+            category=ArtifactCategory.SYSTEM_TARBALL,
+            data=create_system_tarball_data(),
+        )
+        task_db = FakeTaskDatabase(
+            single_lookups={
+                (
+                    "debian/match:codename=bookworm:architecture=amd64:"
+                    "format=tarball:backend=unshare:"
+                    "variant=samplebasetaskwithexecutorandarchitecture",
+                    None,
+                ): artifact_info,
+                (
+                    "debian/match:codename=bookworm:architecture=amd64:"
+                    "format=tarball:backend=unshare:variant=",
+                    None,
+                ): None,
+            }
+        )
+
+        self.assertEqual(
+            task.get_environment(task_db, task.data.environment), artifact_info
+        )
+
+        task_db.single_lookups = {
+            (
+                "debian/match:codename=bookworm:architecture=amd64:"
+                "format=tarball:backend=unshare:variant=",
+                None,
+            ): artifact_info
+        }
+
+        self.assertEqual(
+            task.get_environment(task_db, task.data.environment), artifact_info
+        )
+
+    def test_get_environment_without_try_variant(self) -> None:
+        """`get_environment` can be told not to try variants."""
+        task = SampleBaseTaskWithExecutorAndArchitecture(
             {
                 "backend": BackendType.UNSHARE,
                 "environment": "debian/match:codename=bookworm",
@@ -2077,71 +2228,15 @@ class BaseTaskWithExecutorTests(TestCase):
                     "debian/match:codename=bookworm:architecture=amd64:"
                     "format=tarball:backend=unshare",
                     None,
-                ): artifact_info
+                ): artifact_info,
             }
         )
 
         self.assertEqual(
-            task.get_environment(task_db, task.data.environment), artifact_info
-        )
-
-    def test_get_environment_with_architecture_from_worker(self) -> None:
-        """`get_environment` falls back to the worker's host architecture."""
-        task = TestBaseTaskWithExecutorAndArchitecture(
-            {
-                "backend": BackendType.UNSHARE,
-                "environment": "debian/match:codename=bookworm",
-            }
-        )
-        assert task.data.environment
-        task.worker_host_architecture = "amd64"
-        self.patch_executor(BackendType.UNSHARE, ExecutorImageCategory.IMAGE)
-        artifact_info = ArtifactInfo(
-            id=3,
-            category=ArtifactCategory.SYSTEM_TARBALL,
-            data=create_system_tarball_data(),
-        )
-        task_db = FakeTaskDatabase(
-            single_lookups={
-                (
-                    "debian/match:codename=bookworm:architecture=amd64:"
-                    "format=image:backend=unshare",
-                    None,
-                ): artifact_info
-            }
-        )
-
-        self.assertEqual(
-            task.get_environment(task_db, task.data.environment), artifact_info
-        )
-
-    def test_get_environment_with_architecture_missing(self) -> None:
-        """`get_environment` skips architecture if it's missing."""
-        task = TestBaseTaskWithExecutorAndArchitecture(
-            {
-                "backend": BackendType.UNSHARE,
-                "environment": "debian/match:codename=bookworm",
-            }
-        )
-        assert task.data.environment
-        self.patch_executor(BackendType.UNSHARE, ExecutorImageCategory.IMAGE)
-        artifact_info = ArtifactInfo(
-            id=3,
-            category=ArtifactCategory.SYSTEM_TARBALL,
-            data=create_system_tarball_data(),
-        )
-        task_db = FakeTaskDatabase(
-            single_lookups={
-                (
-                    "debian/match:codename=bookworm:format=image:"
-                    "backend=unshare",
-                    None,
-                ): artifact_info
-            }
-        )
-
-        self.assertEqual(
-            task.get_environment(task_db, task.data.environment), artifact_info
+            task.get_environment(
+                task_db, task.data.environment, try_variant=False
+            ),
+            artifact_info,
         )
 
     def test_prepare_executor(self) -> None:
@@ -2282,7 +2377,7 @@ class TestTestTaskMixin(TestCase):
 
     def test_label(self) -> None:
         """Test get_label."""
-        task = TestBaseTask1({})
+        task = SampleBaseTask1({})
         self.assertEqual(task.get_label(), "test")
 
 
@@ -2291,7 +2386,7 @@ class DefaultDynamicDataTest(TestCase):
 
     def test_dynamic_data(self) -> None:
         """Test build_dynamic_data."""
-        task = TestDefaultDynamicData({})
+        task = SampleDefaultDynamicData({})
         self.assertEqual(
             task.compute_dynamic_data(FakeTaskDatabase()), BaseDynamicTaskData()
         )
@@ -2303,7 +2398,7 @@ class ExtraRepositoryMixinTests(TestCase):
     def setUp(self) -> None:
         """Create the shared attributes."""
         super().setUp()
-        self.task = TestExtraRepositoryMixin({})
+        self.task = SampleExtraRepositoryMixin({})
         self.directory = self.create_temporary_directory()
 
     def configure_extra_repositories(
@@ -2499,3 +2594,7 @@ class ExtraRepositoryMixinTests(TestCase):
                 ),
             ],
         )
+
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])

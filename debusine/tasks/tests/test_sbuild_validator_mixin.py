@@ -11,16 +11,18 @@
 
 from pathlib import Path
 
+from debusine.tasks import DefaultDynamicData
 from debusine.tasks.models import BaseDynamicTaskData, BaseTaskData
 from debusine.tasks.sbuild_validator_mixin import SbuildValidatorMixin
-from debusine.tasks.tests.helper_mixin import TestBaseExternalTask
+from debusine.tasks.tests.helper_mixin import SampleBaseExternalTask
 from debusine.test import TestCase
 from debusine.utils import calculate_hash
 
 
 class TaskWithSbuildValidatorMixin(
     SbuildValidatorMixin,
-    TestBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
+    SampleBaseExternalTask[BaseTaskData, BaseDynamicTaskData],
+    DefaultDynamicData[BaseTaskData],
 ):
     """Minimum class to test SbuildValidatorMixin."""
 
@@ -34,6 +36,7 @@ class SbuildValidatorMixinTests(TestCase):
 
     def setUp(self) -> None:
         """Set up test."""
+        super().setUp()
         self.sbuild_validator_mixin = TaskWithSbuildValidatorMixin({})
 
     def test_check_directory_for_consistency_errors_no_errors(self) -> None:

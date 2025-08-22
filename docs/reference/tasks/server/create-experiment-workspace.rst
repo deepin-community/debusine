@@ -1,4 +1,4 @@
-.. _task-create-experiment-workspace:
+.. task:: CreateExperimentWorkspace
 
 CreateExperimentWorkspace task
 ------------------------------

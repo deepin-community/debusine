@@ -18,11 +18,7 @@ from debusine.artifacts.models import (
     CollectionCategory,
     DebianSourcePackage,
 )
-from debusine.client.models import (
-    LookupResultType,
-    LookupSingleResponse,
-    RemoteArtifact,
-)
+from debusine.client.models import LookupResultType, LookupSingleResponse
 from debusine.tasks import MakeSourcePackageUpload, TaskConfigError
 from debusine.tasks.models import MakeSourcePackageUploadDynamicData
 from debusine.tasks.server import ArtifactInfo
@@ -33,6 +29,7 @@ from debusine.tasks.tests.helper_mixin import (
 from debusine.test import TestCase
 from debusine.test.test_utils import (
     create_artifact_response,
+    create_remote_artifact,
     create_system_tarball_data,
 )
 
@@ -47,13 +44,15 @@ class MakeSourcePackageUploadTests(
         "input": {"source_artifact": 421},
     }
 
-    def setUp(self) -> None:  # noqa: D102
+    def setUp(self) -> None:
+        super().setUp()
         self.configure_task()
 
     def tearDown(self) -> None:
         """Delete directory to avoid ResourceWarning with python -m unittest."""
         if self.task._debug_log_files_directory is not None:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def test_compute_dynamic_data(self) -> None:
         """Dynamic data receives relevant artifact IDs."""
@@ -62,7 +61,7 @@ class MakeSourcePackageUploadTests(
                 # environment
                 (
                     "debian/match:codename=bookworm:format=tarball:"
-                    "backend=unshare",
+                    "backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -95,7 +94,7 @@ class MakeSourcePackageUploadTests(
                 # environment
                 (
                     "debian/match:codename=bookworm:format=tarball:"
-                    "backend=unshare",
+                    "backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -121,7 +120,17 @@ class MakeSourcePackageUploadTests(
         ):
             self.task.compute_dynamic_data(task_db)
 
-    def test_configure_fails_with_missing_required_data(  # noqa: D102
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
+        self.task.dynamic_data = MakeSourcePackageUploadDynamicData(
+            environment_id=1,
+            input_source_artifact_id=2,
+        )
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2])
+
+    def test_configure_fails_with_missing_required_data(
         self,
     ) -> None:
         with self.assertRaises(TaskConfigError):
@@ -197,7 +206,7 @@ class MakeSourcePackageUploadTests(
             result_type=LookupResultType.ARTIFACT, artifact=1
         )
         debusine_mock.download_artifact.return_value = True
-        debusine_mock.upload_artifact.return_value = RemoteArtifact(
+        debusine_mock.upload_artifact.return_value = create_remote_artifact(
             id=2, workspace=self.task.workspace_name
         )
 
@@ -293,7 +302,7 @@ class MakeSourcePackageUploadTests(
         workspace_name = "testing"
 
         uploaded_artifacts = [
-            RemoteArtifact(id=10, workspace=workspace_name),
+            create_remote_artifact(id=10, workspace=workspace_name),
         ]
 
         debusine_mock.upload_artifact.side_effect = uploaded_artifacts

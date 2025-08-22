@@ -33,9 +33,8 @@ Supported options:
   upload to
 * ``debusine_workflow``: the name of the :ref:`workflow
   <explanation-workflows>` template to start (configured by the workspace
-  owners, and normally an instance of :ref:`debian_pipeline
-  <workflow-debian-pipeline>`); optional if
-  ``debusine_workflows_by_distribution`` is set)
+  owners, and normally an instance of :workflow:`debian_pipeline`); optional
+  if ``debusine_workflows_by_distribution`` is set)
 * ``debusine_workflows_by_distribution``: a mapping from target distribution
   names in the ``.changes`` file to workflow template names, as in
   ``debusine_workflow``; optional if ``debusine_workflow`` is set

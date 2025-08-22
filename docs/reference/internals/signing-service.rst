@@ -17,9 +17,10 @@ reading audit logs.
 This application has a worker, reusing most of the existing
 ``debusine.worker`` code.  It sends metadata to the server indicating that
 it is a :ref:`Signing worker <explanation-workers>`, and that it requires
-HTTPS connectivity to the server.  ``debusine-admin manage_worker`` only
-manages signing workers if given the ``--worker-type signing`` option, to
-avoid enabling them by accident.
+HTTPS connectivity to the server.  ``debusine-admin worker enable`` and
+``debusine-admin worker disable`` only enable/disable signing workers if
+given the ``--worker-type signing`` option, to avoid enabling them by
+accident.
 
 :ref:`Signing tasks <task-type-signing>` are scheduled similarly to worker
 tasks, and are required to use the public API to interact with artifacts in
@@ -68,8 +69,7 @@ Key Creation:
 * Sysadmins can generate keys in Debusine.
 * In the future, we expect key generation (of some sort, but it may as
   well be HSM) to be a routine part of creating a workspace that holds a
-  repository. Probably delegated by a workflow, once `#634
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/634>`_ has
+  repository. Probably delegated by a workflow, once :issue:`634` has
   landed.
 
 :ref:`assets`:
@@ -88,33 +88,32 @@ Signing Key Assets:
 
 * Signing key assets are used to manage the security of signing keys.
   They contain the fingerprint, purpose, and public part of the key.
-* The ``GenerateKey`` task will create a signing key asset.
-* The ``GenerateKey`` task can be directly executed by scope owners.
-* The ``GenerateKey`` task may be incorporated in workflows.
-* In the future, the execution of the ``GenerateKey`` task may be
+* The :task:`GenerateKey` task will create a signing key asset.
+* The :task:`GenerateKey` task can be directly executed by scope owners.
+* The :task:`GenerateKey` task may be incorporated in workflows.
+* In the future, the execution of the :task:`GenerateKey` task may be
   unrestricted.
 
 Signing:
 
-* The ``Sign`` task may be incorporated into workflows. The workflow
+* The :task:`Sign` task may be incorporated into workflows. The workflow
   creator can then specify the signing key to be used.
-* ``Sign`` tasks are permitted to execute if the user running the
-  task has the ``SIGNER`` role on the asset (via a group membership) in
-  the workspace that the task is executing in.
-* ``Sign`` tasks should not be dispatched unless the user is permitted
+* :task:`Sign` tasks are permitted to execute if the user running the task
+  has the ``SIGNER`` role on the asset (via a group membership) in the
+  workspace that the task is executing in.
+* :task:`Sign` tasks should not be dispatched unless the user is permitted
   to use the given signing key.
 * The signing service makes API requests back to the Debusine
   server to make permission determinations, as a final check.
-* In the future, once we have more comprehensive permissions for
-  workflows, we may grant permission to execute a ``Sign`` task if the
-  workflow was created and blessed by a user who has permission to use a
-  given signing key. See `#634
-  <https://salsa.debian.org/freexian-team/debusine/-/issues/634>`_.
+* In the future, once we have more comprehensive permissions for workflows,
+  we may grant permission to execute a :task:`Sign` task if the workflow was
+  created and blessed by a user who has permission to use a given signing
+  key. See :issue:`634`.
 
 Automated Signing:
 
 * When we have APT repositories implemented, it will be necessary for
-  ``Sign`` tasks to be triggered periodically, by Debusine, without any
+  :task:`Sign` tasks to be triggered periodically, by Debusine, without any
   user linked to the request.
 * These Signing Key Assets for these repositories will have a permission
   granting the ``SIGNER`` role to the workspace hosting the repository,

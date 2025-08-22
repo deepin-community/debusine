@@ -27,7 +27,7 @@ _migration_commands = (
 
 def is_migration_command() -> bool:
     """Return True if a migration-related command is being run."""
-    return sys.argv[1] in _migration_commands
+    return len(sys.argv) > 1 and sys.argv[1] in _migration_commands
 
 
 def all_migrations_applied(admin_command: str, **kwargs: Any) -> list[Error]:

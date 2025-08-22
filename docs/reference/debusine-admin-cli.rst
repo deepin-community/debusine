@@ -22,7 +22,7 @@ features by using the ``--help`` command line option:
 
 .. code-block:: console
 
-  $ sudo -u debusine-server debusine-admin edit_worker_metadata --help
+  $ sudo -u debusine-server debusine-admin worker edit_metadata --help
 
 Command output
 --------------
@@ -32,20 +32,26 @@ If a command is successful: nothing is printed and the return code is 0.
 Managing workers
 ----------------
 
-``manage_worker``
-~~~~~~~~~~~~~~~~~
+``worker``
+~~~~~~~~~~
 
-The command ``manage_worker`` has two actions: **enable** and **disable**.
+This command has several sub-commands.
 
 Workers are **disabled** by default: they do not receive any tasks to run.
 
-To enable a worker find its name or its token using the ``list_workers``
-command and then enable the worker using the ``manage_worker``. To enable
-the worker ``worker-01``:
+``worker enable``
+.................
+
+To enable a worker find its name or its token using the ``debusine-admin
+worker list`` command and then enable the worker using ``debusine-admin
+worker enable``. To enable the worker ``worker-01``:
 
 .. code-block:: console
 
-  $ sudo -u debusine-server debusine-admin manage_worker enable worker-01
+  $ sudo -u debusine-server debusine-admin worker enable worker-01
+
+``worker disable``
+..................
 
 To disable a worker: use ``disable`` instead of ``enable``. When disabling
 a worker, any work requests assigned to the worker in RUNNING or PENDING status
@@ -62,17 +68,17 @@ To stop the running work requests on the worker run in the worker:
 
   $ sudo systemctl stop debusine-worker
 
-.. _debusine-admin-edit-worker-metadata:
+.. _debusine-admin-worker-edit-metadata:
 
-``edit_worker_metadata``
-~~~~~~~~~~~~~~~~~~~~~~~~
+``worker edit_metadata``
+........................
 
 A Debusine sysadmin can attach static metadata to a worker. To edit the
 worker metadata for ``worker-01`` you would run:
 
 .. code-block:: console
 
-  $ sudo -u debusine-server debusine-admin edit_worker_metadata worker-01
+  $ sudo -u debusine-server debusine-admin worker edit_metadata worker-01
 
 This launches ``sensible-editor`` on a file with the current metadata.
 The worker metadata is presented (and expected to be formatted) in YAML.
@@ -96,28 +102,30 @@ that file with ``--set``:
   - amd64
   - i386
   END
-  $ sudo -u debusine-server debusine-admin edit_worker_metadata worker-01 --set /tmp/metadata
+  $ sudo -u debusine-server debusine-admin worker edit_metadata worker-01 --set /tmp/metadata
   debusine: metadata set for debusine-internal
 
-``list_workers``
-~~~~~~~~~~~~~~~~
+``worker list``
+...............
 
 List workers with information:
 
 .. code-block:: console
 
-  $ sudo -u debusine-server debusine-admin list_workers
+  $ sudo -u debusine-server debusine-admin worker list
              ╷          ╷                                  ╷                                  ╷                                                                  ╷
    Name      │ Type     │ Registered                       │ Connected                        │ Token hash (do not copy)                                         │ Enabled
   ═══════════╪══════════╪══════════════════════════════════╪══════════════════════════════════╪══════════════════════════════════════════════════════════════════╪═════════
    saturn    │ external │ 2024-11-15T13:23:30.200968+00:00 │ 2024-11-15T14:02:30.105791+00:00 │ f299978eb7687291a6149df2b47e91e21891e5a04f2d41363617b2582a81e4ce │ True
    mars      │ external │ 2024-11-16T14:24:31.390558+00:00 │ -                                │ 7cff1b6b968bc2db06aec9cf4557ecc9e6c63356e2ade73c2c47c1d7015214a0 │ True
    mercury   │ external │ 2024-11-17T15:25:32.473994+00:00 │ -                                │ 6eff3aee879ad9c953f8f12bf0fe8544126ec80eab0867aa205413db6fcbeed2 │ False
+             ╵          ╵                                  ╵                                  ╵                                                                  ╵
 
 If a worker is not connected at this time: the ``Connected`` column has ``-``.
 If it's connected: it has the time that connected.
 
-Workers can be enabled or disabled using the command ``manage_worker``.
+Workers can be enabled or disabled using the command ``debusine-admin worker
+enable`` or ``debusine-admin worker disable`` respectively.
 
 You can get a machine-readable version of this output with the ``--yaml`` option.
 
@@ -297,64 +305,6 @@ To list roles:
 
 You can get a machine-readable version of this output with the ``--yaml`` option.
 
-
-``create_workspace``
-~~~~~~~~~~~~~~~~~~~~
-
-Deprecated: see :ref:`debusine-admin-cli-workspace`.
-
-Artifacts belong to workspaces. The command has the options:
-
-  * ``--public``: Public permissions (default: private)
-  * ``--default-expiration-delay``: Minimal time (in days) that a new artifact is kept in the workspace before being expired (default: 0)
-  * ``--no-singleton-collections``: Don't create the usual singleton collections for this workspace (default: create singleton collections)
-  * ``--with-owners-group [name]``: Name of the owners groups for the workspace (optional name defaults to Owners-workspacename)
-
-To create a workspace:
-
-.. code-block:: console
-
-  $ sudo -u debusine-server debusine-admin create_workspace debian/Debian
-
-Workspaces are created ``Private`` by default (only registered users
-can access its resources) and without a default expiration delay. Use
-``manage_workspace`` to change the permissions or expiry delay.
-
-``manage_workspace``
-~~~~~~~~~~~~~~~~~~~~
-
-Deprecated: see :ref:`debusine-admin-cli-workspace`.
-
-Change a ``workspace``. The command has the options:
-
-  * ``--private``: make the workspace private (only authenticated users can see the resources in it)
-  * ``--public``: non-logged users can see the resources of the workspace
-  * ``--default-expiration-delay [DAYS]``: set the default expiration delay for the artifacts that are created in this workspace.
-
-To change the permissions of the workspace `Debian` to `public`:
-
-.. code-block:: console
-
-  $ sudo -u debusine-server debusine-admin manage_workspace debian/Debian --public
-
-``list_workspaces``
-~~~~~~~~~~~~~~~~~~~
-
-Deprecated: see :ref:`debusine-admin-cli-workspace`.
-
-List the workspaces with information:
-
-.. code-block:: console
-
-  $ sudo -u debusine-server debusine-admin list_workspaces
-                   ╷        ╷                                 ╷                    ╷
-   Name            │ Public │ Default Expiration Delay (days) │ Default File Store │ # Other File Stores
-  ═════════════════╪════════╪═════════════════════════════════╪════════════════════╪═════════════════════
-   debusine/System │ True   │ Never                           │ Default (Local)    │ 0
-   debusine/Debian │ False  │ Never                           │ Default (Local)    │ 0
-                   ╵        ╵                                 ╵                    ╵
-
-You can get a machine-readable version of this output with the ``--yaml`` option.
 
 Manage work requests
 --------------------

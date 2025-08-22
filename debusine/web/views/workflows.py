@@ -12,10 +12,10 @@ from typing import cast
 
 from django.db.models import QuerySet
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.context import context
 from debusine.db.models import WorkRequest
 from debusine.db.models.work_requests import WorkRequestQuerySet
-from debusine.tasks.models import TaskTypes
 from debusine.web.views.base import ListViewBase, WorkspaceView
 from debusine.web.views.table import TableMixin
 from debusine.web.views.tables import WorkflowTable

@@ -10,15 +10,12 @@
 """Tests for S3FileBackend."""
 
 from datetime import timedelta
-from importlib.metadata import version
 from io import BytesIO
 from typing import ClassVar
-from unittest import skipIf
 from urllib.parse import parse_qs, urlsplit
 
 from botocore import stub
 from django.utils import timezone
-from packaging.version import Version
 
 from debusine.assets.models import (
     AWSProviderAccountConfiguration,
@@ -271,12 +268,6 @@ class S3FileBackendTests(TestCase):
 
         stubber.assert_no_pending_responses()
 
-    # TODO: Unless Hetzner fixes this, we need some other approach to
-    # persuade boto3 to turn off data integrity protection.
-    @skipIf(
-        Version(version("boto3")) >= Version("1.36.0"),
-        "boto3 >= 1.36.0 always adds ChecksumAlgorithm",
-    )
     def test_entry_add_hetzner(self) -> None:
         """Skip ChecksumAlgorithm when uploading to Hetzner."""
         assert self.file_store.provider_account is not None

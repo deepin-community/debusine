@@ -42,7 +42,7 @@ from paramiko.common import (
     OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED,
     OPEN_SUCCEEDED,
 )
-from paramiko.sftp import SFTP_OK
+from paramiko.sftp import SFTP_FAILURE, SFTP_OK
 
 
 class FakeSSHServer(ServerInterface):  # pragma: no cover
@@ -93,7 +93,11 @@ class FakeSFTPServer(SFTPServerInterface):  # pragma: no cover
         try:
             return SFTPAttributes.from_stat(os.stat(path))
         except OSError as e:
-            return SFTPServer.convert_errno(e.errno)
+            return (
+                SFTPServer.convert_errno(e.errno)
+                if e.errno is not None
+                else SFTP_FAILURE
+            )
 
     def chattr(self, path: str, attr: SFTPAttributes) -> int:
         """Change the attributes of a file."""

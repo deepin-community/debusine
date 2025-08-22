@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Literal, NoReturn, overload
 from urllib.parse import urlparse
 
+from debusine.utils import atomic_writer
+
 
 class ConfigHandler(ConfigParser):
     """Handle debusine worker configuration file (.ini format) and tokens."""
@@ -233,16 +235,10 @@ class ConfigHandler(ConfigParser):
     def write_token(self, token: str) -> None:
         """Write token into the token file."""
         try:
-            fd = os.open(
-                self._token_file,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-                mode=0o600,
-            )
+            with atomic_writer(self._token_file, mode="w", chmod=0o600) as fd:
+                fd.write(token)
         except OSError as exc:
             self._fail(f'Cannot open token file: {exc}')
-
-        os.write(fd, token.encode('utf-8'))
-        os.close(fd)
 
         self._token = token
 

@@ -14,6 +14,7 @@ from functools import cached_property
 from typing import Any, cast
 
 from django.contrib.auth import views as auth_views
+from django.contrib.auth.forms import AuthenticationForm
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import get_object_or_404
@@ -31,7 +32,12 @@ from debusine.db.models.auth import (
 from debusine.server.signon.providers import Provider
 from debusine.server.signon.signon import Signon
 from debusine.server.signon.views import SignonLogoutMixin
-from debusine.web.forms import GroupAddUserForm, ModelFormBase, TokenForm
+from debusine.web.forms import (
+    BootstrapMixin,
+    GroupAddUserForm,
+    ModelFormBase,
+    TokenForm,
+)
 from debusine.web.views.base import (
     BaseUIView,
     CreateViewBase,
@@ -50,10 +56,17 @@ from debusine.web.views.tables import (
 )
 
 
+class AuthenticationBootstrapForm(BootstrapMixin, AuthenticationForm):
+    """Django's AuthenticationForm using BootstrapMixin from Debusine."""
+
+    pass
+
+
 class LoginView(BaseUIView, auth_views.LoginView):
     """Class for the login view."""
 
     template_name = "account/login.html"
+    form_class = AuthenticationBootstrapForm
     title = "Log in"
 
     def get(
@@ -98,7 +111,7 @@ class UserDetailView(BaseUIView, DetailViewBase[User]):
 
     def get_title(self) -> str:
         """Return the page title."""
-        return self.object.get_full_name()
+        return self.object.get_full_name() or self.object.username
 
     def get_queryset(self) -> QuerySet[User]:
         """All workspaces for authenticated users or only public ones."""

@@ -1,4 +1,4 @@
-.. _task-delay:
+.. task:: Delay
 
 Delay task
 ----------

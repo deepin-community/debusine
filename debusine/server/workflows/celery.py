@@ -14,12 +14,13 @@ import logging
 from celery import shared_task
 from django.db import transaction
 
+from debusine.artifacts.models import TaskTypes
 from debusine.db.models import WorkRequest
 from debusine.server.workflows.base import (
     WorkflowRunError,
     orchestrate_workflow,
 )
-from debusine.tasks.models import OutputData, OutputDataError, TaskTypes
+from debusine.tasks.models import OutputData, OutputDataError
 
 logger = logging.getLogger(__name__)
 

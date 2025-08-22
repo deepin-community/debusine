@@ -36,13 +36,10 @@ from multidict import CIMultiDict, CIMultiDictProxy
 from yarl import URL
 
 import debusine.tasks.models as task_models
-from debusine.artifacts.models import RuntimeStatistics
+from debusine.artifacts.models import RuntimeStatistics, TaskTypes
 from debusine.client.debusine import Debusine
 from debusine.client.exceptions import TokenDisabledError
-from debusine.client.models import (
-    WorkRequestResponse,
-    model_to_json_serializable_dict,
-)
+from debusine.client.models import model_to_json_serializable_dict
 from debusine.tasks import (
     BaseTask,
     BaseTaskWithExecutor,
@@ -57,12 +54,17 @@ from debusine.tasks.models import (
     OutputDataError,
     SbuildData,
     SbuildInput,
-    TaskTypes,
     WorkerType,
 )
-from debusine.tasks.tests.helper_mixin import TestBaseExternalTask, TestBaseTask
+from debusine.tasks.tests.helper_mixin import (
+    SampleBaseExternalTask,
+    SampleBaseTask,
+)
 from debusine.test import TestCase
-from debusine.test.test_utils import create_artifact_response
+from debusine.test.test_utils import (
+    create_artifact_response,
+    create_work_request_response,
+)
 from debusine.worker import Worker
 from debusine.worker.config import ConfigHandler
 from debusine.worker.system_information import (
@@ -982,8 +984,8 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
             # Allow the execute call to finish
             lock.release()
 
-    async def test_log_work_request_cannot_report_logs(self) -> None:
-        """Worker can't report to the server, so logs this."""
+    async def test_log_work_request_cannot_report_exits(self) -> None:
+        """Worker can't report to the server, so logs this and exits."""
         # Mock Sbuild.execute()
         patcher_execute = mock.patch.object(Sbuild, 'execute', autospec=True)
         mocked_execute = patcher_execute.start()
@@ -1009,11 +1011,15 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
         )
         work_request_completed_mocked.side_effect = Exception("network error")
 
-        with self.assertLogsContains(
-            "Cannot reach server", level=logging.ERROR
+        with (
+            self.assertLogsContains("Cannot reach server", level=logging.ERROR),
+            mock.patch(
+                "debusine.worker.Worker._exit_worker", autospec=True
+            ) as exit_worker,
         ):
             async with self.completed_task():
                 await self.worker.connect()
+            exit_worker.assert_called_once()
 
     async def assert_invalid_get_next_for_worker_logging(
         self, get_next_for_worker: ServerConfig.GetNextForWorkerResponse
@@ -1103,7 +1109,7 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
             pass
 
         class ServerTest(
-            TestBaseTask[ServerTestData, task_models.BaseDynamicTaskData],
+            SampleBaseTask[ServerTestData, task_models.BaseDynamicTaskData],
         ):
             TASK_VERSION = 1
             TASK_TYPE = TaskTypes.SERVER
@@ -1118,7 +1124,7 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
             BaseTask._sub_tasks[TaskTypes.SERVER].__delitem__, "servertest"
         )
 
-        next_work_request = WorkRequestResponse(
+        next_work_request = create_work_request_response(
             id=52,
             task_type="Server",
             task_name="servertest",
@@ -1151,7 +1157,7 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
             pass
 
         class SigningTest(
-            TestBaseExternalTask[
+            SampleBaseExternalTask[
                 SigningTestData, task_models.BaseDynamicTaskData
             ],
         ):
@@ -1165,7 +1171,7 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
             BaseTask._sub_tasks[TaskTypes.SIGNING].__delitem__, "signingtest"
         )
 
-        next_work_request = WorkRequestResponse(
+        next_work_request = create_work_request_response(
             id=52,
             task_type="Signing",
             task_name="signingtest",
@@ -1194,7 +1200,7 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
 
     async def test_worker_task_on_signing_worker(self) -> None:
         """A signing worker refuses to run a worker task."""
-        next_work_request = WorkRequestResponse(
+        next_work_request = create_work_request_response(
             id=52,
             task_type="Worker",
             task_name="noop",
@@ -1229,7 +1235,7 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
             pass
 
         class SigningTest(
-            TestBaseExternalTask[
+            SampleBaseExternalTask[
                 SigningTestData, task_models.BaseDynamicTaskData
             ],
         ):
@@ -1243,7 +1249,7 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
             BaseTask._sub_tasks[TaskTypes.SIGNING].__delitem__, "signingtest"
         )
 
-        next_work_request = WorkRequestResponse(
+        next_work_request = create_work_request_response(
             id=52,
             task_type="Signing",
             task_name="signingtest",
@@ -1275,7 +1281,7 @@ class WorkerTests(TestCase, server.DebusineAioHTTPTestCase):
 
     async def test_unknown_task_name(self) -> None:
         """A worker refuses to run a task with an unknown name."""
-        next_work_request = WorkRequestResponse(
+        next_work_request = create_work_request_response(
             id=52,
             task_type="Worker",
             task_name="nonexistent",

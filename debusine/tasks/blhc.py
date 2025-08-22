@@ -81,6 +81,15 @@ class Blhc(
             subject=package_name,
         )
 
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        if not self.dynamic_data:
+            return []
+        result = [self.dynamic_data.input_artifact_id]
+        if val := self.dynamic_data.environment_id:
+            result.append(val)
+        return result
+
     def _cmdline(self) -> list[str]:
         """
         Build the blhc command line.

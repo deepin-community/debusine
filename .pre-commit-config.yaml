@@ -18,7 +18,7 @@ repos:
       - id: file-contents-sorter
         files: ^\.codespell-ignore
   - repo: https://github.com/asottile/pyupgrade
-    rev: v3.19.1
+    rev: v3.20.0
     hooks:
       - id: pyupgrade
         args:
@@ -43,7 +43,7 @@ repos:
     hooks:
       - id: djlint-reformat
   - repo: https://github.com/PyCQA/flake8
-    rev: 7.1.2
+    rev: 7.3.0
     hooks:
       - id: flake8
         args:
@@ -71,18 +71,17 @@ repos:
             |debusine/web/static/web/css/debusine-code-highlight.css
           )
   - repo: https://github.com/pre-commit/mirrors-mypy
-    # Deliberately pinned to an old version for compatibility with
-    # django-stubs 5.1.0.
-    rev: v1.11.2
+    rev: v1.15.0
     hooks:
       - id: mypy
         args: []
         pass_filenames: false
         additional_dependencies:
           # Unfortunately we have to duplicate the relevant parts of
-          # .[server,signing,tests] here; see
+          # .[client,docs,server,signing,tests] here; see
           # https://github.com/pre-commit/pre-commit/issues/730.
           - aiohttp
+          - argcomplete
           - boto3
           - botocore
           - celery[redis]
@@ -111,8 +110,10 @@ repos:
           - pydantic
           - pyftpdlib
           - PyNaCl
+          - pytest
           - python-dateutil
           - python_debian
+          - python-magic
           - PyYAML
           - requests
           - requests-file
@@ -120,10 +121,13 @@ repos:
           - requests-toolbelt
           - responses!=0.25.5
           - rich
+          - Sphinx
           - tenacity
           # Dependencies specific to mypy.
           - boto3-stubs[boto3,ec2,s3]
-          - django-stubs[compatible-mypy]
+          # Deliberately pinned to an old version for compatibility with
+          # Django 4.2.
+          - django-stubs[compatible-mypy]<5.2.0
           - djangorestframework-stubs
           - pydantic[email]
           - types-lxml

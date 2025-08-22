@@ -53,6 +53,7 @@ from debusine.test import TestCase
 from debusine.test.test_utils import (
     create_artifact_response,
     create_file_response,
+    create_remote_artifact,
     create_system_tarball_data,
 )
 
@@ -72,12 +73,14 @@ class AssembleSignedSourceTests(
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.configure_task()
 
     def tearDown(self) -> None:
         """Delete debug log files directory if it exists."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
     def test_can_run_on(self) -> None:
         """can_run_on returns True if unshare is available."""
@@ -122,7 +125,7 @@ class AssembleSignedSourceTests(
                 # environment
                 (
                     "debian/match:codename=bookworm:format=tarball:"
-                    "backend=unshare",
+                    "backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -172,7 +175,7 @@ class AssembleSignedSourceTests(
                 # environment
                 (
                     "debian/match:codename=bookworm:format=tarball:"
-                    "backend=unshare",
+                    "backend=unshare:variant=",
                     CollectionCategory.ENVIRONMENTS,
                 ): ArtifactInfo(
                     id=1,
@@ -207,6 +210,17 @@ class AssembleSignedSourceTests(
             r"\['debian:binary-package'\]$",
         ):
             self.task.compute_dynamic_data(task_db)
+
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
+        self.task.dynamic_data = AssembleSignedSourceDynamicData(
+            environment_id=1,
+            template_id=2,
+            signed_ids=[3],
+        )
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2, 3])
 
     def test_fetch_input_template_wrong_category(self) -> None:
         """fetch_input checks the category of the template artifact."""
@@ -995,8 +1009,8 @@ class AssembleSignedSourceTests(
         self.task._upload_artifact = Upload.create(changes_file=changes_path)
         debusine_mock = self.mock_debusine()
         debusine_mock.upload_artifact.side_effect = [
-            RemoteArtifact(id=20, workspace=self.task.workspace_name),
-            RemoteArtifact(id=21, workspace=self.task.workspace_name),
+            create_remote_artifact(id=20, workspace=self.task.workspace_name),
+            create_remote_artifact(id=21, workspace=self.task.workspace_name),
         ]
         execute_directory = self.create_temporary_directory()
 
@@ -1164,7 +1178,7 @@ class AssembleSignedSourceTests(
                     local_artifact.files["hello-signed_1.0+1.tar.xz"],
                     signed_tarball_path,
                 )
-            return RemoteArtifact(
+            return create_remote_artifact(
                 id=uploaded_artifact_ids[local_artifact.category],
                 workspace="testing",
             )

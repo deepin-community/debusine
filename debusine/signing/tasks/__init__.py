@@ -22,11 +22,15 @@ from debusine.signing.tasks.debsign import Debsign  # noqa: I202
 from debusine.signing.tasks.generate_key import GenerateKey  # noqa: I202
 from debusine.signing.tasks.noop import SigningNoop  # noqa: I202
 from debusine.signing.tasks.sign import Sign  # noqa: I202
+from debusine.signing.tasks.sign_repository_index import (  # noqa: I202
+    SignRepositoryIndex,
+)
 
 __all__ = [
     "BaseSigningTask",
     "Debsign",
     "GenerateKey",
-    "SigningNoop",
     "Sign",
+    "SignRepositoryIndex",
+    "SigningNoop",
 ]

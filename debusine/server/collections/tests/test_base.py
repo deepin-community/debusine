@@ -17,7 +17,6 @@ from debusine.artifacts.models import (
     BareDataCategory,
     CollectionCategory,
 )
-from debusine.db.context import context
 from debusine.db.models import Collection, CollectionItem, default_workspace
 from debusine.server.collections import (
     CollectionManagerInterface,
@@ -27,7 +26,7 @@ from debusine.server.collections import (
 from debusine.test.django import TestCase
 
 
-class TestManager(CollectionManagerInterface):
+class DebusineTestManager(CollectionManagerInterface):
     """Collection manager used for testing."""
 
     COLLECTION_CATEGORY = CollectionCategory.TEST
@@ -38,6 +37,7 @@ class CollectionManagerInterfaceTests(TestCase):
 
     def setUp(self) -> None:
         """Set up tests."""
+        super().setUp()
         self.user = get_user_model().objects.create_user(
             username="John", email="john@example.org"
         )
@@ -56,7 +56,7 @@ class CollectionManagerInterfaceTests(TestCase):
             category=CollectionCategory.TEST,
             workspace=self.workspace,
         )
-        self.manager = TestManager(self.collection)
+        self.manager = DebusineTestManager(self.collection)
 
     def test_add_bare_data(self) -> None:
         """Test add_bare_data() call do_add_bare_data()."""
@@ -73,6 +73,8 @@ class CollectionManagerInterfaceTests(TestCase):
             workflow=None,
             name=None,
             replace=False,
+            created_at=None,
+            replaced_by=None,
         )
 
     def test_add_bare_data_invalid_category_raise_item_addition_error(
@@ -107,9 +109,10 @@ class CollectionManagerInterfaceTests(TestCase):
             data=None,
             name=None,
             replace=False,
+            created_at=None,
+            replaced_by=None,
         )
 
-    @context.disable_permission_checks()
     def test_add_artifact(self) -> None:
         """Test add_artifact() call do_add_artifact()."""
         category = ArtifactCategory.TEST
@@ -127,9 +130,10 @@ class CollectionManagerInterfaceTests(TestCase):
             variables=None,
             name=None,
             replace=False,
+            created_at=None,
+            replaced_by=None,
         )
 
-    @context.disable_permission_checks()
     def test_add_artifact_invalid_category_raise_item_addition_error(
         self,
     ) -> None:
@@ -151,7 +155,6 @@ class CollectionManagerInterfaceTests(TestCase):
             user=self.user,
         )
 
-    @context.disable_permission_checks()
     def test_add_artifact_any_category_valid(self) -> None:
         """If VALID_ARTIFACT_CATEGORIES is None, any category is valid."""
         category = ArtifactCategory.TEST
@@ -168,6 +171,8 @@ class CollectionManagerInterfaceTests(TestCase):
             variables=None,
             name=None,
             replace=False,
+            created_at=None,
+            replaced_by=None,
         )
 
     def test_add_collection(self) -> None:
@@ -190,6 +195,8 @@ class CollectionManagerInterfaceTests(TestCase):
             variables=None,
             name=None,
             replace=False,
+            created_at=None,
+            replaced_by=None,
         )
 
     def test_add_collection_invalid_category_raise_item_addition_error(
@@ -231,53 +238,75 @@ class CollectionManagerInterfaceTests(TestCase):
             variables=None,
             name=None,
             replace=False,
+            created_at=None,
+            replaced_by=None,
         )
 
-    def test_remove_bare_data(self) -> None:
-        """Test remove_bare_data() call do_remove_bare_data()."""
-        self.playground.create_bare_data_item(self.collection, "test")
+    def test_remove_item_bare_data(self) -> None:
+        """remove_item() calls do_remove_item() for bare data."""
+        item = self.playground.create_bare_data_item(self.collection, "test")
 
-        with patch.object(self.manager, "do_remove_bare_data") as mocked:
-            self.manager.remove_bare_data(
-                "test", user=self.user, workflow=self.workflow
+        with patch.object(self.manager, "do_remove_item") as mocked:
+            self.manager.remove_item(
+                item, user=self.user, workflow=self.workflow
             )
 
-        mocked.assert_called_with(
-            "test", user=self.user, workflow=self.workflow
-        )
+        mocked.assert_called_with(item, user=self.user, workflow=self.workflow)
 
-    @context.disable_permission_checks()
-    def test_remove_artifact(self) -> None:
-        """Test remove_artifact() call do_remove_artifact()."""
+    def test_remove_item_artifact(self) -> None:
+        """remove_item() calls do_remove_item() for an artifact."""
         artifact, _ = self.playground.create_artifact()
+        item = CollectionItem.objects.create_from_artifact(
+            artifact,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.playground.get_default_user(),
+        )
 
-        with patch.object(self.manager, "do_remove_artifact") as mocked:
-            self.manager.remove_artifact(
-                artifact, user=self.user, workflow=None
-            )
+        with patch.object(self.manager, "do_remove_item") as mocked:
+            self.manager.remove_item(item, user=self.user, workflow=None)
 
-        mocked.assert_called_with(artifact, user=self.user, workflow=None)
+        mocked.assert_called_with(item, user=self.user, workflow=None)
 
-    def test_remove_collection(self) -> None:
-        """Test remove_collection() call do_remove_collection()."""
+    def test_remove_item_collection(self) -> None:
+        """remove_item() calls do_remove_item() for a collection."""
         collection = Collection.objects.create(
             name="Testing", category="Testing", workspace=self.workspace
         )
-
-        with patch.object(self.manager, "do_remove_collection") as mocked:
-            self.manager.remove_collection(
-                collection, user=self.user, workflow=self.workflow
-            )
-
-        mocked.assert_called_with(
-            collection, user=self.user, workflow=self.workflow
+        item = CollectionItem.objects.create_from_collection(
+            collection,
+            parent_collection=self.collection,
+            name="test",
+            data={},
+            created_by_user=self.playground.get_default_user(),
         )
 
-    @context.disable_permission_checks()
-    def test_do_remove_child_types_artifact(self) -> None:
-        """Test do_remove_child_types() call do_remove_artifact()."""
+        with patch.object(self.manager, "do_remove_item") as mocked:
+            self.manager.remove_item(
+                item, user=self.user, workflow=self.workflow
+            )
+
+        mocked.assert_called_with(item, user=self.user, workflow=self.workflow)
+
+    def test_remove_items_by_name_bare_data(self) -> None:
+        """remove_items_by_name() calls do_remove_item() for bare data."""
+        item = self.playground.create_bare_data_item(self.collection, "test")
+
+        with patch.object(self.manager, "do_remove_item") as mocked:
+            self.manager.remove_items_by_name(
+                name="test",
+                child_types=[CollectionItem.Types.BARE],
+                user=self.user,
+                workflow=self.workflow,
+            )
+
+        mocked.assert_called_with(item, user=self.user, workflow=self.workflow)
+
+    def test_remove_items_by_name_artifact(self) -> None:
+        """remove_items_by_name() calls do_remove_item() for an artifact."""
         artifact, _ = self.playground.create_artifact()
-        CollectionItem.objects.create(
+        item = CollectionItem.objects.create(
             name="test",
             artifact=artifact,
             parent_collection=self.collection,
@@ -285,41 +314,23 @@ class CollectionManagerInterfaceTests(TestCase):
             created_by_user=self.user,
         )
 
-        with patch.object(self.manager, "do_remove_artifact") as mocked:
-            self.manager.do_remove_child_types(
-                [CollectionItem.Types.ARTIFACT],
+        with patch.object(self.manager, "do_remove_item") as mocked:
+            self.manager.remove_items_by_name(
                 name="test",
+                child_types=[CollectionItem.Types.ARTIFACT],
                 user=self.user,
                 workflow=self.workflow,
             )
 
-        mocked.assert_called_with(
-            artifact, user=self.user, workflow=self.workflow
-        )
+        mocked.assert_called_with(item, user=self.user, workflow=self.workflow)
 
-    def test_do_remove_child_types_bare(self) -> None:
-        """Test do_remove_child_types() call do_remove_bar_data()."""
-        self.playground.create_bare_data_item(self.collection, "test")
-
-        with patch.object(self.manager, "do_remove_bare_data") as mocked:
-            self.manager.do_remove_child_types(
-                [CollectionItem.Types.BARE],
-                name="test",
-                user=self.user,
-                workflow=self.workflow,
-            )
-
-        mocked.assert_called_with(
-            "test", user=self.user, workflow=self.workflow
-        )
-
-    def test_do_remove_child_types_collection(self) -> None:
-        """Test do_remove_child_types() call do_remove_collection()."""
+    def test_remove_items_by_name_collection(self) -> None:
+        """remove_items_by_name() calls do_remove_item() for a collection."""
         collection = self.playground.create_collection(
             name="Collection Test", category=CollectionCategory.TEST
         )
 
-        CollectionItem.objects.create(
+        item = CollectionItem.objects.create(
             name="test",
             collection=collection,
             parent_collection=self.collection,
@@ -327,17 +338,15 @@ class CollectionManagerInterfaceTests(TestCase):
             created_by_user=self.user,
         )
 
-        with patch.object(self.manager, "do_remove_collection") as mocked:
-            self.manager.do_remove_child_types(
-                [CollectionItem.Types.COLLECTION],
+        with patch.object(self.manager, "do_remove_item") as mocked:
+            self.manager.remove_items_by_name(
                 name="test",
+                child_types=[CollectionItem.Types.COLLECTION],
                 user=self.user,
                 workflow=self.workflow,
             )
 
-        mocked.assert_called_with(
-            collection, user=self.user, workflow=self.workflow
-        )
+        mocked.assert_called_with(item, user=self.user, workflow=self.workflow)
 
     def test_lookup_unexpected_format_raise_lookup_error(self) -> None:
         """`lookup` raises `LookupError`: invalid format."""

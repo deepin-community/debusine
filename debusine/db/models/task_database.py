@@ -22,10 +22,12 @@ from django.conf import settings
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
 from debusine.client.models import LookupChildType, RelationType
 from debusine.db.models.artifacts import Artifact
+from debusine.db.models.collections import Collection
 from debusine.db.models.work_requests import WorkRequest
 from debusine.tasks.models import LookupMultiple, LookupSingle
 from debusine.tasks.server import (
     ArtifactInfo,
+    CollectionInfo,
     MultipleArtifactInfo,
     TaskDatabaseInterface,
 )
@@ -45,6 +47,13 @@ class TaskDatabase(TaskDatabaseInterface):
             id=artifact.id,
             category=artifact.category,
             data=artifact.create_data(),
+        )
+
+    @staticmethod
+    def _make_collection_info(collection: "Collection") -> CollectionInfo:
+        """Extract basic information from a collection."""
+        return CollectionInfo(
+            id=collection.id, category=collection.category, data=collection.data
         )
 
     @overload
@@ -76,7 +85,8 @@ class TaskDatabase(TaskDatabaseInterface):
         :return: Information about the artifact, or None if the provided
           lookup is None (for convenience in some call sites).
         :raises KeyError: if the lookup does not resolve to an item.
-        :raises LookupError: if the lookup is invalid in some way.
+        :raises LookupError: if the lookup is invalid in some way, or does
+          not resolve to an artifact.
         """
         # Import here to prevent circular imports
         from debusine.server.collections.lookup import lookup_single
@@ -110,7 +120,8 @@ class TaskDatabase(TaskDatabaseInterface):
           category, use this as the default category.
         :return: Information about each artifact.
         :raises KeyError: if any of the lookups does not resolve to an item.
-        :raises LookupError: if the lookup is invalid in some way.
+        :raises LookupError: if any of the lookups is invalid in some way,
+          or does not resolve to an artifact.
         """
         # Import here to prevent circular imports
         from debusine.server.collections.lookup import lookup_multiple
@@ -165,7 +176,7 @@ class TaskDatabase(TaskDatabaseInterface):
         self,
         lookup: LookupSingle,
         default_category: CollectionCategory | None = None,
-    ) -> int: ...
+    ) -> CollectionInfo: ...
 
     @overload
     def lookup_single_collection(
@@ -178,7 +189,7 @@ class TaskDatabase(TaskDatabaseInterface):
         self,
         lookup: LookupSingle | None,
         default_category: CollectionCategory | None = None,
-    ) -> int | None:
+    ) -> CollectionInfo | None:
         """
         Look up a single collection.
 
@@ -186,10 +197,11 @@ class TaskDatabase(TaskDatabaseInterface):
         :param default_category: If the first segment of a string lookup
           (which normally identifies a collection) does not specify a
           category, use this as the default category.
-        :return: The ID of the collection, or None if the provided lookup is
-          None (for convenience in some call sites).
+        :return: Information about the collection, or None if the provided
+          lookup is None (for convenience in some call sites).
         :raises KeyError: if the lookup does not resolve to an item.
-        :raises LookupError: if the lookup is invalid in some way.
+        :raises LookupError: if the lookup is invalid in some way, or does
+          not resolve to a collection.
         """
         # Import here to prevent circular imports
         from debusine.server.collections.lookup import lookup_single
@@ -197,14 +209,16 @@ class TaskDatabase(TaskDatabaseInterface):
         return (
             None
             if lookup is None
-            else lookup_single(
-                lookup=lookup,
-                workspace=self.work_request.workspace,
-                user=self.work_request.created_by,
-                default_category=default_category,
-                workflow_root=self.work_request.get_workflow_root(),
-                expect_type=LookupChildType.COLLECTION,
-            ).collection.id
+            else self._make_collection_info(
+                lookup_single(
+                    lookup=lookup,
+                    workspace=self.work_request.workspace,
+                    user=self.work_request.created_by,
+                    default_category=default_category,
+                    workflow_root=self.work_request.get_workflow_root(),
+                    expect_type=LookupChildType.COLLECTION,
+                ).collection
+            )
         )
 
     def get_server_setting(self, setting: str) -> str:

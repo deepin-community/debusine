@@ -18,11 +18,7 @@ from debusine.artifacts.models import (
     DebianPackageBuildLog,
     EmptyArtifactData,
 )
-from debusine.client.models import (
-    LookupResultType,
-    LookupSingleResponse,
-    RemoteArtifact,
-)
+from debusine.client.models import LookupResultType, LookupSingleResponse
 from debusine.tasks import Blhc, TaskConfigError
 from debusine.tasks.models import BlhcDynamicData
 from debusine.tasks.server import ArtifactInfo
@@ -31,6 +27,7 @@ from debusine.tasks.tests.helper_mixin import (
     FakeTaskDatabase,
 )
 from debusine.test import TestCase
+from debusine.test.test_utils import create_remote_artifact
 
 
 class BlhcTests(ExternalTaskHelperMixin[Blhc], TestCase):
@@ -40,15 +37,17 @@ class BlhcTests(ExternalTaskHelperMixin[Blhc], TestCase):
         "input": {"artifact": 421},
     }
 
-    def setUp(self) -> None:  # noqa: D102
+    def setUp(self) -> None:
+        super().setUp()
         self.task = Blhc(self.SAMPLE_TASK_DATA)
 
     def tearDown(self) -> None:
         """Delete directory to avoid ResourceWarning with python -m unittest."""
         if self.task._debug_log_files_directory is not None:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
-    def test_configure_fails_with_missing_required_data(  # noqa: D102
+    def test_configure_fails_with_missing_required_data(
         self,
     ) -> None:
         with self.assertRaises(TaskConfigError):
@@ -103,6 +102,7 @@ class BlhcTests(ExternalTaskHelperMixin[Blhc], TestCase):
                     data=DebianPackageBuildLog(
                         source="hello",
                         version="1.0",
+                        architecture="amd64",
                         filename="hello_1.0_amd64.buildlog",
                     ),
                 )
@@ -136,6 +136,18 @@ class BlhcTests(ExternalTaskHelperMixin[Blhc], TestCase):
             r"Valid categories: \['debian:package-build-log'\]$",
         ):
             self.task.compute_dynamic_data(task_db),
+
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
+        self.task.dynamic_data = BlhcDynamicData(input_artifact_id=1)
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1])
+
+        self.task.dynamic_data = BlhcDynamicData(
+            input_artifact_id=1, environment_id=2
+        )
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1, 2])
 
     def test_configure_for_execution_from_artifact_error_no_build_logs(
         self,
@@ -195,7 +207,7 @@ class BlhcTests(ExternalTaskHelperMixin[Blhc], TestCase):
         workspace_name = "testing"
 
         uploaded_artifacts = [
-            RemoteArtifact(id=10, workspace=workspace_name),
+            create_remote_artifact(id=10, workspace=workspace_name),
         ]
 
         debusine_mock.upload_artifact.side_effect = uploaded_artifacts
@@ -249,7 +261,7 @@ class BlhcTests(ExternalTaskHelperMixin[Blhc], TestCase):
             result_type=LookupResultType.ARTIFACT, artifact=1
         )
         debusine_mock.download_artifact.return_value = True
-        debusine_mock.upload_artifact.return_value = RemoteArtifact(
+        debusine_mock.upload_artifact.return_value = create_remote_artifact(
             id=2, workspace=self.task.workspace_name
         )
 

@@ -9,6 +9,7 @@
 
 """debusine-client enrolling views."""
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -31,6 +32,9 @@ from debusine.server.views import ProblemResponse
 @method_decorator(csrf_exempt, name="dispatch")
 class EnrollView(View):
     """Wait for a token after user confirmation."""
+
+    #: Every this interval, send some data while waiting during the long poll
+    PING_INTERVAL: int | float = 10
 
     def error_response(
         self,
@@ -85,17 +89,30 @@ class EnrollView(View):
                 status.HTTP_400_BAD_REQUEST,
             )
 
+        return StreamingHttpResponse(
+            self.long_poll(payload.nonce), content_type="application/json"
+        )
+
+    async def long_poll(self, nonce: str) -> AsyncGenerator[str]:
+        """Handle long polling as a StreamingHttpResponse generator."""
         channel_layer = get_channel_layer()
 
-        async def long_poll() -> AsyncGenerator[str]:
-            try:
-                nonce = payload.nonce
-                channel_name = f"enroll.{nonce}"
-                msg = await channel_layer.receive(channel_name)
-                yield json.dumps(msg)
-            finally:
-                await self.object.adelete()
-
-        return StreamingHttpResponse(
-            long_poll(), content_type="application/json"
-        )
+        try:
+            channel_name = f"enroll.{nonce}"
+            confirm_task = asyncio.create_task(
+                channel_layer.receive(channel_name)
+            )
+            while True:
+                done, pending = await asyncio.wait(
+                    [confirm_task], timeout=self.PING_INTERVAL
+                )
+                if not done:
+                    # Generate some traffic to avoid nginx timing out the
+                    # request. json.loads() will ignore leading whitespace,
+                    # so we can use it for that purpose. See #857
+                    yield "\n"
+                else:
+                    yield json.dumps(confirm_task.result())
+                    break
+        finally:
+            await self.object.adelete()

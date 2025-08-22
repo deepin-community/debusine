@@ -11,11 +11,11 @@
 
 import logging
 import os
+from multiprocessing import current_process
 from pathlib import Path
-from unittest import mock
+from unittest import SkipTest, mock
 
 from debusine.artifacts.models import ArtifactCategory, DebianUpload
-from debusine.db.context import context
 from debusine.db.models import Artifact, File
 from debusine.server.tasks import PackageUpload
 from debusine.server.tasks.models import PackageUploadDynamicData
@@ -36,6 +36,7 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.configure_task()
 
         # Silence logging from pyftpdlib.
@@ -47,8 +48,21 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
         """Delete debug log files directory if it exists."""
         if self.task._debug_log_files_directory:
             self.task._debug_log_files_directory.cleanup()
+        super().tearDown()
 
-    @context.disable_permission_checks()
+    def skip_on_multiprocessing(self) -> None:
+        """
+        Mark a test as unable to run under multiprocessing parallel tests.
+
+        If we execute the test, we'll hit an assert in multiprocessing.
+        """
+        process = current_process()
+        if process._config.get('daemon'):  # type: ignore[attr-defined]
+            raise SkipTest(
+                "Cannot be run inside multiprocessing parallel tests. "
+                "multiprocessing doesn't support nesting."
+            )  # pragma: no cover
+
     def create_source_upload(self) -> Artifact:
         """Create a minimal source upload."""
         filenames = [
@@ -93,7 +107,13 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
             PackageUploadDynamicData(input_upload_id=10),
         )
 
-    @context.disable_permission_checks()
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
+        self.assertEqual(self.task.get_input_artifacts_ids(), [])
+
+        self.task.dynamic_data = PackageUploadDynamicData(input_upload_id=1)
+        self.assertEqual(self.task.get_input_artifacts_ids(), [1])
+
     def test_fetch_upload_wrong_category(self) -> None:
         """fetch_upload checks the category of the input.upload artifact."""
         self.task.set_work_request(self.playground.create_work_request())
@@ -117,7 +137,6 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
             "debusine:test\n",
         )
 
-    @context.disable_permission_checks()
     def test_fetch_upload_gathers_upload_paths(self) -> None:
         """fetch_upload gathers information from the input.upload artifact."""
         debian_upload_artifact = self.create_source_upload()
@@ -144,10 +163,11 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
         # The .changes file is sorted to the end of upload_paths.
         self.assertTrue(upload_paths[-1].name.endswith(".changes"))
 
-    @context.disable_permission_checks()
     def test_execute_no_upload_paths(self) -> None:
         """execute() returns False if fetch_upload returned no paths."""
-        self.task.set_work_request(self.playground.create_work_request())
+        self.task.set_work_request(
+            self.playground.create_work_request(assign_contributor_role=True)
+        )
         artifact, _ = self.playground.create_artifact(
             category=ArtifactCategory.TEST
         )
@@ -157,12 +177,12 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
 
         self.assertFalse(self.task.execute())
 
-    @context.disable_permission_checks()
     def test_execute_ftp(self) -> None:
         """execute() can make an upload using FTP."""
         username = "user"
         remote_home_directory = self.create_temporary_directory()
         (remote_home_directory / "queue").mkdir()
+        self.skip_on_multiprocessing()
         server = FakeFTPServerProcess(username, remote_home_directory)
         server.start()
         self.addCleanup(server.stop)
@@ -170,7 +190,9 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
         self.configure_task(
             override={"target": f"ftp://{username}@{host}:{port}/queue/"}
         )
-        self.task.set_work_request(self.playground.create_work_request())
+        self.task.set_work_request(
+            self.playground.create_work_request(assign_contributor_role=True)
+        )
         directory = self.create_temporary_directory()
         deb_path = directory / "foo_1.0-1_amd64.deb"
         changes_path = directory / "foo_1.0-1_amd64.changes"
@@ -188,11 +210,11 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
                 path.read_bytes(),
             )
 
-    @context.disable_permission_checks()
     def test_execute_ftp_no_path(self) -> None:
         """execute() handles FTP URLs with no path."""
         username = "user"
         remote_home_directory = self.create_temporary_directory()
+        self.skip_on_multiprocessing()
         server = FakeFTPServerProcess(username, remote_home_directory)
         server.start()
         self.addCleanup(server.stop)
@@ -200,7 +222,9 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
         self.configure_task(
             override={"target": f"ftp://{username}@{host}:{port}"}
         )
-        self.task.set_work_request(self.playground.create_work_request())
+        self.task.set_work_request(
+            self.playground.create_work_request(assign_contributor_role=True)
+        )
         directory = self.create_temporary_directory()
         deb_path = directory / "foo_1.0-1_amd64.deb"
         changes_path = directory / "foo_1.0-1_amd64.changes"
@@ -218,7 +242,6 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
                 path.read_bytes(),
             )
 
-    @context.disable_permission_checks()
     def test_execute_ftp_delayed(self) -> None:
         """execute() can make a delayed upload using FTP."""
         username = "user"
@@ -226,6 +249,7 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
         (remote_home_directory / "queue" / "DELAYED" / "3-day").mkdir(
             parents=True
         )
+        self.skip_on_multiprocessing()
         server = FakeFTPServerProcess(username, remote_home_directory)
         server.start()
         self.addCleanup(server.stop)
@@ -236,7 +260,9 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
                 "delayed_days": 3,
             }
         )
-        self.task.set_work_request(self.playground.create_work_request())
+        self.task.set_work_request(
+            self.playground.create_work_request(assign_contributor_role=True)
+        )
         directory = self.create_temporary_directory()
         deb_path = directory / "foo_1.0-1_amd64.deb"
         changes_path = directory / "foo_1.0-1_amd64.changes"
@@ -294,10 +320,10 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
             ),
         )
 
-    @context.disable_permission_checks()
     def test_execute_sftp(self) -> None:
         """execute() can make an upload using SFTP."""
         queue_directory = self.create_temporary_directory()
+        self.skip_on_multiprocessing()
         server = FakeSFTPServerProcess()
         home_directory = self.create_temporary_directory()
         (home_directory / ".ssh").mkdir()
@@ -313,7 +339,9 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
         self.configure_task(
             override={"target": f"sftp://user@{host}:{port}{queue_directory}"}
         )
-        self.task.set_work_request(self.playground.create_work_request())
+        self.task.set_work_request(
+            self.playground.create_work_request(assign_contributor_role=True)
+        )
         directory = self.create_temporary_directory()
         deb_path = directory / "foo_1.0-1_amd64.deb"
         changes_path = directory / "foo_1.0-1_amd64.changes"
@@ -333,11 +361,11 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
                 (queue_directory / path.name).read_bytes(), path.read_bytes()
             )
 
-    @context.disable_permission_checks()
     def test_execute_sftp_delayed(self) -> None:
         """execute() can make a delayed upload using SFTP."""
         queue_directory = self.create_temporary_directory()
         (queue_directory / "DELAYED" / "3-day").mkdir(parents=True)
+        self.skip_on_multiprocessing()
         server = FakeSFTPServerProcess()
         home_directory = self.create_temporary_directory()
         (home_directory / ".ssh").mkdir()
@@ -356,7 +384,9 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
                 "delayed_days": 3,
             }
         )
-        self.task.set_work_request(self.playground.create_work_request())
+        self.task.set_work_request(
+            self.playground.create_work_request(assign_contributor_role=True)
+        )
         directory = self.create_temporary_directory()
         deb_path = directory / "foo_1.0-1_amd64.deb"
         changes_path = directory / "foo_1.0-1_amd64.changes"
@@ -416,12 +446,12 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
             ),
         )
 
-    @context.disable_permission_checks()
     def test_execute_end_to_end(self) -> None:
         """End-to-end execution works."""
         username = "user"
         remote_home_directory = self.create_temporary_directory()
         (remote_home_directory / "queue").mkdir()
+        self.skip_on_multiprocessing()
         server = FakeFTPServerProcess(username, remote_home_directory)
         server.start()
         self.addCleanup(server.stop)
@@ -429,7 +459,9 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
         self.configure_task(
             override={"target": f"ftp://{username}@{host}:{port}/queue/"}
         )
-        self.task.set_work_request(self.playground.create_work_request())
+        self.task.set_work_request(
+            self.playground.create_work_request(assign_contributor_role=True)
+        )
         assert self.task.workspace is not None
         debian_upload_artifact = self.create_source_upload()
         self.task.dynamic_data = PackageUploadDynamicData(
@@ -467,7 +499,7 @@ class PackageUploadTests(TaskHelperMixin[PackageUpload], TestCase):
                     [f"Uploading to {self.task.data.target}\n"]
                     + [
                         f"Uploading {path.name}\n"
-                        for path in [*non_changes_paths, changes_path]
+                        for path in sorted(non_changes_paths) + [changes_path]
                     ]
                     + ["Upload succeeded\n"]
                 ),

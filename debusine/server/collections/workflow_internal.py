@@ -9,6 +9,7 @@
 
 """Manager for debusine:workflow-internal collections."""
 
+from datetime import datetime
 from typing import Any
 
 from django.db import IntegrityError
@@ -45,6 +46,8 @@ class WorkflowInternalManager(CollectionManagerInterface):
         data: dict[str, Any] | None = None,  # noqa: U100
         name: str | None = None,
         replace: bool = False,
+        created_at: datetime | None = None,
+        replaced_by: CollectionItem | None = None,
     ) -> CollectionItem:
         """Add bare data into the managed collection."""
         if name is None:
@@ -63,35 +66,26 @@ class WorkflowInternalManager(CollectionManagerInterface):
                     )
 
         if replace:
-            self.remove_bare_data(name, user=user)
+            self.remove_items_by_name(
+                name=name,
+                child_types=[CollectionItem.Types.BARE],
+                user=user,
+                workflow=workflow,
+            )
 
         try:
             return CollectionItem.objects.create_from_bare_data(
                 category,
                 parent_collection=self.collection,
-                created_by_user=user,
-                created_by_workflow=workflow,
                 name=name,
                 data=data or {},
+                created_at=created_at,
+                created_by_user=user,
+                created_by_workflow=workflow,
+                replaced_by=replaced_by,
             )
         except IntegrityError as exc:
             raise ItemAdditionError(str(exc))
-
-    def do_remove_bare_data(
-        self,
-        name: str,
-        *,
-        user: User | None = None,
-        workflow: WorkRequest | None = None,
-    ) -> None:
-        """Remove a bare data item from the collection."""
-        CollectionItem.active_objects.filter(
-            name=name, parent_collection=self.collection
-        ).update(
-            removed_by_user=user,
-            removed_by_workflow=workflow,
-            removed_at=timezone.now(),
-        )
 
     def do_add_artifact(
         self,
@@ -102,6 +96,8 @@ class WorkflowInternalManager(CollectionManagerInterface):
         variables: dict[str, Any] | None = None,
         name: str | None = None,
         replace: bool = False,
+        created_at: datetime | None = None,
+        replaced_by: CollectionItem | None = None,
     ) -> CollectionItem:
         """
         Add the artifact into the managed collection.
@@ -115,9 +111,12 @@ class WorkflowInternalManager(CollectionManagerInterface):
             )
 
         if replace:
-            self.do_remove_child_types(
-                [CollectionItem.Types.ARTIFACT, CollectionItem.Types.BARE],
+            self.remove_items_by_name(
                 name=name,
+                child_types=[
+                    CollectionItem.Types.ARTIFACT,
+                    CollectionItem.Types.BARE,
+                ],
                 user=user,
                 workflow=workflow,
             )
@@ -134,26 +133,25 @@ class WorkflowInternalManager(CollectionManagerInterface):
             return CollectionItem.objects.create_from_artifact(
                 artifact,
                 parent_collection=self.collection,
-                created_by_user=user,
-                created_by_workflow=workflow,
                 name=name,
                 data=variables or {},
+                created_at=created_at,
+                created_by_user=user,
+                created_by_workflow=workflow,
+                replaced_by=replaced_by,
             )
         except IntegrityError as exc:
             raise ItemAdditionError(str(exc))
 
-    def do_remove_artifact(
+    def do_remove_item(
         self,
-        artifact: Artifact,
+        item: CollectionItem,
         *,
         user: User | None = None,
         workflow: WorkRequest | None = None,
     ) -> None:
-        """Remove the artifact from the collection."""
-        CollectionItem.active_objects.filter(
-            artifact=artifact, parent_collection=self.collection
-        ).update(
-            removed_by_user=user,
-            removed_by_workflow=workflow,
-            removed_at=timezone.now(),
-        )
+        """Remove an item from the collection."""
+        item.removed_by_user = user
+        item.removed_by_workflow = workflow
+        item.removed_at = timezone.now()
+        item.save()

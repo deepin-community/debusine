@@ -13,7 +13,6 @@ import io
 import tarfile
 from pathlib import Path
 
-from debusine.db.context import context
 from debusine.server.tar import TarArtifact
 from debusine.test.django import TestCase
 
@@ -23,7 +22,6 @@ class TarArtifactTests(TestCase):
 
     playground_memory_file_store = False
 
-    @context.disable_permission_checks()
     def test_tar_small_chunks(self) -> None:
         """Assert that TarArtifact return data in small chunks."""
         file_paths = ["README"]
@@ -41,7 +39,6 @@ class TarArtifactTests(TestCase):
 
         self.assertTrue(tar_artifact._tar_file.closed)
 
-    @context.disable_permission_checks()
     def test_tar_subdirectory(self) -> None:
         """Test creating a tar for an artifact, only files from a subdir."""
         file_paths = ["README", "doc/README", "doc/README2", "src/main.c"]
@@ -63,7 +60,6 @@ class TarArtifactTests(TestCase):
 
         self.assertTrue(tar_artifact._tar_file.closed)
 
-    @context.disable_permission_checks()
     def test_tar(self) -> None:
         """Test creating a tar for an artifact."""
         file_paths = ["README", "README2", "doc/README3"]
@@ -119,7 +115,6 @@ class TarArtifactTests(TestCase):
 
         self.assertTrue(tar_artifact._tar_file.closed)
 
-    @context.disable_permission_checks()
     def test_tar_excludes_incomplete(self) -> None:
         """Creating a tar for an artifact excludes incomplete files."""
         file_paths = ["README", "README2", "doc/README3"]
@@ -142,7 +137,6 @@ class TarArtifactTests(TestCase):
 
         self.assertTrue(tar_artifact._tar_file.closed)
 
-    @context.disable_permission_checks()
     def test_next_raise_stop_iteration_file_not_found(self) -> None:
         """Cannot read a file: exc logged, StopIteration raised."""
         file_paths = ["README"]

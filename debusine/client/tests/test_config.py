@@ -23,6 +23,7 @@ class ConfigHandlerTests(TestCase):
 
     def setUp(self) -> None:
         """Set up ConfigHandlerTests."""
+        super().setUp()
         self.stderr = io.StringIO()
 
     @staticmethod

@@ -13,7 +13,8 @@ stages:
   - deploy  # Added to deploy the pages
 
 variables:
-  DROP_PRIVS: 'setpriv --reuid=debusine-test --regid=debusine-test --init-groups --reset-env --'
+  APT_CACHE_ROOT: "$CI_PROJECT_DIR/.cache/apt"
+  DROP_PRIVS: 'setpriv --reuid=debusine-test --regid=debusine-test --init-groups --reset-env -- env MYPY_CACHE_DIR=$CI_PROJECT_DIR/.cache/mypy XDG_CACHE_HOME=$CI_PROJECT_DIR/.cache'
   RELEASE: 'bookworm-backports'
   SALSA_CI_DISABLE_BUILD_PACKAGE_ANY: 1
   SALSA_CI_DISABLE_BUILD_PACKAGE_I386: 1
@@ -21,17 +22,27 @@ variables:
   SALSA_CI_DISABLE_APTLY: 0
   SALSA_CI_AUTOPKGTEST_ALLOWED_EXIT_STATUS: '0,2'
   SALSA_CI_IMAGES_LINTIAN: ${SALSA_CI_IMAGES}/lintian:bookworm
+  XDG_CACHE_HOME: "$CI_PROJECT_DIR/.cache"
 
 ## Traditional upstream tests on top of salsa-ci
 image: 'debian:bookworm-backports'
+
+cache:
+  key: $CI_JOB_NAME
+  paths:
+    - .cache
 
 .prepare-test: &prepare-test
   - export LANG=C.UTF-8
   - useradd -m debusine-test
   - "chown -R debusine-test: ."
   - $DROP_PRIVS env NON_INTERACTIVE=1 bin/quick-setup.sh create_directories
-  - ci/pin-django-from-bookworm-backports.sh
+  - ci/pin-bookworm-backports.sh
+  - $DROP_PRIVS mkdir -p "$CI_PROJECT_DIR/.cache"
+  - mkdir -p "$APT_CACHE_ROOT/lists/partial" "$APT_CACHE_ROOT/archives/partial"
+  - (echo "Dir::State::Lists \"$APT_CACHE_ROOT/lists\";"; echo "Dir::Cache::Archives \"$APT_CACHE_ROOT/archives\";") >/etc/apt/apt.conf.d/00gitlab
   - apt-get update
+  - apt-get autoclean
 
 .before-test: &before-test
   - *prepare-test
@@ -117,7 +128,7 @@ unit-tests-trixie:
     - apt-get -y install python3-django
     - NON_INTERACTIVE=1 bin/quick-setup.sh install_packages
     - *unit-tests-shared-prepare
-    - $DROP_PRIVS make coverage VERBOSE=1 TOTAL_COVERAGE=1
+    - $DROP_PRIVS make coverage VERBOSE=1 TOTAL_COVERAGE=1 HTML_COVERAGE=1
     - *unit-tests-shared-cleanup
   allow_failure: true
   rules:
@@ -134,7 +145,7 @@ unit-tests:
     - *before-test
     - apt-get -y install python3-hatch-vcs python3-hatchling
     - *unit-tests-shared-prepare
-    - $DROP_PRIVS make coverage VERBOSE=1 TOTAL_COVERAGE=1
+    - $DROP_PRIVS make coverage VERBOSE=1 TOTAL_COVERAGE=1 HTML_COVERAGE=1
     - *unit-tests-shared-cleanup
     - "(python3 -m coverage report -m | grep --silent '^TOTAL.*100%$') || (echo 'ERROR: Coverage must be 100%' >&2 ; exit 1)"
     - hatchling metadata >/dev/null
@@ -143,16 +154,17 @@ unit-tests-pip:
   <<: *unit-tests-shared
   script:
     - *prepare-test
-    - apt-get install -y python3-venv sensible-utils postgresql postgresql-client redis-server graphviz make openssl sbsigntool python3-gpg arch-test dpkg-dev devscripts dput-ng
+    - apt-get install -y arch-test devscripts dpkg-dev dput-ng graphviz make openssl postgresql postgresql-client python3-apt python3-gpg python3-venv redis-server sbsigntool sensible-utils
     - $DROP_PRIVS python3 -m venv venv
     - $DROP_PRIVS sed -i 's/psycopg2/&-binary/' pyproject.toml
     - $DROP_PRIVS venv/bin/pip install -e .[server,client,signing,tests] coverage
-    # We have to symlink the dput and gpg modules in from the system rather
-    # than installing them from PyPI.
+    # We have to symlink some modules in from the system rather than
+    # installing them from PyPI.
+    - $DROP_PRIVS ln -s /usr/lib/python3/dist-packages/apt_pkg.*.so venv/lib/python*/site-packages/
     - $DROP_PRIVS ln -s /usr/lib/python3/dist-packages/dput venv/lib/python*/site-packages/
     - $DROP_PRIVS ln -s /usr/lib/python3/dist-packages/gpg venv/lib/python*/site-packages/
     - *unit-tests-shared-prepare
-    - $DROP_PRIVS sh -c ". venv/bin/activate; make coverage VERBOSE=1 TOTAL_COVERAGE=1"
+    - $DROP_PRIVS sh -c ". venv/bin/activate; make coverage VERBOSE=1 TOTAL_COVERAGE=1 HTML_COVERAGE=1"
     - *unit-tests-shared-cleanup
   rules:
     - if: $CI_COMMIT_BRANCH =~ /^debian\/.*-backports$/
@@ -176,17 +188,28 @@ reprotest:
   extends: .test-reprotest
   allow_failure: true
 
+lintian:
+  extends: .test-lintian
+  rules:
+    # lintian/bookworm doesn't understand bookworm-backports, lintian/trixie
+    # produces errors related to the /usr move, and there's no distinct
+    # lintian version in bookworm-backports.  As such, this is the best we
+    # can do.
+    - if: $CI_COMMIT_BRANCH =~ /^debian\/.*-backports$/
+      variables:
+        SALSA_CI_LINTIAN_SUPPRESS_TAGS: "bad-distribution-in-changes-file"
+
 autopkgtest:
   extends: .test-autopkgtest
   parallel:
     matrix:
       - SALSA_CI_AUTOPKGTEST_ARGS:
-          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=unit-tests-tasks --test-name=unit-tests-client --test-name=unit-tests-worker --test-name=unit-tests-server --test-name=unit-tests-signing --test-name=smoke-test-server"
-          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-generic"
-          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-task-signing"
-          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-tasks-mmdebstrap-autopkgtest-sbuild-lintian-piuparts-blhc-debdiff"
-          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-task-simplesystemimagebuild"
-          - "--setup-commands=ci/pin-django-from-bookworm-backports.sh --test-name=integration-tests-task-simplesystemimagebuild"
+          - "--setup-commands=ci/pin-bookworm-backports.sh --test-name=unit-tests-tasks --test-name=unit-tests-client --test-name=unit-tests-worker --test-name=unit-tests-server --test-name=unit-tests-signing --test-name=smoke-test-server"
+          - "--setup-commands=ci/pin-bookworm-backports.sh --test-name=integration-tests-generic"
+          - "--setup-commands=ci/pin-bookworm-backports.sh --test-name=integration-tests-task-signing"
+          - "--setup-commands=ci/pin-bookworm-backports.sh --test-name=integration-tests-tasks-mmdebstrap-autopkgtest-sbuild-lintian-piuparts-blhc-debdiff"
+          - "--setup-commands=ci/pin-bookworm-backports.sh --test-name=integration-tests-task-simplesystemimagebuild"
+          - "--setup-commands=ci/pin-bookworm-backports.sh --test-name=integration-tests-task-aptmirror"
 
 autopkgtest-trixie:
   extends: .test-autopkgtest
@@ -200,6 +223,7 @@ autopkgtest-trixie:
           - "--test-name=integration-tests-task-signing"
           - "--test-name=integration-tests-tasks-mmdebstrap-autopkgtest-sbuild-lintian-piuparts-blhc-debdiff"
           - "--test-name=integration-tests-task-simplesystemimagebuild"
+          - "--test-name=integration-tests-task-aptmirror"
   allow_failure: true
   rules:
     - if: $CI_COMMIT_BRANCH =~ /^debian\/.*-backports$/
@@ -209,9 +233,9 @@ autopkgtest-trixie:
 piuparts:
   extends: .test-piuparts
   before_script:
-    - ci/pin-django-from-bookworm-backports.sh
+    - ci/pin-bookworm-backports.sh
   variables:
-    SALSA_CI_PIUPARTS_PRE_INSTALL_SCRIPT: ci/pin-django-from-bookworm-backports.sh
+    SALSA_CI_PIUPARTS_PRE_INSTALL_SCRIPT: ci/pin-bookworm-backports.sh
 
 aptly:
   extends: .publish-aptly

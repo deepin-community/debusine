@@ -13,24 +13,13 @@ from unittest import mock
 
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import get_user_model
-from django.template.context import Context
-from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
 
-from debusine.db.context import context
-from debusine.db.models import (
-    Scope,
-    WorkRequest,
-    WorkflowTemplate,
-    default_workspace,
-)
+from debusine.db.models import WorkRequest, Workspace
 from debusine.db.playground import scenarios
 from debusine.test.django import ListFilter, TestCase, override_permission
-from debusine.web.templatetags import debusine as template_debusine
 from debusine.web.views import HomepageView
-from debusine.web.views.base import Widget
 from debusine.web.views.tests.utils import ViewTestMixin, html_check_icon
 
 
@@ -46,6 +35,10 @@ class HomepageViewTests(ViewTestMixin, TestCase):
         f'<a class="dropdown-item" href="{create_work_request_url}">'
         "Create work request</a>"
     )
+
+    xpath_scope_workspace_list = "//table[@id='scope-workspace-list']"
+    xpath_current_workflow_list = "//div[@id='current-workflow-list-table']"
+    xpath_completed_workflow_list = "//div[@id='completed-workflow-list-table']"
 
     def test_html_check_icon(self) -> None:
         """Test that html_check_icon returns the right results."""
@@ -63,7 +56,7 @@ class HomepageViewTests(ViewTestMixin, TestCase):
         self.assertEqual(reverse("homepage:homepage"), "/")
 
     def test_homepage(self) -> None:
-        """Homepage view loads."""
+        """Homepage view loads (not logged in)."""
         list_your_tokens_url = reverse(
             "user:token-list", kwargs={"username": self.scenario.user.username}
         )
@@ -74,7 +67,7 @@ class HomepageViewTests(ViewTestMixin, TestCase):
         response = self.client.get(reverse("homepage:homepage"))
         tree = self.assertResponseHTML(response)
         h1 = self.assertHasElement(tree, "//h1")
-        self.assertTextContentEqual(h1, "Welcome to debusine!")
+        self.assertTextContentEqual(h1, "Welcome to Debusine!")
 
         title = self.assertHasElement(tree, "//title")
         self.assertTextContentEqual(title, "Debusine - Homepage")
@@ -82,13 +75,13 @@ class HomepageViewTests(ViewTestMixin, TestCase):
         self.assertNavCommonElements(tree, is_homepage=True)
         self.assertNavNoUser(tree)
 
+        self.assertHasElement(tree, self.xpath_scope_workspace_list)
+
         self.assertNotContains(response, list_your_tokens_html, html=True)
         self.assertFalse(tree.xpath("//a[@id='nav-create-artifact']"))
         self.assertFalse(tree.xpath("//a[@id='nav-create-work-request']"))
-
-        ul = self.assertHasElement(tree, "//ul[@id='scope-list']")
-        self.assertEqual(ul.li.a.get("href"), reverse("scopes:detail"))
-        self.assertTextContentEqual(ul.li.a, "debusine")
+        self.assertFalse(tree.xpath(self.xpath_current_workflow_list))
+        self.assertFalse(tree.xpath(self.xpath_completed_workflow_list))
 
     def test_homepage_logged_in(self) -> None:
         """User is logged in: contains "You are authenticated as: username"."""
@@ -102,67 +95,19 @@ class HomepageViewTests(ViewTestMixin, TestCase):
         self.assertFalse(tree.xpath("//a[@id='nav-create-artifact']"))
         self.assertFalse(tree.xpath("//a[@id='nav-create-work-request']"))
 
-        self.assertContains(
-            response,
-            f"No work requests created by {self.scenario.user.username}.",
-        )
+        table = self.assertHasElement(tree, self.xpath_scope_workspace_list)
+        tbody = self.assertHasElement(table, "tbody")
+        self.assertEqual(len(tbody.tr), 1)
+        tr = tbody.tr[0]
+        self.assertTextContentEqual(tr.td[0], self.scenario.scope.name)
+        self.assertTextContentEqual(tr.td[1], "System")
+        self.assertTextContentEqual(tr.td[2], "Viewer")
+        self.assertTextContentEqual(tr.td[3], "0")
+        self.assertTextContentEqual(tr.td[4], "0")
+        self.assertTextContentEqual(tr.td[5], "0")
 
-    def test_homepage_logged_in_with_work_requests(self) -> None:
-        """User is logged in and contain user's work requests."""
-        username = "testuser"
-
-        user = get_user_model().objects.create_user(
-            username=username, password="password"
-        )
-
-        self.client.force_login(user)
-
-        work_request1 = self.playground.create_work_request(
-            task_name="noop", created_by=user, id=11
-        )
-        work_request2 = self.playground.create_work_request(
-            task_name="noop", created_by=user, id=12
-        )
-
-        response = self.client.get(reverse("homepage:homepage"))
-        tree = self.assertResponseHTML(response)
-        table = self.assertHasElement(tree, "//table[@id='work_request-list']")
-        self.assertWorkRequestRow(table.tbody.tr[0], work_request2)
-        self.assertWorkRequestRow(table.tbody.tr[1], work_request1)
-
-        # latest first
-        self.assertEqual(
-            response.context["work_requests"].page_obj.object_list[0].id, 12
-        )
-
-    def test_homepage_exclude_internal_work_requests(self) -> None:
-        """The homepage excludes the user's INTERNAL work requests."""
-        username = "testuser"
-
-        user = get_user_model().objects.create_user(
-            username=username, password="password"
-        )
-
-        self.client.force_login(user)
-
-        template = WorkflowTemplate.objects.create(
-            name="test",
-            workspace=default_workspace(),
-            task_name="noop",
-            task_data={},
-        )
-        root = self.playground.create_workflow(
-            template, task_data={}, created_by=user
-        )
-        WorkRequest.objects.create_synchronization_point(
-            parent=root, step="test"
-        )
-
-        response = self.client.get(reverse("homepage:homepage"))
-        tree = self.assertResponseHTML(response)
-        table = self.assertHasElement(tree, "//table[@id='work_request-list']")
-        self.assertWorkRequestRow(table.tbody.tr[0], root)
-        self.assertEqual(len(table.tbody.tr), 1)
+        table = self.assertHasElement(tree, self.xpath_current_workflow_list)
+        table = self.assertHasElement(tree, self.xpath_completed_workflow_list)
 
     def test_messages(self) -> None:
         """Messages from django.contrib.messages are displayed."""
@@ -173,6 +118,7 @@ class HomepageViewTests(ViewTestMixin, TestCase):
             messages.error(self.request, "Error message")
             return {
                 "base_template": HomepageView.base_template,
+                "workspaces": "",
             }
 
         with mock.patch(
@@ -190,57 +136,156 @@ class HomepageViewTests(ViewTestMixin, TestCase):
         assert msgdiv.div[1].text is not None
         self.assertEqual(msgdiv.div[1].text.strip(), "Error message")
 
-    def test_homepage_scope_list(self) -> None:
+    def test_homepage_workflow_list(self) -> None:
         """Homepage lists visible scopes."""
+        self.client.force_login(self.scenario.user)
         scope1 = self.playground.get_or_create_scope("scope1")
-        self.playground.get_or_create_scope("scope2")
+        workspace1 = self.playground.create_workspace(
+            name="workspace1", scope=scope1
+        )
+        scope2 = self.playground.get_or_create_scope("scope2")
+        self.playground.create_workspace(name="workspace2", scope=scope2)
 
         with override_permission(
-            Scope, "can_display", ListFilter, exclude=[scope1]
+            Workspace, "can_display", ListFilter, exclude=[workspace1]
         ):
             response = self.client.get(reverse("homepage:homepage"))
         tree = self.assertResponseHTML(response)
-        ul = self.assertHasElement(tree, "//ul[@id='scope-list']")
+        table = self.assertHasElement(tree, self.xpath_scope_workspace_list)
+        tbody = self.assertHasElement(table, "tbody")
+        actual = [
+            (
+                self.get_node_text_normalized(tr.td[0]),
+                (self.get_node_text_normalized(tr.td[1])),
+            )
+            for tr in tbody.tr
+        ]
         self.assertEqual(
-            [self.get_node_text_normalized(li) for li in ul.li],
-            ["debusine", "scope2"],
+            actual,
+            [
+                ("debusine", "System"),
+                ("scope2", "workspace2"),
+            ],
         )
 
+    def test_queries_anonymous(self) -> None:
+        """Test the number of queries for an anonymous visit."""
+        with self.assertNumQueries(5):
+            self.client.get(reverse("homepage:homepage"))
 
-class WidgetTests(TestCase):
-    """Test widget infrastructure."""
+    def test_queries_anonymous_with_workspaces(self) -> None:
+        """Test the number of queries for an anonymous visit."""
+        for i in range(3):
+            self.playground.create_workspace(name=f"workspace{i}")
+        with self.assertNumQueries(5):
+            self.client.get(reverse("homepage:homepage"))
 
-    def test_render(self) -> None:
-        """Test rendering a widget."""
+    def test_queries_authenticated(self) -> None:
+        """Test the number of queries for an authenticated visit."""
+        self.client.force_login(self.scenario.user)
+        with self.assertNumQueries(11):
+            self.client.get(reverse("homepage:homepage"))
 
-        class _TestWidget(Widget):
-            def render(self, _: Context) -> str:
-                return "RENDERED"
+    def test_queries_authenticated_with_workspaces(self) -> None:
+        """Test the number of queries for an anonymous visit."""
+        self.client.force_login(self.scenario.user)
+        for i in range(3):
+            self.playground.create_workspace(name=f"workspace{i}")
+        with self.assertNumQueries(11):
+            self.client.get(reverse("homepage:homepage"))
 
+    def test_queries_authenticated_with_workflows(self) -> None:
+        """Test query count for a visit with work requests shown."""
+        self.client.force_login(self.scenario.user)
+        for i in range(3):
+            self.playground.create_workspace(name=f"workspace{i}")
+        template = self.playground.create_workflow_template("test", "noop")
+        for i in range(5):
+            workflow = self.playground.create_workflow(template)
+            workflow.mark_running()
+        # with self.assertNumQueries(14): # if there are no workflows to display
+        with self.assertNumQueries(22):
+            response = self.client.get(reverse("homepage:homepage"))
         self.assertEqual(
-            template_debusine.widget(Context(), _TestWidget()), "RENDERED"
+            len(response.context["workflows_current"].page_obj.object_list),
+            5,
         )
 
-    def test_render_error(self) -> None:
-        """Test rendering a widget that raises on render."""
+    def test_homepage_customization(self) -> None:
+        """Homepage extended by templates installed by site admins."""
+        response = self.client.get(reverse("homepage:homepage"))
+        tree = self.assertResponseHTML(response)
+        h1 = self.assertHasElement(tree, "//h1")
+        self.assertTextContentEqual(h1, "Welcome to Debusine!")
 
-        class _TestWidget(Widget):
-            def render(self, _: Context) -> str:
-                raise RuntimeError("ERROR")
+        with self.custom_template("web/homepage.html") as template:
+            template.write_text(
+                "{% extends 'web/homepage.html' %}"
+                "{% block introduction %}"
+                "<h1>Welcome to a custom Debusine</h1>"
+                "{% endblock %}"
+            )
+            response = self.client.get(reverse("homepage:homepage"))
+            tree = self.assertResponseHTML(response)
+            h1 = self.assertHasElement(tree, "//h1")
+            self.assertTextContentEqual(h1, "Welcome to a custom Debusine")
 
-        with override_settings(DEBUG=False):
-            with self.assertLogs("debusine.web") as log:
-                self.assertRegex(
-                    template_debusine.widget(Context(), _TestWidget()),
-                    "<span data-role='debusine-widget-error' "
-                    "class='[^']+'>.+UTC: .+failed to render</span>$",
-                )
-            self.assertIn("failed to render", log.output[0].split("\n")[0])
+    def test_only_root_workflows_shown(self) -> None:
+        self.client.force_login(self.scenario.user)
+        template = self.playground.create_workflow_template("test", "noop")
+        root_workflow = self.playground.create_workflow(template)
+        root_workflow.mark_running()
+        child_workflow = self.playground.create_workflow(
+            template, parent=root_workflow
+        )
+        child_workflow.mark_running()
+        completed_child_workflow = self.playground.create_workflow(
+            template, parent=root_workflow
+        )
+        completed_child_workflow.mark_running()
+        completed_child_workflow.mark_completed(
+            result=WorkRequest.Results.SUCCESS
+        )
+        response = self.client.get(reverse("homepage:homepage"))
+        self.assertQuerySetEqual(
+            response.context["workflows_current"].page_obj.object_list,
+            [root_workflow],
+        )
 
-        with override_settings(DEBUG=True):
-            with self.assertRaises(RuntimeError) as e:
-                template_debusine.widget(Context(), _TestWidget())
-            self.assertEqual(str(e.exception), "ERROR")
+        workspaces_qs = response.context["workspaces"].table.rows
+        self.assertEqual(workspaces_qs.count(), 1)
+        workspace = workspaces_qs.first()
+        self.assertEqual(
+            (workspace.running, workspace.needs_input, workspace.completed),
+            (1, None, None),
+        )
+
+    def test_workflows_completed_includes_aborted(self) -> None:
+        template = self.playground.create_workflow_template("test", "noop")
+        running_workflow = self.playground.create_workflow(template)
+        running_workflow.mark_running()
+        completed_workflow = self.playground.create_workflow(template)
+        completed_workflow.mark_running()
+        completed_workflow.mark_completed(result=WorkRequest.Results.SUCCESS)
+        aborted_workflow = self.playground.create_workflow(template)
+        aborted_workflow.mark_running()
+        aborted_workflow.mark_aborted()
+
+        self.client.force_login(self.scenario.user)
+        response = self.client.get(reverse("homepage:homepage"))
+        self.assertQuerySetEqual(
+            response.context["workflows_completed"].page_obj.object_list,
+            [completed_workflow, aborted_workflow],
+            ordered=False,
+        )
+
+        workspaces_qs = response.context["workspaces"].table.rows
+        self.assertEqual(workspaces_qs.count(), 1)
+        workspace = workspaces_qs.first()
+        self.assertEqual(
+            (workspace.running, workspace.needs_input, workspace.completed),
+            (1, None, 2),
+        )
 
 
 class AdminTests(TestCase):
@@ -311,8 +356,7 @@ class LegacyRedirectTests(TestCase):
 
     def test_scope_reproduce_redirect_loop(self) -> None:
         """Reproduce a redirect loop."""
-        with context.disable_permission_checks():
-            artifact, _ = self.playground.create_artifact()
+        artifact, _ = self.playground.create_artifact()
 
         response = self.client.get(f"/api/1.0/artifact/{artifact.pk}")
         self.assertEqual(

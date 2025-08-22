@@ -1,0 +1,36 @@
+{% load debusine %}
+<table class="table table-sm table-hover table-striped"
+       id="scope-workspace-list">
+    {% widget paginator.thead %}
+    <tbody>
+        {% for ws in paginator.page_obj.object_list %}
+            {% withscope ws.scope %}
+                <tr>
+                    <td>
+                        <a href="{% url 'scopes:detail' %}">{{ ws.scope }}</a>
+                    </td>
+                    <td>
+                        <a href="{{ ws.get_absolute_url }}">{{ ws.name }}</a>
+                    </td>
+                    <td>
+                        {% for role in ws|roles %}{{ role.label }}{% endfor %}
+                    </td>
+                    <td>
+                        <a href="{% url 'workspaces:workflows:list' wname=ws.name %}?filter-statuses=running__any">{{ ws.running|default:"0" }}</a>
+                    </td>
+                    <td>
+                        <a href="{% url 'workspaces:workflows:list' wname=ws.name %}?filter-statuses=running__needs_input">{{ ws.needs_input|default:"0" }}</a>
+                    </td>
+                    <td>
+                        <a href="{% url 'workspaces:workflows:list' wname=ws.name %}?filter-statuses=completed">{{ ws.completed|default:"0" }}</a>
+                    </td>
+                </tr>
+            {% endwithscope %}
+        {% empty %}
+            <tr>
+                <td colspan="{{ table.columns|length }}">There are no accessible workspaces</td>
+            </tr>
+        {% endfor %}
+    </tbody>
+    {% widget paginator.tfoot %}
+</table>

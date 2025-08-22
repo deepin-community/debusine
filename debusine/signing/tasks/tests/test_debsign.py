@@ -48,6 +48,7 @@ from debusine.tasks.models import WorkerType
 from debusine.tasks.server import ArtifactInfo
 from debusine.tasks.tests.helper_mixin import FakeTaskDatabase
 from debusine.test import TestCase
+from debusine.test.test_utils import create_remote_artifact
 
 
 class DebsignTests(SignTestMixin, TestCase, DjangoTestCase):
@@ -130,13 +131,13 @@ class DebsignTests(SignTestMixin, TestCase, DjangoTestCase):
             DebsignDynamicData(unsigned_id=2),
         )
 
-    def test_get_source_artifacts_ids(self) -> None:
-        """Test get_source_artifacts_ids."""
+    def test_get_input_artifacts_ids(self) -> None:
+        """Test get_input_artifacts_ids."""
         task = Debsign(task_data={"unsigned": 1, "key": "ABC123"})
-        self.assertEqual(task.get_source_artifacts_ids(), [])
+        self.assertEqual(task.get_input_artifacts_ids(), [])
 
         task.dynamic_data = DebsignDynamicData(unsigned_id=1)
-        self.assertEqual(task.get_source_artifacts_ids(), [1])
+        self.assertEqual(task.get_input_artifacts_ids(), [1])
 
     def test_fetch_input_wrong_category(self) -> None:
         """fetch_input checks the category of the unsigned artifact."""
@@ -278,7 +279,10 @@ class DebsignTests(SignTestMixin, TestCase, DjangoTestCase):
         task.prepare_to_run(download_directory, execute_directory)
 
         with (
-            mock.patch.object(key, "sign", side_effect=ValueError("Boom")),
+            mock.patch(
+                "debusine.signing.tasks.debsign.sign",
+                side_effect=ValueError("Boom"),
+            ),
             self.assertRaisesRegex(ValueError, "Boom"),
         ):
             task.run(execute_directory)
@@ -311,7 +315,7 @@ class DebsignTests(SignTestMixin, TestCase, DjangoTestCase):
         task._debug_log_files_directory = debug_log_files_directory
         task.prepare_to_run(download_directory, execute_directory)
 
-        with mock.patch.object(key, "sign") as mock_sign:
+        with mock.patch("debusine.signing.tasks.debsign.sign") as mock_sign:
             self.assertTrue(task.run(execute_directory))
 
         self.assertEqual(
@@ -319,6 +323,7 @@ class DebsignTests(SignTestMixin, TestCase, DjangoTestCase):
             execute_directory / "output" / "foo.changes",
         )
         mock_sign.assert_called_once_with(
+            [key],
             execute_directory / "input" / "foo.changes",
             execute_directory / "output" / "foo.changes",
             SigningMode.DEBSIGN,
@@ -382,7 +387,6 @@ class DebsignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
         def upload_artifact(
             local_artifact: LocalArtifact[Any], **kwargs: Any
         ) -> RemoteArtifact:
-            nonlocal uploaded_paths
             nonlocal uploaded_upload
             for path in local_artifact.files.values():
                 uploaded_paths.append(path)
@@ -394,7 +398,7 @@ class DebsignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
                     if path.name.endswith(".changes")
                 ]
                 uploaded_upload = Upload.create(changes_file=changes_path)
-            return RemoteArtifact(
+            return create_remote_artifact(
                 id=uploaded_artifact_ids[local_artifact.category],
                 workspace="System",
             )
@@ -450,6 +454,9 @@ class DebsignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
                                 Path(debug_log_files_directory.name)
                                 / "cmd-output.log"
                             )
+                        },
+                        content_types={
+                            "cmd-output.log": "text/plain; charset=utf-8"
                         },
                     ),
                     workspace="System",
@@ -515,8 +522,9 @@ class DebsignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
         self.addCleanup(debug_log_files_directory.cleanup)
         task._debug_log_files_directory = debug_log_files_directory
 
-        with mock.patch.object(
-            Key, "sign", side_effect=Exception("Signing failed")
+        with mock.patch(
+            "debusine.signing.tasks.debsign.sign",
+            side_effect=Exception("Signing failed"),
         ):
             self.assertFalse(task.execute())
 
@@ -535,6 +543,11 @@ class DebsignIntegrationTests(SignTestMixin, TestCase, TransactionTestCase):
                     "execution.log": (
                         Path(debug_log_files_directory.name) / "execution.log"
                     ),
+                },
+                content_types={
+                    "stages.log": "text/plain; charset=utf-8",
+                    "cmd-output.log": "text/plain; charset=utf-8",
+                    "execution.log": "text/plain; charset=utf-8",
                 },
             ),
             workspace="System",

@@ -1,4 +1,4 @@
-.. _asset-cloud-provider-account:
+.. asset:: debusine:cloud-provider-account
 
 Category: ``debusine:cloud-provider-account``
 =============================================

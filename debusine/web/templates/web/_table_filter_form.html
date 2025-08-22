@@ -1,0 +1,27 @@
+<div class="dropdown">
+    {% if filter.active %}
+        <div class="btn-group btn-group-sm me-1"
+             role="group"
+             aria-label="Controls for active filter {{ filter.label }}">
+            <button id="{{ filter.dom_id_form_dropdown }}"
+                    class='btn btn-sm text-bg-secondary'
+                    data-bs-toggle='dropdown'
+                    data-bs-reference='parent'
+                    data-bs-auto-close="outside"
+                    aria-expanded='false'>{{ filter.label }}: {{ filter.value_formatted }}</button>
+            {% include form_template_name %}
+            <a href='?{{ filter.qs_remove }}'
+               class='btn btn-sm text-bg-secondary'
+               title='Remove filter'>
+                <i class='bi bi-x-circle text-bg-secondary'></i>
+            </a>
+        </div>
+    {% else %}
+        <div id="{{ filter.dom_id_form_dropdown }}"
+             data-bs-toggle='dropdown'
+             data-bs-auto-close="outside"
+             aria-expanded='false'></div>
+        {# Empty dropdown anchor #}
+        {% include form_template_name %}
+    {% endif %}
+</div>

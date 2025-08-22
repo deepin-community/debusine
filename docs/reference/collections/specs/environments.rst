@@ -1,4 +1,4 @@
-.. _collection-environments:
+.. collection:: debian:environments
 
 Category ``debian:environments``
 --------------------------------
@@ -9,10 +9,9 @@ Category ``debian:environments``
    it when we're closer to being able to try out an implementation so that
    we can see how the lookup mechanisms will work.
 
-This collection represents a group of :ref:`debian:system-tarball
-<artifact-system-tarball>` and/or :ref:`debian:system-image
-<artifact-system-image>` artifacts, such as the tarballs used by build
-daemons across each suite and architecture.
+This collection represents a group of :artifact:`debian:system-tarball`
+and/or :artifact:`debian:system-image` artifacts, such as the tarballs used
+by build daemons across each suite and architecture.
 
 In the short term, there will be one ``debian:environments`` collection per
 distribution vendor with the collection name set to the name of the vendor
@@ -33,8 +32,8 @@ subject to change.
 
 * Valid items:
 
-  * ``debian:system-tarball`` artifacts (see :ref:`artifact-system-tarball`)
-  * ``debian:system-image`` artifacts (see :ref:`artifact-system-image`)
+  * :artifact:`debian:system-tarball` artifacts
+  * :artifact:`debian:system-image` artifacts
 
 * Per-item data:
 
@@ -57,8 +56,10 @@ subject to change.
     most recently-added one is returned.  The remainder of the name is a
     colon-separated list of filters on per-item data, as follows:
 
-    * ``format=tarball``: return only ``debian:system-tarball`` artifacts
-    * ``format=image``: return only ``debian:system-image`` artifacts
+    * ``format=tarball``: return only :artifact:`debian:system-tarball`
+      artifacts
+    * ``format=image``: return only :artifact:`debian:system-image`
+      artifacts
     * ``codename=CODENAME``
     * ``architecture=ARCHITECTURE``
     * ``variant=VARIANT`` (``variant=`` without an argument matches items

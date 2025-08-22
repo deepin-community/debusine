@@ -22,7 +22,6 @@ try:
 except ImportError:
     import pydantic as pydantic  # type: ignore
 
-from debusine.db.context import context
 from debusine.db.models import NotificationChannel, Token, WorkRequest, Worker
 from debusine.server import notifications
 from debusine.tasks.models import (
@@ -38,6 +37,7 @@ class NotifyWorkerTokenDisabledTests(ChannelsHelpersMixin, TestCase):
 
     def setUp(self) -> None:
         """Initialize test."""
+        super().setUp()
         self.token = Token.objects.create()
 
     async def test_message_is_not_sent(self) -> None:
@@ -67,7 +67,6 @@ class NotifyWorkRequestAssigned(ChannelsHelpersMixin, TestCase):
     work_request: ClassVar[WorkRequest]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up test fixture."""
         super().setUpTestData()
@@ -196,7 +195,7 @@ class NotifyWorkRequestCompletedTests(TestCase):
             expected_to=to,
             expected_cc=cc,
             expected_subject=(
-                "WorkRequest {work_request_id} " "completed in success"
+                "WorkRequest {work_request_id} completed in success"
             ),
         )
 
@@ -210,7 +209,7 @@ class NotifyWorkRequestCompletedTests(TestCase):
             notification_data=NotificationDataEmail.parse_obj({"cc": cc}),
             expected_cc=cc,
             expected_subject=(
-                "WorkRequest {work_request_id} " "completed in success"
+                "WorkRequest {work_request_id} completed in success"
             ),
         )
 

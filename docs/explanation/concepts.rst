@@ -75,14 +75,15 @@ metadata, etc. See the :ref:`reference <collection-reference>`.
 A collection is meant to represent things like this:
 
 * A suite in the Debian archive (e.g. "Debian bookworm"): the
-  ``debian:suite`` collection is a collection of ``debian:source-package``
-  and ``debian:binary-package`` artifacts.
+  :collection:`debian:suite` collection is a collection of
+  :artifact:`debian:source-package` and :artifact:`debian:binary-package`
+  artifacts.
 * A Debian archive (a.k.a. repository) that contains multiple suites:
-  the ``debian:archive`` collection is a collection of ``debian:suite``
-  collections
-* Build chroots for all Debian suites: the
-  ``debian:environments`` collection stores ``debian:system-tarballs``
-  artifacts for multiple Debian suites
+  the :collection:`debian:archive` collection is a collection of
+  :collection:`debian:suite` collections
+* Build chroots for all Debian suites: the :collection:`debian:environments`
+  collection stores :artifact:`debian:system-tarball` artifacts for multiple
+  Debian suites
 * The results of a lintian analysis or autopkgtests runs across all the
   packages in a target suite
 * Extracted ``.desktop`` files for each package name in a suite
@@ -243,7 +244,7 @@ Here are some examples of possible workflows:
    { sbuild on all architectures supported in the target distribution }
    → add source and binary packages to target distribution.
 
-   See :ref:`sbuild workflow <workflow-sbuild>`.
+   See :workflow:`sbuild` workflow.
 
  * Package review: it would take a source package and associated binary
    packages and a target distribution, and the workflow would control
@@ -282,11 +283,11 @@ workspace, then it does not need to be reuploaded; but otherwise, it must be
 reuploaded to avoid users obtaining unauthorized access to existing file
 contents.
 
-Local storage is useful as the initial destination for uploads to Debusine,
-but it has to be backed up manually and might not scale to sufficiently
-large volumes of data.  Remote storage such as S3 is also available.  It is
-possible to serve a file from any store, with policies for which one to
-prefer for downloads and uploads.
+:file-backend:`Local` storage is useful as the initial destination for
+uploads to Debusine, but it has to be backed up manually and might not scale
+to sufficiently large volumes of data.  Remote storage such as
+:file-backend:`S3` is also available.  It is possible to serve a file from
+any store, with policies for which one to prefer for downloads and uploads.
 
 Administrators can set policies for which file stores to use at the
 :ref:`scope <explanation-scopes>` level, as well as policies for populating

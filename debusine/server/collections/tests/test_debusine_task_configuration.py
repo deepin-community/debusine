@@ -17,6 +17,7 @@ from debusine.artifacts.models import (
     BareDataCategory,
     CollectionCategory,
     DebusineTaskConfiguration,
+    TaskTypes,
 )
 from debusine.client.models import model_to_json_serializable_dict
 from debusine.db.models import Collection, CollectionItem
@@ -31,7 +32,6 @@ from debusine.server.collections.debusine_task_configuration import (
     lookup_templates,
 )
 from debusine.tasks import TaskConfigError
-from debusine.tasks.models import TaskTypes
 from debusine.test.django import TestCase
 
 
@@ -165,8 +165,8 @@ class DebusineTaskConfigurationManagerTests(TaskConfigTestCase):
             item.data, model_to_json_serializable_dict(data, exclude_unset=True)
         )
 
-    def test_remove_bare_data(self) -> None:
-        """`remove_bare_data` removes the item."""
+    def test_remove_item_bare_data(self) -> None:
+        """`remove_item` removes a bare data item."""
         data = DebusineTaskConfiguration(template="test")
         item = self.manager.add_bare_data(
             BareDataCategory.TASK_CONFIGURATION,
@@ -174,9 +174,8 @@ class DebusineTaskConfigurationManagerTests(TaskConfigTestCase):
             data=data,
         )
 
-        self.manager.remove_bare_data(item.name, user=self.scenario.user)
+        self.manager.remove_item(item, user=self.scenario.user)
 
-        item.refresh_from_db()
         self.assertEqual(item.removed_by_user, self.scenario.user)
         self.assertIsNotNone(item.removed_at)
 
@@ -353,7 +352,7 @@ class ConfigLookupTests(TaskConfigTestCase):
         ):
             self.assertEqual(
                 list(list_configuration(self.collection, entry.name())),
-                [a, a, a, entry],
+                [entry, a, a, a],
             )
 
 

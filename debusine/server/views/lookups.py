@@ -16,7 +16,6 @@ from rest_framework.parsers import JSONParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from debusine.db.models import Worker
 from debusine.server.collections.lookup import lookup_multiple, lookup_single
 from debusine.server.exceptions import DebusineAPIException
 from debusine.server.serializers import (
@@ -46,9 +45,13 @@ class LookupSingleView(BaseAPIView):
         lookup_deserialized = LookupSingleSerializer(data=request.data)
         lookup_deserialized.is_valid(raise_exception=True)
         work_request = lookup_deserialized.validated_data["work_request"]
-        lookup_user = request.user
 
-        if work_request.worker != getattr(request.auth, "worker", None):
+        if (worker := getattr(request.auth, "worker", None)) is None:
+            # lookup_user = request.require_user
+            raise NotImplementedError(
+                "this function is only tested when called from workers"
+            )
+        elif work_request.worker != worker:
             raise DebusineAPIException(
                 title=(
                     f"Work request {work_request.id} is not assigned to the "
@@ -56,6 +59,8 @@ class LookupSingleView(BaseAPIView):
                 ),
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+        else:
+            lookup_user = work_request.created_by
 
         try:
             result = lookup_single(
@@ -98,15 +103,16 @@ class LookupMultipleView(BaseAPIView):
 
         The request data must be a :ref:`lookup-multiple`.
         """
-        token_key = request.headers["token"]
-        worker = Worker.objects.get_worker_by_token_key_or_none(token_key)
-
         lookup_deserialized = LookupMultipleSerializer(data=request.data)
         lookup_deserialized.is_valid(raise_exception=True)
         work_request = lookup_deserialized.validated_data["work_request"]
-        lookup_user = request.user
 
-        if work_request.worker != worker:
+        if (worker := getattr(request.auth, "worker", None)) is None:
+            # lookup_user = request.require_user
+            raise NotImplementedError(
+                "this function is only tested when called from workers"
+            )
+        elif work_request.worker != worker:
             raise DebusineAPIException(
                 title=(
                     f"Work request {work_request.id} is not assigned to the "
@@ -114,6 +120,8 @@ class LookupMultipleView(BaseAPIView):
                 ),
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+        else:
+            lookup_user = work_request.created_by
 
         try:
             lookup = LookupMultiple.parse_obj(

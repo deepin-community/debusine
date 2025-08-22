@@ -37,6 +37,7 @@ from debusine.tasks.models import (
     BackendType,
     BaseDynamicTaskData,
     SbuildBuildComponent,
+    SbuildBuildDepResolver,
     SbuildData,
 )
 from debusine.tasks.server import TaskDatabaseInterface
@@ -171,6 +172,7 @@ class SbuildWorkflow(Workflow[SbuildWorkflowData, BaseDynamicTaskData]):
                     else self.data.backend
                 ),
                 default_category=CollectionCategory.ENVIRONMENTS,
+                try_variant="sbuild",
             ).id
         except KeyError:
             raise WorkflowValidationError(
@@ -256,8 +258,20 @@ class SbuildWorkflow(Workflow[SbuildWorkflowData, BaseDynamicTaskData]):
             codename=codename,
             environment=environment,
             backend=self.data.backend,
-            architecture=architecture,
+            architecture=host_architecture,
+            try_variant="sbuild",
         )
+
+        build_dep_resolver: SbuildBuildDepResolver | None = None
+        aspcud_criteria: str | None = None
+        if (vendor, codename) == ("debian", "experimental"):
+            # https://salsa.debian.org/dsa-team/mirror/dsa-puppet/-/blob/production/modules/buildd/templates/sbuild.conf.erb
+            # TODO: Implement this entirely in task-configuration
+            build_dep_resolver = SbuildBuildDepResolver.ASPCUD
+            aspcud_criteria = (
+                "-count(down),-count(changed,APT-Release:=/experimental/),"
+                "-removed,-changed,-new"
+            )
 
         task_data = SbuildData(
             input=input_,
@@ -274,6 +288,8 @@ class SbuildWorkflow(Workflow[SbuildWorkflowData, BaseDynamicTaskData]):
             build_profiles=self.data.build_profiles,
             extra_repositories=extra_repositories,
             binnmu=self.data.binnmu,
+            build_dep_resolver=build_dep_resolver,
+            aspcud_criteria=aspcud_criteria,
         )
         wr = self.work_request_ensure_child(
             task_name="sbuild",
@@ -295,6 +311,12 @@ class SbuildWorkflow(Workflow[SbuildWorkflowData, BaseDynamicTaskData]):
                     debian_source_package
                 ),
             },
+        )
+        self.provides_artifact(
+            wr,
+            ArtifactCategory.PACKAGE_BUILD_LOG,
+            f"{self.data.prefix}buildlog-{architecture}",
+            data={"architecture": architecture},
         )
 
         try:
@@ -356,9 +378,3 @@ class SbuildWorkflow(Workflow[SbuildWorkflowData, BaseDynamicTaskData]):
                     "data__deb_fields__Package": binary_package_name
                 },
             )
-
-    def get_label(self) -> str:
-        """Return the task label."""
-        # TODO: copy the source package information in dynamic task data and
-        # use them here if available
-        return f"{self.data.prefix}build a package"

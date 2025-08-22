@@ -17,7 +17,6 @@ from typing import Any
 
 from debian.deb822 import Changes
 
-import debusine.utils
 from debusine.artifacts import Upload
 from debusine.artifacts.models import (
     ArtifactCategory,
@@ -28,6 +27,7 @@ from debusine.client.models import RelationType
 from debusine.tasks import BaseExternalTask
 from debusine.tasks.models import MergeUploadsData, MergeUploadsDynamicData
 from debusine.tasks.server import TaskDatabaseInterface
+from debusine.utils import find_files_suffixes
 
 
 class MergeUploadsError(Exception):
@@ -88,6 +88,12 @@ class MergeUploads(BaseExternalTask[MergeUploadsData, MergeUploadsDynamicData]):
             input_uploads_ids=upload_artifacts.get_ids(), subject=subject
         )
 
+    def get_input_artifacts_ids(self) -> list[int]:
+        """Return the list of input artifact IDs used by this task."""
+        if not self.dynamic_data:
+            return []
+        return self.dynamic_data.input_uploads_ids
+
     def fetch_input(self, destination: Path) -> bool:
         """Populate work directory with user-specified binary artifact(s)."""
         if not self.debusine:
@@ -106,7 +112,9 @@ class MergeUploads(BaseExternalTask[MergeUploadsData, MergeUploadsDynamicData]):
                     ],
                 )
                 return False
-            self.fetch_artifact(upload_id, destination)
+            upload_dir = destination / f"upload-{upload_id}"
+            upload_dir.mkdir()
+            self.fetch_artifact(upload_id, upload_dir)
 
         return True
 
@@ -122,9 +130,15 @@ class MergeUploads(BaseExternalTask[MergeUploadsData, MergeUploadsDynamicData]):
         :return: True if valid files were found
         """
         # Find the files to merge or early exit if not files
-        self._changes_paths = debusine.utils.find_files_suffixes(
-            download_directory, [".changes"]
-        )
+        uploads: dict[int, Path] = {}
+        for upload_dir in download_directory.iterdir():
+            # fetch_input writes nothing else to the download directory.
+            assert upload_dir.is_dir() and upload_dir.name.startswith("upload-")
+            uploads[int(upload_dir.name[len("upload-") :])] = upload_dir
+        changes_paths: list[Path] = []
+        for _, upload_dir in sorted(uploads.items()):
+            changes_paths += find_files_suffixes(upload_dir, [".changes"])
+        self._changes_paths = changes_paths
         # Ensure we've got 1 .changes file per upload, see:
         # debusine.artifacts.local_artifacts.Upload.files_contain_changes
         assert len(self._changes_paths) >= 1
@@ -217,17 +231,37 @@ class MergeUploads(BaseExternalTask[MergeUploadsData, MergeUploadsDynamicData]):
             else:
                 merged["Description"] = to_merge["Description"]
 
-    def merge_changes(self, all_changes: Sequence[Changes]) -> Changes:
+    def _symlink_files(
+        self, merged_dir: Path, to_merge_path: Path, to_merge: Changes
+    ) -> None:
+        """Symlink files from ``to_merge`` into ``merged_dir``."""
+        for file in to_merge.get("Checksums-Sha256", []):
+            merged_file_path = merged_dir / file["name"]
+            # _check_checksums already checked that there are no overlapping
+            # file names.
+            assert not merged_file_path.exists()
+            merged_file_path.symlink_to(to_merge_path.parent / file["name"])
+
+    def merge_changes(
+        self, execute_directory: Path, all_changes: Sequence[Changes]
+    ) -> Path:
         """Merge some .changes files."""
         self._check_simple_fields(all_changes)
         self._check_descriptions(all_changes)
         self._check_checksums(all_changes)
 
+        merged_dir = execute_directory / "merged"
+        merged_dir.mkdir()
+        self._symlink_files(merged_dir, self._changes_paths[0], all_changes[0])
+
         merged = all_changes[0]
-        for to_merge in all_changes[1:]:
+        for to_merge_path, to_merge in zip(
+            self._changes_paths[1:], all_changes[1:]
+        ):
             merged.merge_fields("Binary", to_merge)
             merged.merge_fields("Architecture", to_merge)
             self._merge_descriptions(merged, to_merge)
+            self._symlink_files(merged_dir, to_merge_path, to_merge)
 
             for field in ("Files", "Checksums-Sha1", "Checksums-Sha256"):
                 existing = {
@@ -240,28 +274,27 @@ class MergeUploads(BaseExternalTask[MergeUploadsData, MergeUploadsDynamicData]):
         merged.order_before("Binary", "Source")
         merged.order_before("Description", "Changes")
 
-        return merged
-
-    def make_upload_artifact(self, merged: Changes) -> Upload:
-        """Make an Upload artifact from a merged .changes file."""
-        # Write merged .changes file to the same directory as the files it
-        # references so that Upload can validate them, named according to
-        # the same "multi" suffix convention as mergechanges(1) from
+        # Use the same "multi" suffix convention as mergechanges(1) from
         # devscripts.
-        ref_path = self._changes_paths[0]
         version_without_epoch = re.sub(r"^\d+:", "", merged["Version"])
-        merged_changes_path = ref_path.with_name(
-            f"{merged['Source']}_{version_without_epoch}_multi.changes"
+        merged_changes_path = (
+            merged_dir
+            / f"{merged['Source']}_{version_without_epoch}_multi.changes"
         )
         with open(merged_changes_path, "w") as f:
             merged.dump(f, text_mode=True)
+
+        return merged_changes_path
+
+    def make_upload_artifact(self, merged_changes_path: Path) -> Upload:
+        """Make an Upload artifact from a merged .changes file."""
         return Upload.create(changes_file=merged_changes_path)
 
     def run(self, execute_directory: Path) -> bool:  # noqa: U100
         """Do the main work of the task."""
         all_changes = [self._read_changes(path) for path in self._changes_paths]
-        merged = self.merge_changes(all_changes)
-        self._upload_artifact = self.make_upload_artifact(merged)
+        merged_changes_path = self.merge_changes(execute_directory, all_changes)
+        self._upload_artifact = self.make_upload_artifact(merged_changes_path)
         return True
 
     def upload_artifacts(

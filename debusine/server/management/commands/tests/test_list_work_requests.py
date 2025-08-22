@@ -14,7 +14,6 @@ from typing import ClassVar
 
 from django.utils import timezone
 
-from debusine.db.context import context
 from debusine.db.models import Token, WorkRequest, Worker
 from debusine.django.management.tests import call_command
 from debusine.server.management.commands.tests.utils import TabularOutputTests
@@ -27,7 +26,6 @@ class ListWorkRequestsCommandTests(TabularOutputTests, TestCase):
     work_request: ClassVar[WorkRequest]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()
@@ -48,7 +46,7 @@ class ListWorkRequestsCommandTests(TabularOutputTests, TestCase):
     def test_list_work_requests_assigned_finished(self) -> None:
         """Test an assigned work request output."""
         worker = Worker.objects.create_with_fqdn(
-            "neptune", Token.objects.create()
+            "neptune", token=Token.objects.create()
         )
         self.work_request.worker = worker
         self.work_request.created_at = timezone.now()

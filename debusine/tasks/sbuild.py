@@ -50,7 +50,11 @@ from debusine.tasks import (
     ExtraRepositoryMixin,
     RunCommandTask,
 )
-from debusine.tasks.models import SbuildData, SbuildDynamicData
+from debusine.tasks.models import (
+    SbuildBuildComponent,
+    SbuildData,
+    SbuildDynamicData,
+)
 from debusine.tasks.sbuild_validator_mixin import SbuildValidatorMixin
 from debusine.tasks.server import TaskDatabaseInterface
 from debusine.utils import read_dsc
@@ -127,14 +131,10 @@ class Sbuild(
         else:
             build_components = "+".join(sorted(self.data.build_components))
 
-            # Currently defining build_architecture for Sbuild is not
-            # supported. It defaults to the host_architecture
-            build_architecture = self.data.host_architecture
-
             runtime_context = (
                 f"{build_components}:"
                 f"{self.data.host_architecture}:"
-                f"{build_architecture}"
+                f"{self._build_architecture}"
             )
 
         return SbuildDynamicData(
@@ -151,9 +151,21 @@ class Sbuild(
             configuration_context=environment.data.codename,
         )
 
-    def get_source_artifacts_ids(self) -> list[int]:
+    @property
+    def _build_architecture(self) -> str:
+        # Currently defining build_architecture for Sbuild is not
+        # supported. It uses "host_architecture" (or "all" or "source")
+        match self.data.build_components:
+            case [SbuildBuildComponent.ALL]:
+                return "all"
+            case [SbuildBuildComponent.SOURCE]:
+                return "source"
+            case _:
+                return self.data.host_architecture
+
+    def get_input_artifacts_ids(self) -> list[int]:
         """
-        Return the list of source artifact IDs used by this task.
+        Return the list of input artifact IDs used by this task.
 
         This refers to the artifacts actually used by the task. If
         dynamic_data is empty, this returns the empty list.
@@ -295,6 +307,11 @@ class Sbuild(
 
         if self.data.build_profiles:
             cmd.append(f"--profiles={','.join(self.data.build_profiles)}")
+
+        if self.data.build_dep_resolver:
+            cmd.append(f"--build-dep-resolver={self.data.build_dep_resolver}")
+        if self.data.aspcud_criteria:
+            cmd.append(f"--aspcud-criteria={self.data.aspcud_criteria}")
 
         # BD-Uninstallable
         cmd.append("--bd-uninstallable-explainer=dose3")
@@ -465,6 +482,7 @@ class Sbuild(
         build_directory: Path,
         source: str,
         version: str,
+        architecture: str,
         execution_success: bool,
     ) -> RemoteArtifact | None:
         if not self.debusine:
@@ -484,6 +502,7 @@ class Sbuild(
         package_build_log = PackageBuildLog.create(
             source=source,
             version=version,
+            architecture=architecture,
             file=build_log_path,
             bd_uninstallable=explanation,
         )
@@ -690,7 +709,11 @@ class Sbuild(
         if dsc is not None:
             # Upload the .build file (PackageBuildLog)
             remote_build_log = self._upload_package_build_log(
-                directory, dsc["source"], dsc["version"], execution_success
+                directory,
+                dsc["source"],
+                dsc["version"],
+                self._build_architecture,
+                execution_success,
             )
 
             if remote_build_log is not None:

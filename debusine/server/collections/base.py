@@ -12,7 +12,8 @@
 import re
 from abc import ABC
 from collections.abc import Iterable
-from typing import Any, assert_never
+from datetime import datetime
+from typing import Any
 
 from django.contrib.auth.models import AnonymousUser
 from django.db.models import Q
@@ -117,6 +118,8 @@ class CollectionManagerInterface(ABC):
         data: BaseArtifactDataModel | dict[str, Any] | None = None,
         name: str | None = None,
         replace: bool = False,
+        created_at: datetime | None = None,
+        replaced_by: CollectionItem | None = None,
     ) -> CollectionItem:
         """
         Add bare data to the managed collection.
@@ -133,6 +136,10 @@ class CollectionManagerInterface(ABC):
         :param name: set name of new collection item (implementations may
           ignore this if they compute their own names)
         :param replace: if True, replace an existing similar item
+        :param created_at: if set, mark the new item as having been created
+          at this timestamp rather than now
+        :param replaced_by: if set, mark the new item as having been
+          replaced by this more-recently-created item
         """
         if (
             self.VALID_BARE_DATA_CATEGORIES is not None
@@ -152,6 +159,8 @@ class CollectionManagerInterface(ABC):
             data=data,
             name=name,
             replace=replace,
+            created_at=created_at,
+            replaced_by=replaced_by,
         )
 
     def add_artifact(
@@ -163,6 +172,8 @@ class CollectionManagerInterface(ABC):
         variables: dict[str, Any] | None = None,
         name: str | None = None,
         replace: bool = False,
+        created_at: datetime | None = None,
+        replaced_by: CollectionItem | None = None,
     ) -> CollectionItem:
         """
         Add the artifact to the managed collection.
@@ -180,6 +191,10 @@ class CollectionManagerInterface(ABC):
         :param name: set name of new collection item (implementations may
           ignore this if they compute their own names)
         :param replace: if True, replace an existing similar item
+        :param created_at: if set, mark the new item as having been created
+          at this timestamp rather than now
+        :param replaced_by: if set, mark the new item as having been
+          replaced by this more-recently-created item
         """
         if (
             self.VALID_ARTIFACT_CATEGORIES is not None
@@ -197,6 +212,8 @@ class CollectionManagerInterface(ABC):
             variables=variables,
             name=name,
             replace=replace,
+            created_at=created_at,
+            replaced_by=replaced_by,
         )
 
     def add_collection(
@@ -208,6 +225,8 @@ class CollectionManagerInterface(ABC):
         variables: dict[str, Any] | None = None,
         name: str | None = None,
         replace: bool = False,
+        created_at: datetime | None = None,
+        replaced_by: CollectionItem | None = None,
     ) -> CollectionItem:
         """
         Add the collection to the managed collection.
@@ -225,6 +244,10 @@ class CollectionManagerInterface(ABC):
         :param name: set name of new collection item (implementations may
           ignore this if they compute their own names)
         :param replace: if True, replace an existing similar item
+        :param created_at: if set, mark the new item as having been created
+          at this timestamp rather than now
+        :param replaced_by: if set, mark the new item as having been
+          replaced by this more-recently-created item
         """
         if (
             self.VALID_COLLECTION_CATEGORIES is not None
@@ -242,66 +265,46 @@ class CollectionManagerInterface(ABC):
             variables=variables,
             name=name,
             replace=replace,
+            created_at=created_at,
+            replaced_by=replaced_by,
         )
 
-    def remove_bare_data(
+    def remove_item(
         self,
-        name: str,
+        item: CollectionItem,
         *,
         user: User | None = None,
         workflow: WorkRequest | None = None,
     ) -> None:
         """
-        Remove the bare data item from the managed collection.
+        Remove an item from the managed collection.
 
         Verify that the item can be removed and call
-        self.do_remove_bare_data(user=user).
+        self.do_remove_item(user=user).
 
+        :param item: item to remove from the collection
         :param user: user removing the item from the collection
         :param workflow: workflow removing the item from the collection
         """
         # Check that the item can be removed
         # raise ItemRemovalError() if needed
-        self.do_remove_bare_data(name, user=user, workflow=workflow)
+        self.do_remove_item(item, user=user, workflow=workflow)
 
-    def remove_artifact(
+    def remove_items_by_name(
         self,
-        artifact: Artifact,
+        name: str,
+        child_types: Iterable[CollectionItem.Types],
         *,
         user: User | None = None,
         workflow: WorkRequest | None = None,
     ) -> None:
-        """
-        Remove the artifact from the managed collection.
-
-        Verify that the artifact can be removed and call
-        self.do_remove_artifact(artifact, user=user, workflow=workflow).
-
-        :param artifact: artifact being removed from the collection
-        :param user: user removing the artifact from the collection
-        :param workflow: workflow removing the artifact from the collection
-        """
-        # Check that the artifact can be removed
-        # raise ItemRemovalError() if needed
-        self.do_remove_artifact(artifact, user=user, workflow=workflow)
-
-    def remove_collection(
-        self,
-        collection: Collection,
-        *,
-        user: User | None,
-        workflow: WorkRequest | None,
-    ) -> None:
-        """
-        Remove the collection from the managed collection.
-
-        :param collection: collection being removed from the collection
-        :param user: user removing the collection from the collection
-        :param workflow: workflow removing the collection from the collection
-        """
-        # Check that the collection can be removed
-        # raise ItemRemovalError() if needed
-        self.do_remove_collection(collection, user=user, workflow=workflow)
+        """Remove items from the collection by name."""
+        for item in CollectionItem.objects.active().filter(
+            parent_collection=self.collection,
+            child_type__in=child_types,
+            name=name,
+        ):
+            self.remove_item(item, user=user, workflow=workflow)
 
     def lookup(self, query: str) -> CollectionItem | None:
         """
@@ -370,6 +373,8 @@ class CollectionManagerInterface(ABC):
         data: dict[str, Any] | None = None,  # noqa: U100
         name: str | None = None,  # noqa: U100
         replace: bool = False,  # noqa: U100
+        created_at: datetime | None = None,  # noqa: U100
+        replaced_by: CollectionItem | None = None,  # noqa: U100
     ) -> CollectionItem:  # pragma: no cover
         """
         Add bare data into the managed collection.
@@ -383,25 +388,6 @@ class CollectionManagerInterface(ABC):
             f'Cannot add bare data into "{self.COLLECTION_CATEGORY}"'
         )
 
-    def do_remove_bare_data(
-        self,
-        name: str,  # noqa: U100
-        *,
-        user: User | None = None,  # noqa: U100
-        workflow: WorkRequest | None = None,  # noqa: U100
-    ) -> None:  # pragma: no cover
-        """
-        Remove a bare data item from the managed collection.
-
-        Called by remove_bare_data().
-
-        :raise: ItemRemovalError: the item cannot be removed: breaks
-          collection's constraints.
-        """
-        raise ItemRemovalError(
-            f'Cannot remove bare data from "{self.COLLECTION_CATEGORY}"'
-        )
-
     def do_add_artifact(
         self,
         artifact: Artifact,  # noqa: U100
@@ -411,6 +397,8 @@ class CollectionManagerInterface(ABC):
         variables: dict[str, Any] | None = None,  # noqa: U100
         name: str | None = None,  # noqa: U100
         replace: bool = False,  # noqa: U100
+        created_at: datetime | None = None,  # noqa: U100
+        replaced_by: CollectionItem | None = None,  # noqa: U100
     ) -> CollectionItem:  # pragma: no cover
         """
         Add the artifact into the managed collection.
@@ -424,25 +412,6 @@ class CollectionManagerInterface(ABC):
             f'Cannot add artifacts into "{self.COLLECTION_CATEGORY}"'
         )
 
-    def do_remove_artifact(
-        self,
-        artifact: Artifact,  # noqa: U100
-        *,
-        user: User | None = None,  # noqa: U100
-        workflow: WorkRequest | None = None,  # noqa: U100
-    ) -> None:  # pragma: no cover
-        """
-        Remove the artifact from the managed collection.
-
-        Called by remove_artifact().
-
-        :raise: ItemRemovalError: the artifact cannot be removed: breaks
-          collection's constraints.
-        """
-        raise ItemRemovalError(
-            f'Cannot remove artifacts from "{self.COLLECTION_CATEGORY}"'
-        )
-
     def do_add_collection(
         self,
         collection: Collection,  # noqa: U100
@@ -452,6 +421,8 @@ class CollectionManagerInterface(ABC):
         variables: dict[str, Any] | None = None,  # noqa: U100
         name: str | None = None,  # noqa: U100
         replace: bool = False,  # noqa: U100
+        created_at: datetime | None = None,  # noqa: U100
+        replaced_by: CollectionItem | None = None,  # noqa: U100
     ) -> CollectionItem:
         """
         Add the collection into the managed collection.
@@ -465,23 +436,23 @@ class CollectionManagerInterface(ABC):
             f'Cannot add collections into "{self.COLLECTION_CATEGORY}"'
         )
 
-    def do_remove_collection(
+    def do_remove_item(
         self,
-        collection: Collection,  # noqa: U100
+        item: CollectionItem,  # noqa: U100
         *,
         user: User | None = None,  # noqa: U100
         workflow: WorkRequest | None = None,  # noqa: U100
-    ) -> None:
+    ) -> None:  # pragma: no cover
         """
-        Remove the collection from the managed collection.
+        Remove an item from the managed collection.
 
-        Called by remove_collection().
+        Called by remove_item().
 
-        :raise: ItemRemovalError: the collection cannot be removed: breaks
+        :raise: ItemRemovalError: the item cannot be removed: breaks
           collection's constraints.
         """
         raise ItemRemovalError(
-            f'Cannot remove collections from "{self.COLLECTION_CATEGORY}"'
+            f'Cannot remove bare data from "{self.COLLECTION_CATEGORY}"'
         )
 
     def do_lookup(self, query: str) -> CollectionItem | None:
@@ -511,40 +482,3 @@ class CollectionManagerInterface(ABC):
         :raise LookupError: the query contains an unknown lookup filter type.
         """
         raise LookupError(f'Unexpected lookup filter format: "{key}"')
-
-    def do_remove_child_types(
-        self,
-        child_types: Iterable[CollectionItem.Types],
-        name: str,
-        *,
-        user: User | None = None,
-        workflow: WorkRequest | None = None,
-    ) -> None:
-        """Remove all child types from the collection."""
-        for child_type in child_types:
-            try:
-                collection_item = CollectionItem.active_objects.filter(
-                    parent_collection=self.collection,
-                    child_type=child_type,
-                    name=name,
-                ).latest("created_at")
-            except CollectionItem.DoesNotExist:
-                continue
-
-            match child_type:
-                case CollectionItem.Types.ARTIFACT:
-                    assert collection_item.artifact
-                    self.remove_artifact(
-                        collection_item.artifact, user=user, workflow=workflow
-                    )
-                case CollectionItem.Types.BARE:
-                    self.remove_bare_data(
-                        collection_item.name, user=user, workflow=workflow
-                    )
-                case CollectionItem.Types.COLLECTION:
-                    assert collection_item.collection
-                    self.remove_collection(
-                        collection_item.collection, user=user, workflow=workflow
-                    )
-                case _ as unreachable:
-                    assert_never(unreachable)

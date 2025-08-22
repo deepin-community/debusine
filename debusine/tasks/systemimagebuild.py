@@ -10,13 +10,15 @@
 """Ontology definition of SystemImageBuild."""
 import abc
 
-from debusine.tasks import RunCommandTask
+from debusine.tasks import DefaultDynamicData, RunCommandTask
 from debusine.tasks.models import BaseDynamicTaskData, SystemImageBuildData
 from debusine.tasks.server import TaskDatabaseInterface
 
 
 class SystemImageBuild(
-    abc.ABC, RunCommandTask[SystemImageBuildData, BaseDynamicTaskData]
+    abc.ABC,
+    RunCommandTask[SystemImageBuildData, BaseDynamicTaskData],
+    DefaultDynamicData[SystemImageBuildData],
 ):
     """Implement ontology SystemImageBuild."""
 

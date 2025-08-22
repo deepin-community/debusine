@@ -16,7 +16,7 @@ try:
 except ImportError:
     import pydantic  # type: ignore
 
-from debusine.artifacts.models import ArtifactCategory
+from debusine.artifacts.models import ArtifactCategory, TaskTypes
 from debusine.client.models import LookupChildType
 from debusine.db.models import WorkRequest
 from debusine.server.collections.lookup import (
@@ -48,7 +48,6 @@ from debusine.tasks.models import (
     MakeSourcePackageUploadInput,
     MergeUploadsData,
     MergeUploadsInput,
-    TaskTypes,
     empty_lookup_multiple,
 )
 from debusine.tasks.server import TaskDatabaseInterface
@@ -65,7 +64,8 @@ class PackageUploadWorkflow(
         """Instantiate a Workflow with its database instance."""
         super().__init__(work_request)
 
-        self._artifacts_pending_upload: list[LookupSingle] = []
+        # list of (lookup, contains-binaries)
+        self._artifacts_pending_upload: list[tuple[LookupSingle, bool]] = []
 
     @cached_property
     def source_category(self) -> str | None:
@@ -106,6 +106,7 @@ class PackageUploadWorkflow(
     def populate(self) -> None:
         """Create package upload work requests."""
         workflow_root = self.work_request.get_workflow_root()
+        artifacts_pending_upload: list[tuple[LookupSingle, bool]] = []
 
         if (source_artifact := self.data.source_artifact) is not None:
             since_version = self.data.since_version
@@ -119,10 +120,10 @@ class PackageUploadWorkflow(
                         target_distribution=target_distribution,
                     )
                 )
-                self._artifacts_pending_upload.append(package_upload_source)
+                artifacts_pending_upload.append((package_upload_source, False))
 
             else:
-                self._artifacts_pending_upload.append(source_artifact)
+                artifacts_pending_upload.append((source_artifact, False))
 
         # Upload binary_artifacts
         results = lookup_multiple(
@@ -133,10 +134,12 @@ class PackageUploadWorkflow(
             expect_type=LookupChildType.ARTIFACT_OR_PROMISE,
         )
 
-        for result in results:
-            self._artifacts_pending_upload.append(
-                reconstruct_lookup(result, workflow_root=workflow_root)
-            )
+        artifacts_pending_upload += sorted(
+            (reconstruct_lookup(result, workflow_root=workflow_root), True)
+            for result in results
+        )
+
+        self._artifacts_pending_upload = artifacts_pending_upload
 
         self._populate_package_uploads()
 
@@ -211,6 +214,7 @@ class PackageUploadWorkflow(
                     f"{self.data.vendor}/match:"
                     f"codename={self.data.codename}"
                 ),
+                host_architecture=self.data.arch_all_host_architecture,
             ),
             workflow_data=WorkRequestWorkflowData(
                 display_name="Make .changes file",
@@ -228,6 +232,7 @@ class PackageUploadWorkflow(
         signer_identifier: str,
         unsigned_artifact: LookupSingle,
         key: str | None,
+        signed_source_artifact: LookupSingle | None,
     ) -> LookupSingle:
         """
         Create a signer: Debsign or ExternalDebsign depending on self.data.
@@ -237,6 +242,8 @@ class PackageUploadWorkflow(
         :param unsigned_artifact: unsigned artifact for the signer
         :param key: key to be used by the signer. If None, will use
           ExternalDebsign
+        :param signed_source_artifact: if not None, signing this artifact
+          requires this other signature to have been completed first
         :returns: lookup of the signed artifact
         """
         if key is not None:
@@ -266,6 +273,8 @@ class PackageUploadWorkflow(
             )
 
         self.requires_artifact(signer, unsigned_artifact)
+        if signed_source_artifact is not None:
+            self.requires_artifact(signer, signed_source_artifact)
 
         name_signed_artifact = (
             f"package-upload-signed-{unsigned_artifact}".replace(":", "_")
@@ -295,7 +304,10 @@ class PackageUploadWorkflow(
                 task_data=MergeUploadsData(
                     input=MergeUploadsInput(
                         uploads=LookupMultiple.parse_obj(
-                            self._artifacts_pending_upload
+                            [
+                                upload
+                                for upload, _ in self._artifacts_pending_upload
+                            ]
                         )
                     ),
                 ),
@@ -305,26 +317,50 @@ class PackageUploadWorkflow(
                 ),
             )
 
-            for upload in self._artifacts_pending_upload:
+            any_binaries = False
+            for upload, contains_binaries in self._artifacts_pending_upload:
                 self.requires_artifact(wr, upload)
+                any_binaries = any_binaries or contains_binaries
 
-            merged_artifact_name = "package-upload-merged"
+            merged_artifact_name = (
+                f"package-upload-merged-{self.work_request.id}"
+            )
             self.provides_artifact(
                 wr, ArtifactCategory.UPLOAD, merged_artifact_name
             )
 
             self._artifacts_pending_upload = [
-                f"internal@collections/name:{merged_artifact_name}"
+                (
+                    f"internal@collections/name:{merged_artifact_name}",
+                    any_binaries,
+                )
             ]
 
-        for upload in self._artifacts_pending_upload:
+        source_upload: LookupSingle | None = None
+        source_uploader: WorkRequest | None = None
+        for upload, contains_binaries in self._artifacts_pending_upload:
             identifier = str(upload)
 
-            if self.data.key is not None or self.data.require_signature:
-
+            key = self.data.key
+            split_binary_signing = False
+            if key is None and (
+                self.data.binary_key is not None and contains_binaries
+            ):
+                key = self.data.binary_key
+                split_binary_signing = True
+            if key is not None or self.data.require_signature:
                 upload = self._populate_signer(
-                    identifier, upload, key=self.data.key
+                    identifier,
+                    upload,
+                    key=key,
+                    signed_source_artifact=(
+                        source_upload if split_binary_signing else None
+                    ),
                 )
+                if not contains_binaries:
+                    # There is at most one source artifact to upload.
+                    assert source_upload is None
+                    source_upload = upload
 
             uploader = self.work_request_ensure_child(
                 task_name="packageupload",
@@ -341,8 +377,14 @@ class PackageUploadWorkflow(
                 ),
                 task_type=TaskTypes.SERVER,
             )
+            if not contains_binaries:
+                # There is at most one source artifact to upload.
+                assert source_uploader is None
+                source_uploader = uploader
 
             self.requires_artifact(uploader, upload)
+            if split_binary_signing and source_uploader is not None:
+                uploader.add_dependency(source_uploader)
 
     def get_label(self) -> str:
         """Return the task label."""

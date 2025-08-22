@@ -38,8 +38,14 @@ class Playground(playground.Playground, contextlib.ExitStack):
         """Set default values."""
         super().__init__(**kwargs)
         self.file_store = self.get_default_file_store()
-        self.store_path: Path | None = None
-        if memory_file_store:
+        self.memory_file_store = memory_file_store
+
+    def __enter__(self) -> Self:
+        """Set up the playground's file store."""
+        super().__enter__()
+        self.original_backend = self.file_store.backend
+        self.original_configuration = self.file_store.configuration
+        if self.memory_file_store:
             self.initial_storages: dict[str, dict[str, bytes]] | None = None
             self.file_store.backend = FileStore.BackendChoices.MEMORY
             mem_config = MemoryFileBackendConfiguration(
@@ -57,8 +63,27 @@ class Playground(playground.Playground, contextlib.ExitStack):
             local_config = LocalFileBackendConfiguration(
                 base_directory=self.current_store_path.as_posix()
             )
+            self.file_store.backend = FileStore.BackendChoices.LOCAL
             self.file_store.configuration = local_config.dict()
             self.file_store.save()
+        return self
+
+    def __exit__(self, *exc_details: Any) -> None:
+        """Tear down the playground's file store."""
+        self.file_store.backend = self.original_backend
+        self.file_store.configuration = self.original_configuration
+        self.file_store.save()
+        for name in (
+            "current_store_path",
+            "initial_storages",
+            "original_backend",
+            "original_configuration",
+            "saved_store_path",
+            "stores_path",
+        ):
+            if hasattr(self, name):
+                delattr(self, name)
+        super().__exit__(*exc_details)
 
     def __deepcopy__(self, memo: dict[int, Any]) -> Self:
         """Deep copy of Playground, as used by Django's TestCase."""
@@ -68,15 +93,17 @@ class Playground(playground.Playground, contextlib.ExitStack):
         for k, v in self.__dict__.items():
             setattr(result, k, copy.deepcopy(v, memo))
 
-        match self.file_store.backend:
-            case FileStore.BackendChoices.MEMORY:
-                self._deepcopy_memory(memo)
-            case FileStore.BackendChoices.LOCAL:
-                self._deepcopy_files(memo)
-            case _ as unreachable:
-                raise NotImplementedError(
-                    f"backend {unreachable!r} not supported"
-                )
+        if hasattr(self, "original_backend"):
+            match self.file_store.backend:
+                case FileStore.BackendChoices.MEMORY:
+                    self._deepcopy_memory(memo)
+                case FileStore.BackendChoices.LOCAL:
+                    self._deepcopy_files(memo)
+                case _ as unreachable:
+                    raise NotImplementedError(
+                        f"backend {unreachable!r} not supported"
+                    )
+
         return result
 
     def _deepcopy_memory(self, memo: dict[int, Any]) -> None:

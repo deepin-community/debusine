@@ -16,7 +16,6 @@ from rest_framework import status
 
 from debusine.artifacts.models import ArtifactCategory, CollectionCategory
 from debusine.client.models import LookupChildType, LookupResultType
-from debusine.db.context import context
 from debusine.db.models import CollectionItem, WorkRequest, Worker, Workspace
 from debusine.server.views.lookups import LookupMultipleView, LookupSingleView
 from debusine.server.views.rest import IsWorkerAuthenticated
@@ -32,7 +31,6 @@ class LookupSingleViewTests(TestCase):
     work_request: ClassVar[WorkRequest]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()
@@ -40,7 +38,7 @@ class LookupSingleViewTests(TestCase):
             name="public", public=True
         )
         cls.worker = Worker.objects.create_with_fqdn(
-            "worker-test", cls.playground.create_bare_token()
+            "worker-test", token=cls.playground.create_bare_token()
         )
         cls.work_request = cls.playground.create_work_request(
             worker=cls.worker,
@@ -95,7 +93,7 @@ class LookupSingleViewTests(TestCase):
         """The work request must be assigned to this worker."""
         assert self.worker.token is not None
         another_worker = Worker.objects.create_with_fqdn(
-            "another-worker-test", self.playground.create_bare_token()
+            "another-worker-test", token=self.playground.create_bare_token()
         )
         another_work_request = self.playground.create_work_request(
             worker=another_worker, task_name="noop"
@@ -142,18 +140,15 @@ class LookupSingleViewTests(TestCase):
 
     def test_success_string(self) -> None:
         """A string lookup succeeds and returns an artifact ID."""
-        with context.disable_permission_checks():
-            artifact = self.playground.create_artifact(
-                workspace=self.workspace
-            )[0]
+        artifact = self.playground.create_artifact(workspace=self.workspace)[0]
 
         response = self.post_lookup(
             f"{artifact.id}@artifacts", LookupChildType.ARTIFACT
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = self.assertAPIResponseOk(response)
         self.assertEqual(
-            response.json(),
+            data,
             {
                 "result_type": LookupResultType.ARTIFACT,
                 "collection_item": None,
@@ -164,16 +159,13 @@ class LookupSingleViewTests(TestCase):
 
     def test_success_integer(self) -> None:
         """An integer lookup succeeds and returns an artifact ID."""
-        with context.disable_permission_checks():
-            artifact = self.playground.create_artifact(
-                workspace=self.workspace
-            )[0]
+        artifact = self.playground.create_artifact(workspace=self.workspace)[0]
 
         response = self.post_lookup(artifact.id, LookupChildType.ARTIFACT)
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = self.assertAPIResponseOk(response)
         self.assertEqual(
-            response.json(),
+            data,
             {
                 "result_type": LookupResultType.ARTIFACT,
                 "collection_item": None,
@@ -213,39 +205,22 @@ class LookupSingleViewTests(TestCase):
 
     def test_wrong_workspace(self) -> None:
         """The item must be in a visible workspace."""
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace(name="test")
-            artifact = self.playground.create_artifact(workspace=workspace)[0]
+        workspace = self.playground.create_workspace(name="test")
+        artifact = self.playground.create_artifact(workspace=workspace)[0]
         lookup = f"{artifact.id}@artifacts"
 
         response = self.post_lookup(lookup, LookupChildType.ARTIFACT)
 
-        # FIXME: this was previously failing, but self.post_lookup does pass a
-        #        valid worker token, and since #523 is none done yet, I
-        #        understand it's really supposed to succeed?
-
-        # self.assertResponseProblem(
-        #     response,
-        #     "No matches",
-        #     detail_pattern=f"{lookup!r} does not exist or is hidden",
-        #     status_code=status.HTTP_404_NOT_FOUND,
-        # )
-        self.assertEqual(
-            response.json(),
-            {
-                "result_type": LookupResultType.ARTIFACT,
-                "collection_item": None,
-                "artifact": artifact.id,
-                "collection": None,
-            },
+        self.assertResponseProblem(
+            response,
+            "No matches",
+            detail_pattern=f"{lookup!r} does not exist or is hidden",
+            status_code=status.HTTP_404_NOT_FOUND,
         )
 
     def test_wrong_type(self) -> None:
         """The item must be of the correct type."""
-        with context.disable_permission_checks():
-            artifact = self.playground.create_artifact(
-                workspace=self.workspace
-            )[0]
+        artifact = self.playground.create_artifact(workspace=self.workspace)[0]
         lookup = f"{artifact.id}@artifacts"
 
         response = self.post_lookup(lookup, LookupChildType.COLLECTION)
@@ -282,9 +257,9 @@ class LookupSingleViewTests(TestCase):
             default_category=CollectionCategory.TEST,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = self.assertAPIResponseOk(response)
         self.assertEqual(
-            response.json(),
+            data,
             {
                 "result_type": LookupResultType.COLLECTION,
                 "collection_item": None,
@@ -302,7 +277,6 @@ class LookupMultipleViewTests(TestCase):
     work_request: ClassVar[WorkRequest]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up common data for tests."""
         super().setUpTestData()
@@ -310,7 +284,7 @@ class LookupMultipleViewTests(TestCase):
             name="public", public=True
         )
         cls.worker = Worker.objects.create_with_fqdn(
-            "worker-test", cls.playground.create_bare_token()
+            "worker-test", token=cls.playground.create_bare_token()
         )
         cls.work_request = cls.playground.create_work_request(
             worker=cls.worker, task_name="noop", workspace=cls.workspace
@@ -363,7 +337,7 @@ class LookupMultipleViewTests(TestCase):
         """The work request must be assigned to this worker."""
         assert self.worker.token is not None
         another_worker = Worker.objects.create_with_fqdn(
-            "another-worker-test", self.playground.create_bare_token()
+            "another-worker-test", token=self.playground.create_bare_token()
         )
         another_work_request = self.playground.create_work_request(
             worker=another_worker, task_name="noop"
@@ -410,37 +384,34 @@ class LookupMultipleViewTests(TestCase):
 
     def test_success(self) -> None:
         """The lookup succeeds and returns an artifact ID."""
-        with context.disable_permission_checks():
-            collection = self.playground.create_collection(
-                "collection", CollectionCategory.TEST, workspace=self.workspace
+        collection = self.playground.create_collection(
+            "collection", CollectionCategory.TEST, workspace=self.workspace
+        )
+        artifacts = [
+            self.playground.create_artifact(category=ArtifactCategory.TEST)[0]
+            for _ in range(2)
+        ]
+        collection_items = [
+            CollectionItem.objects.create(
+                parent_collection=collection,
+                name=f"artifact{i}",
+                child_type=CollectionItem.Types.ARTIFACT,
+                category=ArtifactCategory.TEST,
+                artifact=artifact,
+                data={},
+                created_by_user=self.playground.get_default_user(),
             )
-            artifacts = [
-                self.playground.create_artifact(category=ArtifactCategory.TEST)[
-                    0
-                ]
-                for _ in range(2)
-            ]
-            collection_items = [
-                CollectionItem.objects.create(
-                    parent_collection=collection,
-                    name=f"artifact{i}",
-                    child_type=CollectionItem.Types.ARTIFACT,
-                    category=ArtifactCategory.TEST,
-                    artifact=artifact,
-                    data={},
-                    created_by_user=self.playground.get_default_user(),
-                )
-                for i, artifact in enumerate(artifacts)
-            ]
+            for i, artifact in enumerate(artifacts)
+        ]
 
         response = self.post_lookup(
             {"collection": f"collection@{CollectionCategory.TEST}"},
             LookupChildType.ARTIFACT,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = self.assertAPIResponseOk(response)
         self.assertCountEqual(
-            response.json(),
+            data,
             [
                 {
                     "result_type": LookupResultType.ARTIFACT,
@@ -456,28 +427,25 @@ class LookupMultipleViewTests(TestCase):
 
     def test_normalized(self) -> None:
         """The view accepts fully-normalized lookups."""
-        with context.disable_permission_checks():
-            collection = self.playground.create_collection(
-                "collection", CollectionCategory.TEST, workspace=self.workspace
+        collection = self.playground.create_collection(
+            "collection", CollectionCategory.TEST, workspace=self.workspace
+        )
+        artifacts = [
+            self.playground.create_artifact(category=ArtifactCategory.TEST)[0]
+            for _ in range(2)
+        ]
+        collection_items = [
+            CollectionItem.objects.create(
+                parent_collection=collection,
+                name=f"artifact{i}",
+                child_type=CollectionItem.Types.ARTIFACT,
+                category=ArtifactCategory.TEST,
+                artifact=artifact,
+                data={},
+                created_by_user=self.playground.get_default_user(),
             )
-            artifacts = [
-                self.playground.create_artifact(category=ArtifactCategory.TEST)[
-                    0
-                ]
-                for _ in range(2)
-            ]
-            collection_items = [
-                CollectionItem.objects.create(
-                    parent_collection=collection,
-                    name=f"artifact{i}",
-                    child_type=CollectionItem.Types.ARTIFACT,
-                    category=ArtifactCategory.TEST,
-                    artifact=artifact,
-                    data={},
-                    created_by_user=self.playground.get_default_user(),
-                )
-                for i, artifact in enumerate(artifacts)
-            ]
+            for i, artifact in enumerate(artifacts)
+        ]
 
         lookup = LookupMultiple.parse_obj(
             {"collection": f"collection@{CollectionCategory.TEST}"}
@@ -498,9 +466,9 @@ class LookupMultipleViewTests(TestCase):
 
         response = self.post_lookup(lookup, LookupChildType.ARTIFACT)
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = self.assertAPIResponseOk(response)
         self.assertCountEqual(
-            response.json(),
+            data,
             [
                 {
                     "result_type": LookupResultType.ARTIFACT,
@@ -562,8 +530,7 @@ class LookupMultipleViewTests(TestCase):
 
     def test_wrong_workspace(self) -> None:
         """The item must be in a visible workspace."""
-        with context.disable_permission_checks():
-            workspace = self.playground.create_workspace(name="test")
+        workspace = self.playground.create_workspace(name="test")
         self.playground.create_collection(
             "collection", CollectionCategory.TEST, workspace=workspace
         )
@@ -585,10 +552,9 @@ class LookupMultipleViewTests(TestCase):
 
     def test_wrong_type(self) -> None:
         """The lookup must be of the correct type."""
-        with context.disable_permission_checks():
-            self.playground.create_collection(
-                "collection", CollectionCategory.TEST, workspace=self.workspace
-            )
+        self.playground.create_collection(
+            "collection", CollectionCategory.TEST, workspace=self.workspace
+        )
 
         response = self.post_lookup(
             {
@@ -609,22 +575,21 @@ class LookupMultipleViewTests(TestCase):
 
     def test_default_category(self) -> None:
         """The client can request a default category."""
-        with context.disable_permission_checks():
-            collection = self.playground.create_collection(
-                "collection", CollectionCategory.TEST, workspace=self.workspace
-            )
-            artifact = self.playground.create_artifact(
-                category=ArtifactCategory.TEST
-            )[0]
-            collection_item = CollectionItem.objects.create(
-                parent_collection=collection,
-                name="artifact",
-                child_type=CollectionItem.Types.ARTIFACT,
-                category=ArtifactCategory.TEST,
-                artifact=artifact,
-                data={},
-                created_by_user=self.playground.get_default_user(),
-            )
+        collection = self.playground.create_collection(
+            "collection", CollectionCategory.TEST, workspace=self.workspace
+        )
+        artifact = self.playground.create_artifact(
+            category=ArtifactCategory.TEST
+        )[0]
+        collection_item = CollectionItem.objects.create(
+            parent_collection=collection,
+            name="artifact",
+            child_type=CollectionItem.Types.ARTIFACT,
+            category=ArtifactCategory.TEST,
+            artifact=artifact,
+            data={},
+            created_by_user=self.playground.get_default_user(),
+        )
 
         response = self.post_lookup(
             {"collection": "collection"}, LookupChildType.ARTIFACT
@@ -646,9 +611,9 @@ class LookupMultipleViewTests(TestCase):
             default_category=CollectionCategory.TEST,
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = self.assertAPIResponseOk(response)
         self.assertEqual(
-            response.json(),
+            data,
             [
                 {
                     "result_type": LookupResultType.ARTIFACT,

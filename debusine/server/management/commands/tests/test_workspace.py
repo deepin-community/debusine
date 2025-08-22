@@ -20,7 +20,6 @@ from debusine.artifacts.models import (
     CollectionCategory,
     SINGLETON_COLLECTION_CATEGORIES,
 )
-from debusine.db.context import context
 from debusine.db.models import (
     ArtifactRelation,
     Scope,
@@ -345,7 +344,6 @@ class WorkspaceCommandsTests(TabularOutputTests, TestCase):
         self.assertEqual(data, expected_data[0:-1])
         # fmt: on
 
-    @context.disable_permission_checks()
     def create_workspace_for_delete(self) -> Workspace:
         """Create a test workspace."""
         scope = self.playground.get_or_create_scope("scope")
@@ -474,6 +472,36 @@ class WorkspaceCommandsTests(TabularOutputTests, TestCase):
 
         with self.assertRaises(Workspace.DoesNotExist):
             Workspace.objects.get(name="Test")
+
+    def test_delete_workspace_missing(self) -> None:
+        """Try to delete a workspace that does not exist."""
+        self.playground.get_or_create_scope("scope")
+        with self.assertRaisesRegex(
+            CommandError, r"Workspace 'Test' not found in scope 'scope'$"
+        ) as exc:
+            call_command("workspace", "delete", "scope/Test", "--yes")
+        self.assertEqual(exc.exception.returncode, 3)
+
+        stdout, stderr, exit_code = call_command(
+            "workspace",
+            "delete",
+            "scope/Test",
+            "--force",
+        )
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertEqual(exit_code, 0)
+
+        stdout, stderr, exit_code = call_command(
+            "workspace",
+            "delete",
+            "scope/Test",
+            "--force",
+            "--yes",
+        )
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertEqual(exit_code, 0)
 
     def test_delete_workspace_playground_ui_scenario(self) -> None:
         """Delete a workspace with the playground UI scenario."""

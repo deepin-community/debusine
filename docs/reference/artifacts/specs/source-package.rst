@@ -1,11 +1,11 @@
-.. _artifact-source-package:
+.. artifact:: debian:source-package
 
 Category ``debian:source-package``
 ==================================
 
 This artifact represents a set of files that can be extracted in some
 way to provide a file hierarchy containing source code that can be built
-into ``debian:binary-package`` artifact(s).
+into :artifact:`debian:binary-package` artifact(s).
 
 * Data:
 
@@ -21,7 +21,7 @@ into ``debian:binary-package`` artifact(s).
   referenced in that file
 * Relationships:
 
-  * built-using: in the case of a source package that was :ref:`assembled
-    automatically <task-assemble-signed-source>` after signing files, the
-    :ref:`debian:binary-package <artifact-binary-package>` artifacts that
-    contain the corresponding unsigned files
+  * built-using: in the case of a source package that was :task:`assembled
+    automatically <AssembleSignedSource>` after signing files, the
+    :artifact:`debian:binary-package` artifacts that contain the
+    corresponding unsigned files

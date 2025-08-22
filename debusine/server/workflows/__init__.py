@@ -14,9 +14,11 @@ from typing import cast
 
 from debusine.server.workflows.autopkgtest import AutopkgtestWorkflow
 from debusine.server.workflows.base import Workflow, WorkflowValidationError
+from debusine.server.workflows.blhc import BlhcWorkflow
 from debusine.server.workflows.create_experiment_workspace import (
     CreateExperimentWorkspaceWorkflow,
 )
+from debusine.server.workflows.debdiff import DebDiffWorkflow
 from debusine.server.workflows.debian_pipeline import DebianPipelineWorkflow
 from debusine.server.workflows.lintian import LintianWorkflow
 from debusine.server.workflows.make_signed_source import (
@@ -34,12 +36,15 @@ from debusine.server.workflows.sbuild import SbuildWorkflow
 from debusine.server.workflows.update_environments import (
     UpdateEnvironmentsWorkflow,
 )
+from debusine.server.workflows.update_suites import UpdateSuitesWorkflow
 
 # Import the documentation from where the code lives
 __doc__ = cast(str, sys.modules[Workflow.__module__].__doc__)
 
 __all__ = [
     "AutopkgtestWorkflow",
+    "BlhcWorkflow",
+    "DebDiffWorkflow",
     "DebianPipelineWorkflow",
     "CreateExperimentWorkspaceWorkflow",
     "LintianWorkflow",
@@ -52,6 +57,7 @@ __all__ = [
     "ReverseDependenciesAutopkgtestWorkflow",
     "SbuildWorkflow",
     "UpdateEnvironmentsWorkflow",
+    "UpdateSuitesWorkflow",
     "Workflow",
     "WorkflowValidationError",
 ]

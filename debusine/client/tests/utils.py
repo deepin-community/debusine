@@ -16,7 +16,7 @@ from unittest import mock
 from rich.console import Console
 
 
-class TestConsole(Console):
+class BufferConsole(Console):
     """Rich console set up to direct simple output to a buffer."""
 
     def __init__(self) -> None:

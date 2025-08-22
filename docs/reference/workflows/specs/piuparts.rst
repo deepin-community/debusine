@@ -1,4 +1,4 @@
-.. _workflow-piuparts:
+.. workflow:: piuparts
 
 Workflow ``piuparts``
 =====================
@@ -8,16 +8,31 @@ source package on a set of architectures.
 
 * ``task_data``:
 
+  * ``source_artifact`` (:ref:`lookup-single`, required): the
+    :artifact:`debian:source-package` or :artifact:`debian:upload` artifact
+    that built the binaries to be tested
   * ``binary_artifacts`` (:ref:`lookup-multiple`, required): see
-    :ref:`task-piuparts`
+    :task:`Piuparts`
+
+  * ``qa_suite`` (:ref:`lookup-single`, optional unless
+    ``update_qa_results`` is True): the :collection:`debian:suite`
+    collection that reference tests are being run against to detect
+    regressions
+  * ``reference_qa_results`` (:ref:`lookup-single`, optional unless
+    ``update_qa_results`` is True): the :collection:`debian:qa-results`
+    collection that contains the reference results of QA tasks to use to
+    detect regressions
+  * ``update_qa_results`` (boolean, defaults to False): when set to True,
+    the workflow runs QA tasks and updates the collection passed in
+    ``reference_qa_results`` with the results.
 
   * ``vendor`` (string, required): the distribution vendor on which to run
     tests
   * ``codename`` (string, required): the distribution codename on which to
     run tests
-  * ``backend`` (string, optional): see :ref:`task-piuparts`
+  * ``backend`` (string, optional): see :task:`Piuparts`
   * ``environment`` (string, optional): the environment to run piuparts in
-  * ``extra_repositories`` (optional): see :ref:`task-piuparts`
+  * ``extra_repositories`` (optional): see :task:`Piuparts`
   * ``architectures`` (list of strings, optional): if set, only run on any
     of these architecture names
   * ``arch_all_host_architecture`` (string, defaults to ``amd64``): concrete
@@ -36,7 +51,7 @@ If only ``Architecture: all`` binary packages are provided in
 ``binary_artifacts``, then ``piuparts`` will be run once for arch-all on
 ``{arch_all_host_architecture}``.
 
-The workflow creates a :ref:`task-piuparts` for each concrete architecture,
+The workflow creates a :task:`Piuparts` task for each concrete architecture,
 with task data:
 
 * ``input.binary_artifacts``: the subset of ``{binary_artifacts}`` that are
@@ -53,7 +68,7 @@ with task data:
   known overlay.
 
 Any of the lookups in ``input.binary_artifacts`` may result in
-:ref:`promises <bare-data-promise>`, and in that case the workflow adds
+:bare-data:`promises <debusine:promise>`, and in that case the workflow adds
 corresponding dependencies.  Binary promises must include an
 ``architecture`` field in their data.
 

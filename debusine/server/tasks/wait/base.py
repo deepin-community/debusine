@@ -12,8 +12,9 @@
 from abc import ABCMeta
 from typing import TypeVar
 
+from debusine.artifacts.models import TaskTypes
 from debusine.server.tasks.base import BaseServerTask
-from debusine.tasks.models import BaseDynamicTaskData, BaseTaskData, TaskTypes
+from debusine.tasks.models import BaseDynamicTaskData, BaseTaskData
 
 TD = TypeVar("TD", bound=BaseTaskData)
 DTD = TypeVar("DTD", bound=BaseDynamicTaskData)

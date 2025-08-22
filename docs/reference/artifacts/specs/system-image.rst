@@ -1,4 +1,4 @@
-.. _artifact-system-image:
+.. artifact:: debian:system-image
 
 Category ``debian:system-image``
 ================================
@@ -13,7 +13,7 @@ specification
 
 * Data:
 
-  * Same as ``debian:system-tarball`` with some extra fields. The
+  * Same as :artifact:`debian:system-tarball` with some extra fields. The
     ``filename`` field points to the disk image.
   * image_format: indicates the format of the image (e.g. ``raw``,
     ``qcow2``)

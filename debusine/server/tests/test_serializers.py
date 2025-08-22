@@ -13,9 +13,10 @@ from datetime import datetime, timezone
 from typing import Any, ClassVar
 
 from django.conf import settings
+from django.db import connection, connections, transaction
 from django.test import RequestFactory, override_settings
 from django.urls import reverse
-from rest_framework.exceptions import ErrorDetail
+from rest_framework.exceptions import ErrorDetail, ValidationError
 
 from debusine.artifacts.models import RuntimeStatistics
 from debusine.assets import AssetCategory, KeyPurpose, SigningKeyData
@@ -27,12 +28,14 @@ from debusine.db.context import context
 from debusine.db.models import (
     Artifact,
     File,
+    FileInArtifact,
     Token,
     WorkRequest,
     Worker,
     Workspace,
     default_workspace,
 )
+from debusine.db.playground import scenarios
 from debusine.db.tests.utils import _calculate_hash_from_data
 from debusine.server.serializers import (
     ArtifactSerializer,
@@ -45,10 +48,12 @@ from debusine.server.serializers import (
     WorkRequestSerializer,
     WorkerRegisterSerializer,
     WorkflowTemplateSerializer,
+    WorkspaceChainItemField,
+    WorkspaceChainSerializer,
 )
 from debusine.tasks.models import OutputData, SbuildData, SbuildInput
 from debusine.test import test_utils
-from debusine.test.django import TestCase
+from debusine.test.django import TestCase, TransactionTestCase
 
 
 class WorkRequestSerializerTests(TestCase):
@@ -94,6 +99,7 @@ class WorkRequestSerializerTests(TestCase):
         self.assertCountEqual(
             self.work_request_serializer.data.keys(),
             {
+                'aborted_by',
                 'artifacts',
                 'completed_at',
                 'created_at',
@@ -105,18 +111,19 @@ class WorkRequestSerializerTests(TestCase):
                 'priority_adjustment',
                 'priority_base',
                 'result',
+                'scope',
                 'started_at',
                 'status',
                 'task_data',
                 'task_name',
                 'task_type',
+                'url',
                 'worker',
                 'workflow_data',
                 'workspace',
             },
         )
 
-    @context.disable_permission_checks()
     def test_serialize_include_artifact_ids_created_by_work_request(
         self,
     ) -> None:
@@ -201,10 +208,13 @@ class WorkRequestSerializerTests(TestCase):
         }
         self.assert_is_valid(data, None, True)
 
-    def test_serialized_workspace_name(self) -> None:
-        """Serialized work request has workspace name."""
+    def test_serialized_scope_and_workspace_names(self) -> None:
+        """Serialized work request has scope and workspace names."""
         work_request_serialized = WorkRequestSerializer(self.work_request).data
 
+        self.assertEqual(
+            work_request_serialized["scope"], self.workspace.scope.name
+        )
         self.assertEqual(
             work_request_serialized["workspace"], self.workspace.name
         )
@@ -474,7 +484,6 @@ class ArtifactSerializerResponseTests(TestCase):
     files: ClassVar[dict[str, bytes]]
 
     @classmethod
-    @context.disable_permission_checks()
     def setUpTestData(cls) -> None:
         """Set up test."""
         super().setUpTestData()
@@ -501,6 +510,16 @@ class ArtifactSerializerResponseTests(TestCase):
         files = {}
 
         for file_name, file_content in self.files.items():
+            if file_name == "README.txt":
+                content_type = "text/plain; charset=utf-8"
+                file_in_artifact = self.artifact.fileinartifact_set.get(
+                    path=file_name
+                )
+                file_in_artifact.content_type = content_type
+                file_in_artifact.save()
+            else:
+                content_type = None
+
             checksums = {
                 File.current_hash_algorithm: _calculate_hash_from_data(
                     file_content
@@ -519,12 +538,15 @@ class ArtifactSerializerResponseTests(TestCase):
                 "checksums": checksums,
                 "type": "file",
                 "url": f"http://{host}{path}",
+                "content_type": content_type,
             }
 
         self.assertEqual(
             serializer.data,
             {
                 "id": self.artifact.id,
+                "url": self.artifact.get_absolute_url(),
+                "scope": self.artifact.workspace.scope.name,
                 "workspace": self.artifact.workspace.name,
                 "category": str(self.artifact.category),
                 "data": self.artifact.data,
@@ -551,6 +573,82 @@ class ArtifactSerializerResponseTests(TestCase):
         expected = f"{request.scheme}://{host}{path}"
 
         self.assertEqual(actual, expected)
+
+
+class ArtifactSerializerResponseTransactionTests(TransactionTestCase):
+    """Tests for ArtifactSerializerResponse class that require transactions."""
+
+    @override_settings(ALLOWED_HOSTS=["*"])
+    def test_files_to_upload_race(self) -> None:
+        """
+        ``files_to_upload`` ignores files created in other transactions.
+
+        Since Debusine currently uses the ``READ COMMITTED`` transaction
+        isolation level, it can experience "phantom reads", where a
+        transaction re-executes a query and finds that the set of rows
+        satisfying its search condition has changed due to another
+        recently-committed transaction.  The serializer does not get
+        confused by this when computing ``files_to_upload``, even if another
+        transaction races with it.
+        """
+        with transaction.atomic():
+            # Ensure that the playground's default workspace has been
+            # created with an ID visible to both transactions.
+            self.playground.get_default_workspace()
+
+            # Create a pre-existing file so that we can make sure that
+            # different transactions reference the same file.  It isn't in
+            # any artifact, so artifacts will be considered as needing to
+            # upload it.
+            common_file_contents = b"Common file contents"
+            common_file = self.playground.create_file_in_backend(
+                self.playground.get_default_file_store().get_backend_object(),
+                common_file_contents,
+            )
+
+        with transaction.atomic():
+            artifact, files = self.playground.create_artifact(
+                {"common-file": common_file_contents},
+                create_files=True,
+                skip_add_files_in_store=True,
+            )
+
+            racing_alias = "racing"
+            racing_connection = connection.copy(racing_alias)
+            connections[racing_alias] = racing_connection
+
+            try:
+                with (
+                    transaction.atomic(using=racing_alias),
+                    context.disable_permission_checks(),
+                ):
+                    racing_artifact = Artifact.objects.using(
+                        racing_alias
+                    ).create(
+                        category=artifact.category,
+                        workspace=artifact.workspace,
+                        data=artifact.data,
+                    )
+                    FileInArtifact.objects.using(racing_alias).create(
+                        artifact=racing_artifact,
+                        file_id=common_file.id,
+                        path="common-file",
+                        complete=True,
+                    )
+
+                host = "example.com"
+                request = RequestFactory().get("/test", HTTP_HOST=host)
+
+                serializer = ArtifactSerializerResponse.from_artifact(
+                    artifact, request
+                )
+
+                self.assertEqual(
+                    serializer.data["files_to_upload"], ["common-file"]
+                )
+            finally:
+                del connections[racing_alias]
+                racing_connection.close()
 
 
 class AssetSerializerTests(TestCase):
@@ -767,3 +865,127 @@ class WorkflowTemplateSerializerTests(TestCase):
             context.set_scope(scope3)
             serializer = WorkflowTemplateSerializer(data=data)
             self.assertFalse(serializer.is_valid())
+
+
+class WorkspaceChainItemFieldTests(TestCase):
+    """Tests for :py:class:`WorkspaceChainItemField`."""
+
+    scenario = scenarios.DefaultContextAPI(set_current=True)
+
+    def test_to_representation(self) -> None:
+        field = WorkspaceChainItemField()
+        self.assertEqual(
+            field.to_representation(self.scenario.workspace),
+            {
+                "id": self.scenario.workspace.pk,
+                "scope": self.scenario.scope.name,
+                "workspace": self.scenario.workspace.name,
+            },
+        )
+
+    def test_from_id(self) -> None:
+        field = WorkspaceChainItemField()
+        self.assertEqual(
+            field.to_internal_value({"id": self.scenario.workspace.pk}),
+            self.scenario.workspace,
+        )
+
+    def test_from_id_cannot_display(self) -> None:
+        field = WorkspaceChainItemField()
+        hidden = self.playground.create_workspace(name="hidden")
+        with self.assertRaisesRegex(
+            ValidationError, r"Workspace with id \d+ does not exist"
+        ):
+            field.to_internal_value({"id": hidden.pk}),
+
+    def test_from_scope_workspace(self) -> None:
+        field = WorkspaceChainItemField()
+        self.assertEqual(
+            field.to_internal_value(
+                {
+                    "scope": self.scenario.scope.name,
+                    "workspace": self.scenario.workspace.name,
+                }
+            ),
+            self.scenario.workspace,
+        )
+
+    def test_from_workspace_only(self) -> None:
+        field = WorkspaceChainItemField()
+        self.assertEqual(
+            field.to_internal_value(
+                {"workspace": self.scenario.workspace.name}
+            ),
+            self.scenario.workspace,
+        )
+
+    def test_from_mismatch_id_worksapce(self) -> None:
+        field = WorkspaceChainItemField()
+        with self.assertRaisesRegex(
+            ValidationError, r"Workspace with id \d+ is not named 'invalid'"
+        ):
+            field.to_internal_value(
+                {"id": self.scenario.workspace.id, "workspace": "invalid"}
+            )
+        with self.assertRaisesRegex(
+            ValidationError, r"Workspace with id \d+ is not in scope 'invalid'"
+        ):
+            field.to_internal_value(
+                {"id": self.scenario.workspace.id, "scope": "invalid"}
+            )
+
+    def test_from_str_cannot_display(self) -> None:
+        field = WorkspaceChainItemField()
+        self.playground.create_workspace(name="hidden")
+        with self.assertRaisesRegex(
+            ValidationError,
+            r"Workspace 'hidden' does not exist in scope 'debusine'",
+        ):
+            field.to_internal_value({"workspace": "hidden"}),
+
+    def test_from_invalid(self) -> None:
+        field = WorkspaceChainItemField()
+        value: Any
+        for value in (None, [], 3.14, False, True, "invalid", 42):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    ValidationError,
+                    r"Workspace indicator should be a dict",
+                ):
+                    field.to_internal_value(value)
+
+    def test_from_empty_dict(self) -> None:
+        field = WorkspaceChainItemField()
+        with self.assertRaisesRegex(
+            ValidationError,
+            r"at least id or workspace need to be set",
+        ):
+            field.to_internal_value({})
+
+
+class WorkspaceChainSerializerTests(TestCase):
+    """Tests for :py:class:`WorkspaceChainSerializer`."""
+
+    scenario = scenarios.DefaultContextAPI(set_current=True)
+
+    def test_valid_data(self) -> None:
+        first = self.playground.create_workspace(name="first", public=True)
+        second = self.playground.create_workspace(name="second", public=True)
+
+        for data, expected in (
+            ([], []),
+            ([{"id": first.pk}, {"id": second.pk}], [first, second]),
+            ([{"workspace": "first"}], [first]),
+            ([{"scope": "debusine", "workspace": "first"}], [first]),
+            (
+                [
+                    {"id": second.pk},
+                    {"scope": "debusine", "workspace": "first"},
+                ],
+                [second, first],
+            ),
+        ):
+            with self.subTest(data=data):
+                serializer = WorkspaceChainSerializer(data={"chain": data})
+                self.assertTrue(serializer.is_valid(raise_exception=True))
+                self.assertEqual(serializer.validated_data, {"chain": expected})

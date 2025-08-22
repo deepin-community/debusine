@@ -12,11 +12,12 @@ User=debusine-signing
 Group=debusine-signing
 WorkingDirectory=~
 PrivateMounts=true
-# TODO: Once we can assume Linux >= 6.4, this should become "/tmp:noswap
-# /var/tmp:noswap".  In the meantime, deployments that want extra protection
-# against private key material being swapped to disk under memory pressure
-# can set that using a drop-in unit.
-TemporaryFileSystem=/tmp /var/tmp
+# TODO: Once we can assume Linux >= 6.4, this should become
+# "/tmp:mode=01777,noswap /var/tmp:mode=01777,noswap".  In the meantime,
+# deployments that want extra protection against private key material
+# being swapped to disk under memory pressure can set that using a drop-in
+# unit.
+TemporaryFileSystem=/tmp:mode=01777 /var/tmp:mode=01777
 ExecStart=/usr/bin/debusine-signing signing_worker
 Restart=on-failure
 RestartSec=5

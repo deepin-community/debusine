@@ -48,13 +48,11 @@ class MenuEntry(FilterWidget):
     def render(self, context: Context) -> str:  # noqa: U100
         """Render the filter as widget."""
         return format_html(
-            "<a class='dropdown-item'"
-            "data-bs-toggle='collapse'"
-            "href='#filters-form-{name}'"
-            "aria-expanded='false'"
-            "aria-controls='filters-form-{name}'>"
+            "<a class='dropdown-item debusine-dropdown-remote'"
+            " aria-expanded='false'"
+            " data-bs-target='#{dom_id_form_dropdown}'>"
             "{label}</a>",
-            name=self.filter.filter_prefix,
+            dom_id_form_dropdown=self.filter.dom_id_form_dropdown,
             label=self.filter.label,
         )
 
@@ -70,7 +68,7 @@ class MenuEntryToggle(FilterWidget):
             url = self.filter.qs_with_value(True)
         return format_html(
             "<a class='dropdown-item{active}'"
-            "href='?{url}' {aria_current}>"
+            " href='?{url}' {aria_current}>"
             "{label}</a>",
             url=url,
             label=self.filter.label,
@@ -81,14 +79,14 @@ class MenuEntryToggle(FilterWidget):
         )
 
 
-class FormEntry(FilterWidget):
-    """Render the input form for a filter."""
+class MainEntry(FilterWidget):
+    """Render the element and optional dropdown form for a filter."""
 
     template_name: str
 
     def get_context_data(self) -> dict[str, Any]:
         """Get context for widget rendering."""
-        return {"filter": self.filter}
+        return {"filter": self.filter, "table": self.filter.filters.table}
 
     def render(self, context: Context) -> str:
         """Render the filter as widget."""
@@ -98,62 +96,48 @@ class FormEntry(FilterWidget):
             return template.render(context)
 
 
-class FormEntryText(FormEntry):
+class MainEntryForm(MainEntry):
+    """Render input forms."""
+
+    template_name = "web/_table_filter_form.html"
+    form_template_name: str
+
+    def get_context_data(self) -> dict[str, Any]:
+        """Get context for widget rendering."""
+        ctx = super().get_context_data()
+        ctx["form_template_name"] = self.form_template_name
+        return ctx
+
+
+class MainEntryText(MainEntryForm):
     """Render the input field for a FilterText."""
 
-    template_name = "web/_table_filter_text.html"
+    form_template_name = "web/_table_filter_text.html"
 
 
-class FormEntrySelectOne(FormEntry):
+class MainEntrySelectOne(MainEntryForm):
     """Render the input field for a FilterSelectOne."""
 
-    template_name = "web/_table_filter_select_one.html"
+    form_template_name = "web/_table_filter_select_one.html"
 
 
-class FormEntryField(FormEntry):
+class MainEntryField(MainEntryForm):
     """Render the input field for a FilterField."""
 
-    template_name = "web/_table_filter_form_field.html"
+    form_template_name = "web/_table_filter_field.html"
 
 
-class ActiveEntry(FilterWidget):
-    """Render the badge representing the active filter."""
+class MainEntryToggle(MainEntry):
+    """Render the input field for a FilterToggle."""
 
-    def render(self, context: Context) -> str:  # noqa: U100
-        """Render the filter as widget."""
-        return format_html(
-            "<span class='btn btn-sm text-bg-secondary'>"
-            "<a class='text-bg-secondary text-decoration-none'"
-            " data-bs-toggle='collapse' href='#filters-form-{name}'"
-            " aria-expanded='false'"
-            " aria-controls='filters-form-{name}'>"
-            "{label}: {value}</a>"
-            "<a href='?{url}' class='ms-1' title='remove filter'>"
-            "<i class='bi bi-x-circle text-bg-secondary'></i>"
-            "</a>"
-            "</span>",
-            name=self.filter.filter_prefix,
-            url=self.filter.qs_remove,
-            label=self.filter.label,
-            value=self.filter.format_value(),
-        )
-
-
-class ActiveEntryToggle(FilterWidget):
-    """Render the badge representing an active toggle filter."""
-
-    def render(self, context: Context) -> str:  # noqa: U100
-        """Render the filter as widget."""
-        return format_html(
-            "<a class='btn btn-sm text-bg-secondary' href='?{url}'>"
-            "{label} <i class='bi bi-x-circle'></i></a>",
-            url=self.filter.qs_remove,
-            label=self.filter.label,
-        )
+    template_name = "web/_table_filter_toggle.html"
 
 
 class BoundFilter(Generic[M]):
     """A Filter bound to a table."""
+
+    dom_id: str
+    dom_id_form_dropdown: str
 
     def __init__(
         self,
@@ -163,6 +147,9 @@ class BoundFilter(Generic[M]):
         """Build from filter and table filters definition."""
         self.filter = filter_
         self.filters = filters
+        #: ID for this element in the DOM
+        self.dom_id = self.filters.table.dom_id + f"filter-{self.name}"
+        self.dom_id_form_dropdown = self.dom_id + "-form-dropdown"
 
     @cached_property
     def filter_prefix(self) -> str:
@@ -194,7 +181,7 @@ class BoundFilter(Generic[M]):
         """Check if the filter is active."""
         return bool(self.value)
 
-    def format_value(self) -> str:
+    def _format_value(self) -> str:
         """Return a pretty printed value."""
         match value := self.value:
             case None:
@@ -205,6 +192,11 @@ class BoundFilter(Generic[M]):
                 return ", ".join(value)
             case _:
                 return str(value)
+
+    @cached_property
+    def value_formatted(self) -> str:
+        """Return a pretty printed value."""
+        return self._format_value()
 
     def value_for_querystring(self, value: Any) -> list[str]:
         """
@@ -273,21 +265,14 @@ class BoundFilter(Generic[M]):
         return self.filter.filter_queryset(queryset, self.value)
 
     @cached_property
-    def active_entry(self) -> FilterWidget:
+    def main_entry(self) -> FilterWidget:
         """Return the label to use to show the active filter."""
-        return self.filter.active_entry(self)
+        return self.filter.main_entry(self)
 
     @cached_property
     def menu_entry(self) -> FilterWidget:
         """Return the widget to render our entry in the filter menu."""
         return self.filter.menu_entry(self)
-
-    @cached_property
-    def form(self) -> FilterWidget | None:
-        """Return the widget to render the filter input form, if available."""
-        if not self.filter.form_entry:
-            return None
-        return self.filter.form_entry(self)
 
 
 class Filter(Attribute, abc.ABC):
@@ -297,8 +282,7 @@ class Filter(Attribute, abc.ABC):
     icon: str | None
     bound_class: type[BoundFilter[Any]] = BoundFilter[Any]
     menu_entry: type[FilterWidget] = MenuEntry
-    form_entry: type[FilterWidget] | None = None
-    active_entry: type[FilterWidget] = ActiveEntry
+    main_entry: type[FilterWidget]
 
     def __init__(
         self,
@@ -322,7 +306,7 @@ class Filter(Attribute, abc.ABC):
 class FilterText(Filter):
     """A filter with a text field."""
 
-    form_entry = FormEntryText
+    main_entry = MainEntryText
     placeholder: str | None
 
     def __init__(
@@ -360,7 +344,7 @@ class FilterToggle(Filter):
     """A filter that can be toggled on or off."""
 
     menu_entry: type[FilterWidget] = MenuEntryToggle
-    active_entry: type[FilterWidget] = ActiveEntryToggle
+    main_entry: type[FilterWidget] = MainEntryToggle
 
     def __init__(
         self,
@@ -431,7 +415,7 @@ class FilterSelectOne(Filter):
     """Filter selecting one item among a finite set."""
 
     bound_class = BoundFilterSelectOne
-    form_entry = FormEntrySelectOne
+    main_entry = MainEntrySelectOne
 
     #: Options to select from
     options: Collection[SelectOption]
@@ -470,7 +454,7 @@ class BoundFilterField(BoundFilter[M]):
         """Return the current value for the filter."""
         return self.filters.form.cleaned_data.get(self.name)
 
-    def format_value(self) -> str:
+    def _format_value(self) -> str:
         """Return a pretty printed value."""
         if self.value is None:
             return ""
@@ -493,7 +477,7 @@ class BoundFilterField(BoundFilter[M]):
             if labels:
                 return ", ".join(labels)
 
-        return super().format_value()
+        return super()._format_value()
 
     @cached_property
     def form_field(self) -> BoundField:
@@ -523,7 +507,7 @@ class FilterField(Filter):
     """Table filter using a Django form field."""
 
     bound_class = BoundFilterField
-    form_entry = FormEntryField
+    main_entry = MainEntryField
 
     def __init__(
         self,
@@ -559,6 +543,12 @@ class Filters(Widget, Generic[M]):
         #: Prefix for filter query string arguments for this table
         self.filter_prefix: str = f"{self.table.prefix}filter"
 
+        #: ID for this element in the DOM
+        self.dom_id = self.table.dom_id + "filters"
+
+        #: ID for the filters menu in the DOM
+        self.dom_id_filters_menu = self.dom_id + "-menu"
+
         #: Filters configured for the table
         self.options: dict[str, BoundFilter[M]] = {}
 
@@ -593,6 +583,11 @@ class Filters(Widget, Generic[M]):
     def active(self) -> Collection[BoundFilter[M]]:
         """Return all active filters."""
         return [v for v in self.available if v.active]
+
+    @cached_property
+    def inactive(self) -> Collection[BoundFilter[M]]:
+        """Return all active filters."""
+        return [v for v in self.available if not v.active]
 
     @cached_property
     def form(self) -> Form | ModelFormBase[M]:
